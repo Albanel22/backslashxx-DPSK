@@ -39,26 +39,6 @@ find . -name "*.rej" -type f | while read rej; do
   echo "REJ: $rej"
 done
 
-echo "=== Application du script d'injection des hooks ==="
-if [ -f "/tmp/jack_repo/Patches/susfs_inline_hook_patches.sh" ]; then
-  cp /tmp/jack_repo/Patches/susfs_inline_hook_patches.sh .
-  chmod +x susfs_inline_hook_patches.sh
-  echo "Exécution de susfs_inline_hook_patches.sh..."
-  bash susfs_inline_hook_patches.sh 2>&1 | tee /tmp/hooks_patch.log || true
-  echo "Script d'injection exécuté"
-else
-  echo "Script susfs_inline_hook_patches.sh non trouvé"
-  find /tmp/jack_repo -name "susfs_inline_hook_patches.sh" | head -5
-fi
-
-echo "=== Vérification des hooks ==="
-for f in fs/exec.c fs/open.c fs/read_write.c fs/stat.c drivers/input/input.c kernel/reboot.c kernel/sys.c; do
-  if [ -f "$f" ]; then
-    COUNT=$(grep -c "ksu_handle" "$f" 2>/dev/null || echo "0")
-    echo "$f: $COUNT hooks"
-  fi
-done
-
 echo "=== Corrections post-patch ==="
 
 # 1. Supprimer la variable vma non utilisée (ligne 1617)
