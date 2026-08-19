@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "=== Début du build Backslashxx KernelSU + SusFS (final v2) ==="
+echo "=== Début du build Backslashxx KernelSU + SusFS (final v3) ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -20,7 +20,7 @@ echo "=== Intégration Backslashxx KernelSU ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu || true
 curl -LSs "https://raw.githubusercontent.com/backslashxx/KernelSU/master/kernel/setup.sh" | bash
 
-echo "=== Hooks manuels Backslashxx ==="
+echo "=== Hooks manuels Backslashxx (SIMPLES) ==="
 
 if ! grep -q "ksu_handle_execveat" fs/exec.c; then
   cat > /tmp/hook_execveat.py << 'PYEOF'
@@ -32,8 +32,6 @@ if 'ksu_handle_execveat' not in content:
 #ifdef CONFIG_KSU
 extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,
 			void *envp, int *flags);
-extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
-				 void *argv, void *envp, int *flags);
 #endif
 '''
     pattern = r'(static int do_execveat_common\()'
@@ -49,7 +47,7 @@ extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
 	return do_execveat_common(AT_FDCWD, filename, argv, envp, 0);'''
     if old_code in content:
         content = content.replace(old_code, new_code, 1)
-        print("OK: execveat")
+        print("OK: execveat SIMPLE")
     else:
         pattern = r'(int do_execve\(struct filename \*filename,.*?struct user_arg_ptr envp = \{ \.ptr\.native = __envp \};\n)'
         replacement = r'\1#ifdef CONFIG_KSU\n\tksu_handle_execveat((int *)AT_FDCWD, &filename, &argv, &envp, 0);\n#endif\n'
@@ -180,7 +178,7 @@ fi
 
 echo "=== Restauration des fichiers incompatibles Backslashxx ==="
 git checkout fs/read_write.c lib/xarray.c security/selinux/hooks.c fs/devpts/inode.c 2>/dev/null || true
-echo "OK: read_write.c, xarray.c, hooks.c, devpts/inode.c restaurés"
+echo "OK: fichiers restaurés"
 
 echo "=== Vérification des .rej ==="
 find . -name "*.rej" -type f | while read rej; do
@@ -275,7 +273,7 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-echo "=== Patch signatures + tactile ==="
+echo "=== Patch signatures + tactile (APRÈS la restauration) ==="
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
 
