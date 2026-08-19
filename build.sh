@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "=== Début du build Backslashxx KernelSU + SusFS (final) ==="
+echo "=== Début du build Backslashxx KernelSU + SusFS (final v2) ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -164,37 +164,6 @@ PYEOF
   python3 /tmp/hook_reboot.py
 fi
 
-if ! grep -q "ksu_handle_devpts" fs/devpts/inode.c; then
-  cat > /tmp/hook_devpts.py << 'PYEOF'
-import re
-with open('fs/devpts/inode.c', 'r') as f:
-    content = f.read()
-if 'ksu_handle_devpts' not in content:
-    extern_decl = '''
-#ifdef CONFIG_KSU
-extern int ksu_handle_devpts(struct inode*);
-#endif
-'''
-    pattern = r'(void \*devpts_get_priv\(struct dentry \*dentry\))'
-    content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
-    old_code = '''void *devpts_get_priv(struct dentry *dentry)
-{'''
-    new_code = '''void *devpts_get_priv(struct dentry *dentry)
-{
-#ifdef CONFIG_KSU
-	ksu_handle_devpts(dentry->d_inode);
-#endif'''
-    if old_code in content:
-        content = content.replace(old_code, new_code, 1)
-        print("OK: devpts")
-    else:
-        print("Pattern devpts non trouvé")
-with open('fs/devpts/inode.c', 'w') as f:
-    f.write(content)
-PYEOF
-  python3 /tmp/hook_devpts.py
-fi
-
 echo "=== Téléchargement du repo JackA1ltman ==="
 git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git /tmp/jack_repo 2>/dev/null || true
 
@@ -210,8 +179,8 @@ else
 fi
 
 echo "=== Restauration des fichiers incompatibles Backslashxx ==="
-git checkout fs/read_write.c lib/xarray.c security/selinux/hooks.c 2>/dev/null || true
-echo "OK: read_write.c, xarray.c, hooks.c restaurés"
+git checkout fs/read_write.c lib/xarray.c security/selinux/hooks.c fs/devpts/inode.c 2>/dev/null || true
+echo "OK: read_write.c, xarray.c, hooks.c, devpts/inode.c restaurés"
 
 echo "=== Vérification des .rej ==="
 find . -name "*.rej" -type f | while read rej; do
