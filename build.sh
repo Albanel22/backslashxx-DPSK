@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "=== Début du build Backslashxx KernelSU + SusFS (final v5 - SANS hooks manuels) ==="
+echo "=== Début du build Backslashxx KernelSU + SusFS (final v6) ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -16,11 +16,23 @@ echo "=== Clonage du kernel ==="
 git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git -b lineage-23.2 --depth=1 kernel_sources
 cd kernel_sources
 
-echo "=== Intégration Backslashxx KernelSU (hooks AUTOMATIQUES via syscall table) ==="
+echo "=== Intégration Backslashxx KernelSU ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu || true
 curl -LSs "https://raw.githubusercontent.com/backslashxx/KernelSU/master/kernel/setup.sh" | bash
 
-echo "=== AUCUN hook manuel nécessaire - Backslashxx gère tout automatiquement ==="
+echo "=== Téléchargement et exécution du script vfs_hook_patches.sh (Backslashxx officiel) ==="
+curl -LSs "https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Patches/op_kernel/vfs_hook_patches.sh" -o vfs_hook_patches.sh
+chmod +x vfs_hook_patches.sh
+bash vfs_hook_patches.sh 2>&1 | tee /tmp/vfs_hooks.log || true
+echo "Script vfs_hook_patches.sh exécuté"
+
+echo "=== Vérification des hooks ==="
+for f in fs/exec.c fs/open.c fs/read_write.c fs/stat.c drivers/input/input.c drivers/tty/pty.c; do
+  if [ -f "$f" ]; then
+    COUNT=$(grep -c "ksu_handle" "$f" 2>/dev/null || echo "0")
+    echo "$f: $COUNT hooks"
+  fi
+done
 
 echo "=== Téléchargement du repo JackA1ltman ==="
 git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git /tmp/jack_repo 2>/dev/null || true
@@ -36,9 +48,13 @@ else
   find /tmp/jack_repo/Patches -name "*.patch" | head -20
 fi
 
-echo "=== Restauration des fichiers incompatibles Backslashxx ==="
-git checkout fs/read_write.c lib/xarray.c security/selinux/hooks.c fs/devpts/inode.c fs/exec.c fs/open.c fs/stat.c 2>/dev/null || true
+echo "=== Restauration des fichiers incompatibles SusFS ==="
+git checkout fs/read_write.c lib/xarray.c security/selinux/hooks.c fs/devpts/inode.c 2>/dev/null || true
 echo "OK: fichiers restaurés"
+
+echo "=== Réinjection des hooks Backslashxx APRÈS restauration ==="
+bash vfs_hook_patches.sh 2>&1 | tee /tmp/vfs_hooks2.log || true
+echo "Hooks réinjectés"
 
 echo "=== Vérification des .rej ==="
 find . -name "*.rej" -type f | while read rej; do
