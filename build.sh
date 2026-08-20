@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "=== Début du build Backslashxx KernelSU + SusFS (final v10 - KSU_HACK_ARM64_BRANCH_LINK) ==="
+echo "=== Début du build Backslashxx KernelSU + SusFS (final v11 - SANS hook inline, hijacking ARM64) ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -20,54 +20,7 @@ echo "=== Intégration Backslashxx KernelSU ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu || true
 curl -LSs "https://raw.githubusercontent.com/backslashxx/KernelSU/master/kernel/setup.sh" | bash
 
-echo "=== Injection du hook execveat DANS do_execveat_common ==="
-python3 << 'PYEOF'
-import re
-with open('fs/exec.c', 'r') as f:
-    content = f.read()
-
-if 'extern int ksu_handle_execveat' not in content:
-    extern_decl = '''
-#ifdef CONFIG_KSU
-extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,
-			void *envp, int *flags);
-#endif
-'''
-    pattern = r'(static int do_execveat_common\(int fd, struct filename \*filename,)'
-    content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
-    print("OK: déclaration extern ajoutée")
-
-old_code = '''static int do_execveat_common(int fd, struct filename *filename,
-			      struct user_arg_ptr argv,
-			      struct user_arg_ptr envp,
-			      int flags)
-{
-	return __do_execve_file(fd, filename, argv, envp, flags, NULL);
-}'''
-
-new_code = '''static int do_execveat_common(int fd, struct filename *filename,
-			      struct user_arg_ptr argv,
-			      struct user_arg_ptr envp,
-			      int flags)
-{
-#ifdef CONFIG_KSU
-	ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
-#endif
-	return __do_execve_file(fd, filename, argv, envp, flags, NULL);
-}'''
-
-if old_code in content:
-    content = content.replace(old_code, new_code, 1)
-    print("OK: hook injecté DANS do_execveat_common")
-else:
-    print("ERREUR: pattern exact non trouvé")
-
-with open('fs/exec.c', 'w') as f:
-    f.write(content)
-PYEOF
-
-echo "=== Vérification du hook ==="
-grep -n "ksu_handle_execveat" fs/exec.c
+echo "=== AUCUN hook inline - KSU_HACK_ARM64_BRANCH_LINK gère tout automatiquement ==="
 
 echo "=== Téléchargement du repo JackA1ltman ==="
 git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git /tmp/jack_repo 2>/dev/null || true
