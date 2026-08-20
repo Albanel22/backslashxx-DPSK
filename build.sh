@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "=== Début du build Backslashxx KernelSU + SusFS (v14 - tactile garanti) ==="
+echo "=== Début du build Backslashxx KernelSU + SusFS ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -20,8 +20,6 @@ echo "=== Intégration Backslashxx KernelSU ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu || true
 curl -LSs "https://raw.githubusercontent.com/backslashxx/KernelSU/master/kernel/setup.sh" | bash
 
-echo "=== AUCUN hook inline - KSU_TAMPER_SYSCALL_TABLE gère tout ==="
-
 echo "=== Téléchargement du repo JackA1ltman ==="
 git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git /tmp/jack_repo 2>/dev/null || true
 
@@ -36,10 +34,6 @@ else
   find /tmp/jack_repo/Patches -name "*.patch" | head -20
 fi
 
-echo "=== Restauration des fichiers incompatibles SusFS (y compris msm_drv.c) ==="
-git checkout fs/read_write.c lib/xarray.c security/selinux/hooks.c fs/devpts/inode.c techpack/display/msm/msm_drv.c 2>/dev/null || true
-echo "OK: fichiers restaurés (y compris msm_drv.c pour le tactile)"
-
 echo "=== Vérification des .rej ==="
 find . -name "*.rej" -type f | while read rej; do
   echo "REJ: $rej"
@@ -47,14 +41,17 @@ done
 
 echo "=== Corrections post-patch ==="
 
+# 1. Supprimer la variable vma non utilisée (ligne 1617)
 sed -i '1617d' fs/proc/task_mmu.c 2>/dev/null || true
 echo "OK: task_mmu.c corrigé"
 
+# 2. Ajouter l'include susfs_def.h dans namespace.c
 if ! grep -q "susfs_def.h" fs/namespace.c; then
   sed -i '/#include <linux\/sched\/task.h>/a #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n#include <linux/susfs_def.h>\n#endif\n\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nextern bool susfs_is_current_ksu_domain(void);\nextern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n#define CL_COPY_MNT_NS BIT(25)\n#endif' fs/namespace.c
   echo "OK: include namespace.c ajouté"
 fi
 
+# 3. Ajouter ksu_handle_setresuid APRÈS bool ruid_new
 if ! grep -q "ksu_handle_setresuid" kernel/sys.c; then
   cat > /tmp/hook_setresuid.py << 'PYEOF'
 import re
@@ -75,7 +72,7 @@ extern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);
 #endif'''
     if old_code in content:
         content = content.replace(old_code, new_code, 1)
-        print("OK: setresuid")
+        print("OK: setresuid APRÈS bool ruid_new")
     else:
         old_code2 = '''	kuid_t kruid, keuid, ksuid;'''
         new_code2 = '''	kuid_t kruid, keuid, ksuid;
@@ -84,7 +81,7 @@ extern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);
 #endif'''
         if old_code2 in content:
             content = content.replace(old_code2, new_code2, 1)
-            print("OK: setresuid (alt)")
+            print("OK: setresuid APRÈS kuid_t")
         else:
             print("ERREUR: pattern non trouvé")
 with open('kernel/sys.c', 'w') as f:
@@ -109,9 +106,6 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 {
   echo "CONFIG_KSU=y"
-  echo "CONFIG_KSU_TAMPER_SYSCALL_TABLE=y"
-  echo "CONFIG_KALLSYMS=y"
-  echo "CONFIG_KALLSYMS_ALL=y"
   echo "CONFIG_KPROBES=y"
   echo "CONFIG_HAVE_KPROBES=y"
   echo "CONFIG_KPROBE_EVENTS=y"
@@ -133,17 +127,9 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-echo "=== Patch signatures + tactile (APRÈS restauration msm_drv.c) ==="
+echo "=== Patch signatures + tactile ==="
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
-
-# Vérifier que le patch tactile est bien appliqué
-if grep -q "motorola_panel_notifier_list" techpack/display/msm/msm_drv.c; then
-  echo "OK: patch tactile appliqué et vérifié"
-else
-  echo "ERREUR: patch tactile non appliqué !"
-  exit 1
-fi
 
 echo "=== Compilation finale ==="
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image 2>&1 | tee build.log
@@ -165,7 +151,6 @@ curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260809/bo
 curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260809/dtbo.img" 2>/dev/null || true
 
 if [ -f "boot-stock.img" ]; then
-  echo "=== Repack avec magiskboot + ksud ==="
   mkdir -p repack
   cp boot-stock.img repack/boot.img
   wget -q https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk -O Magisk-v27.0.apk
@@ -177,16 +162,21 @@ if [ -f "boot-stock.img" ]; then
   ./magiskboot unpack boot.img
   cp $GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image kernel
   
-  # Ajouter ksud dans le ramdisk
+  # === AJOUT DE KSUD DANS LE RAMDISK ===
   if [ -f "$GITHUB_WORKSPACE/ksud" ]; then
-    cp $GITHUB_WORKSPACE/ksud ramdisk/ksud 2>/dev/null || {
-      cp $GITHUB_WORKSPACE/ksud ./ksud 2>/dev/null || true
+    mkdir -p ramdisk/data/adb/ksud 2>/dev/null || true
+    cp $GITHUB_WORKSPACE/ksud ramdisk/data/adb/ksud/ksud 2>/dev/null || {
+      cp $GITHUB_WORKSPACE/ksud ramdisk/ksud 2>/dev/null || true
     }
     chmod 755 ramdisk/ksud 2>/dev/null || true
+    chmod 755 ramdisk/data/adb/ksud/ksud 2>/dev/null || true
     echo "OK: ksud ajouté au boot.img"
+    ls -la ramdisk/ | grep ksud || true
+    ls -la ramdisk/data/adb/ksud/ 2>/dev/null || true
   else
     echo "ATTENTION: ksud non trouvé dans le workspace"
   fi
+  # === FIN AJOUT KSUD ===
   
   ./magiskboot repack boot.img new-boot.img
   mv new-boot.img ../final_boot.img
