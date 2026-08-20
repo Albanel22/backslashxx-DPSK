@@ -19,23 +19,29 @@ cd kernel_sources
 echo "=== Intégration Backslashxx (clone dans drivers/kernelsu) ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu || true
 
-# Cloner le repo dans drivers/kernelsu
-git clone --depth=1 https://github.com/backslashxx/KernelSU.git drivers/kernelsu
+# Clone sparse : seul le dossier kernel/ du repo nous intéresse (driver C),
+# on évite de récupérer le manager Kotlin, le site web, le code Rust, etc.
+git clone --depth=1 --filter=blob:none --sparse https://github.com/backslashxx/KernelSU.git backslashxx-src
+cd backslashxx-src
+git sparse-checkout set kernel
+cd ..
+mkdir -p drivers/kernelsu
+cp -r backslashxx-src/kernel/* drivers/kernelsu/
+rm -rf backslashxx-src
 
-echo "=== Structure du repo Backslashxx ==="
+echo "=== Structure récupérée ==="
 ls -la drivers/kernelsu/
-ls -la drivers/kernelsu/kernel/ 2>/dev/null | head -20
 
-# Ajouter dans drivers/Kconfig (chemin CORRECT : kernel/Kconfig)
+# Ajouter dans drivers/Kconfig
 if ! grep -q "kernelsu" drivers/Kconfig; then
-  echo 'source "drivers/kernelsu/kernel/Kconfig"' >> drivers/Kconfig
-  echo "OK: Kconfig modifié (kernel/Kconfig)"
+  echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
+  echo "OK: Kconfig modifié"
 fi
 
-# Ajouter dans drivers/Makefile (chemin CORRECT : kernel/)
+# Ajouter dans drivers/Makefile
 if ! grep -q "kernelsu" drivers/Makefile; then
-  echo 'obj-$(CONFIG_KSU) += kernelsu/kernel/' >> drivers/Makefile
-  echo "OK: Makefile modifié (kernel/)"
+  echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
+  echo "OK: Makefile modifié"
 fi
 
 echo "=== Configuration ==="
@@ -46,9 +52,16 @@ export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
 mkdir -p out
 CONFIG=$(find arch/arm64/configs/ -name "*kiev*" -o -name "*lito*" -o -name "*sm8250*" | head -1)
+
+if [ -z "$CONFIG" ]; then
+  echo "❌ Aucun defconfig trouvé (kiev/lito/sm8250) dans arch/arm64/configs/"
+  exit 1
+fi
+
 CONFIG_NAME=$(basename "$CONFIG")
-cp "$CONFIG" arch/arm64/configs/$CONFIG_NAME
-echo "Config utilisée: $CONFIG"
+echo "Config utilisée: $CONFIG_NAME"
+# Pas besoin de copier le fichier : il est déjà dans arch/arm64/configs/,
+# le faire causait une erreur fatale (source == destination).
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 $CONFIG_NAME
 
