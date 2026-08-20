@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "=== Début du build Backslashxx KernelSU + SusFS (final v8 - hook CORRECT) ==="
+echo "=== Début du build Backslashxx KernelSU + SusFS (final v9 - hook DANS do_execveat_common) ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -20,7 +20,7 @@ echo "=== Intégration Backslashxx KernelSU ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu || true
 curl -LSs "https://raw.githubusercontent.com/backslashxx/KernelSU/master/kernel/setup.sh" | bash
 
-echo "=== Injection du hook execveat dans do_execveat_common ==="
+echo "=== Injection du hook execveat DANS do_execveat_common ==="
 python3 << 'PYEOF'
 import re
 with open('fs/exec.c', 'r') as f:
@@ -34,40 +34,42 @@ extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *ar
 			void *envp, int *flags);
 #endif
 '''
-    pattern = r'(static int do_execveat_common\()'
+    pattern = r'(static int do_execveat_common\(int fd, struct filename \*filename,)'
     content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
     print("OK: déclaration extern ajoutée")
 
-# 2. Ajouter l'appel APRÈS les déclarations dans do_execveat_common
-# Chercher le pattern exact : après les déclarations de variables, avant le return
-old_code = '''	struct user_arg_ptr argv = { .ptr.native = __argv };
-	struct user_arg_ptr envp = { .ptr.native = __envp };
-	return do_execveat_common(AT_FDCWD, filename, argv, envp, 0);'''
+# 2. Injecter l'appel DANS do_execveat_common - AVANT le return
+old_code = '''static int do_execveat_common(int fd, struct filename *filename,
+			      struct user_arg_ptr argv,
+			      struct user_arg_ptr envp,
+			      int flags)
+{
+	return __do_execve_file(fd, filename, argv, envp, flags, NULL);
+}'''
 
-new_code = '''	struct user_arg_ptr argv = { .ptr.native = __argv };
-	struct user_arg_ptr envp = { .ptr.native = __envp };
+new_code = '''static int do_execveat_common(int fd, struct filename *filename,
+			      struct user_arg_ptr argv,
+			      struct user_arg_ptr envp,
+			      int flags)
+{
 #ifdef CONFIG_KSU
-	ksu_handle_execveat((int *)AT_FDCWD, &filename, &argv, &envp, 0);
+	ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
 #endif
-	return do_execveat_common(AT_FDCWD, filename, argv, envp, 0);'''
+	return __do_execve_file(fd, filename, argv, envp, flags, NULL);
+}'''
 
 if old_code in content:
     content = content.replace(old_code, new_code, 1)
-    print("OK: appel execveat injecté dans do_execve")
+    print("OK: hook injecté DANS do_execveat_common")
 else:
-    # Alternative : injecter directement dans do_execveat_common
-    # Chercher après les déclarations de variables locales
-    pattern2 = r'(static int do_execveat_common\(int fd, struct filename \*filename,\n\t\t\t      struct user_arg_ptr argv,\n\t\t\t      struct user_arg_ptr envp,\n\t\t\t      int flags\)\n\{)'
-    replacement2 = r'\1\n#ifdef CONFIG_KSU\n\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n#endif'
-    content = re.sub(pattern2, replacement2, content, count=1)
-    print("OK: appel execveat injecté dans do_execveat_common")
+    print("ERREUR: pattern exact non trouvé")
 
 with open('fs/exec.c', 'w') as f:
     f.write(content)
 PYEOF
 
-echo "=== Vérification du hook execveat ==="
-grep -c "ksu_handle_execveat" fs/exec.c
+echo "=== Vérification du hook ==="
+grep -n "ksu_handle_execveat" fs/exec.c
 
 echo "=== Téléchargement du repo JackA1ltman ==="
 git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git /tmp/jack_repo 2>/dev/null || true
@@ -159,8 +161,6 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 {
   echo "CONFIG_KSU=y"
-  echo "CONFIG_SECCOMP=y"
-  echo "CONFIG_SECCOMP_FILTER=y"
   echo "CONFIG_KPROBES=y"
   echo "CONFIG_HAVE_KPROBES=y"
   echo "CONFIG_KPROBE_EVENTS=y"
