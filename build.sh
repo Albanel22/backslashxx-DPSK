@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "=== Début du build Backslashxx KernelSU + SusFS (v12 - KSU_TAMPER_SYSCALL_TABLE) ==="
+echo "=== Début du build Backslashxx KernelSU + SusFS (v14 - tactile garanti) ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -36,9 +36,9 @@ else
   find /tmp/jack_repo/Patches -name "*.patch" | head -20
 fi
 
-echo "=== Restauration des fichiers incompatibles SusFS ==="
-git checkout fs/read_write.c lib/xarray.c security/selinux/hooks.c fs/devpts/inode.c 2>/dev/null || true
-echo "OK: fichiers restaurés"
+echo "=== Restauration des fichiers incompatibles SusFS (y compris msm_drv.c) ==="
+git checkout fs/read_write.c lib/xarray.c security/selinux/hooks.c fs/devpts/inode.c techpack/display/msm/msm_drv.c 2>/dev/null || true
+echo "OK: fichiers restaurés (y compris msm_drv.c pour le tactile)"
 
 echo "=== Vérification des .rej ==="
 find . -name "*.rej" -type f | while read rej; do
@@ -133,12 +133,17 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-echo "=== Vérification des configs KSU ==="
-grep "CONFIG_KSU" out/.config | head -10
-
-echo "=== Patch signatures + tactile ==="
+echo "=== Patch signatures + tactile (APRÈS restauration msm_drv.c) ==="
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
+
+# Vérifier que le patch tactile est bien appliqué
+if grep -q "motorola_panel_notifier_list" techpack/display/msm/msm_drv.c; then
+  echo "OK: patch tactile appliqué et vérifié"
+else
+  echo "ERREUR: patch tactile non appliqué !"
+  exit 1
+fi
 
 echo "=== Compilation finale ==="
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image 2>&1 | tee build.log
@@ -160,6 +165,7 @@ curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260809/bo
 curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260809/dtbo.img" 2>/dev/null || true
 
 if [ -f "boot-stock.img" ]; then
+  echo "=== Repack avec magiskboot + ksud ==="
   mkdir -p repack
   cp boot-stock.img repack/boot.img
   wget -q https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk -O Magisk-v27.0.apk
@@ -170,6 +176,18 @@ if [ -f "boot-stock.img" ]; then
   cd repack
   ./magiskboot unpack boot.img
   cp $GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image kernel
+  
+  # Ajouter ksud dans le ramdisk
+  if [ -f "$GITHUB_WORKSPACE/ksud" ]; then
+    cp $GITHUB_WORKSPACE/ksud ramdisk/ksud 2>/dev/null || {
+      cp $GITHUB_WORKSPACE/ksud ./ksud 2>/dev/null || true
+    }
+    chmod 755 ramdisk/ksud 2>/dev/null || true
+    echo "OK: ksud ajouté au boot.img"
+  else
+    echo "ATTENTION: ksud non trouvé dans le workspace"
+  fi
+  
   ./magiskboot repack boot.img new-boot.img
   mv new-boot.img ../final_boot.img
   cd ..
