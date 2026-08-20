@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "=== Début du build Backslashxx KernelSU + SusFS (final v9 - hook DANS do_execveat_common) ==="
+echo "=== Début du build Backslashxx KernelSU + SusFS (final v10 - KSU_HACK_ARM64_BRANCH_LINK) ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -26,7 +26,6 @@ import re
 with open('fs/exec.c', 'r') as f:
     content = f.read()
 
-# 1. Ajouter la déclaration extern AVANT do_execveat_common
 if 'extern int ksu_handle_execveat' not in content:
     extern_decl = '''
 #ifdef CONFIG_KSU
@@ -38,7 +37,6 @@ extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *ar
     content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
     print("OK: déclaration extern ajoutée")
 
-# 2. Injecter l'appel DANS do_execveat_common - AVANT le return
 old_code = '''static int do_execveat_common(int fd, struct filename *filename,
 			      struct user_arg_ptr argv,
 			      struct user_arg_ptr envp,
@@ -96,17 +94,14 @@ done
 
 echo "=== Corrections post-patch ==="
 
-# 1. Supprimer la variable vma non utilisée (ligne 1617)
 sed -i '1617d' fs/proc/task_mmu.c 2>/dev/null || true
 echo "OK: task_mmu.c corrigé"
 
-# 2. Ajouter l'include susfs_def.h dans namespace.c
 if ! grep -q "susfs_def.h" fs/namespace.c; then
   sed -i '/#include <linux\/sched\/task.h>/a #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n#include <linux/susfs_def.h>\n#endif\n\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nextern bool susfs_is_current_ksu_domain(void);\nextern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n#define CL_COPY_MNT_NS BIT(25)\n#endif' fs/namespace.c
   echo "OK: include namespace.c ajouté"
 fi
 
-# 3. Ajouter ksu_handle_setresuid APRÈS bool ruid_new
 if ! grep -q "ksu_handle_setresuid" kernel/sys.c; then
   cat > /tmp/hook_setresuid.py << 'PYEOF'
 import re
@@ -127,7 +122,7 @@ extern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);
 #endif'''
     if old_code in content:
         content = content.replace(old_code, new_code, 1)
-        print("OK: setresuid APRÈS bool ruid_new")
+        print("OK: setresuid")
     else:
         old_code2 = '''	kuid_t kruid, keuid, ksuid;'''
         new_code2 = '''	kuid_t kruid, keuid, ksuid;
@@ -136,7 +131,7 @@ extern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);
 #endif'''
         if old_code2 in content:
             content = content.replace(old_code2, new_code2, 1)
-            print("OK: setresuid APRÈS kuid_t")
+            print("OK: setresuid (alt)")
         else:
             print("ERREUR: pattern non trouvé")
 with open('kernel/sys.c', 'w') as f:
@@ -161,6 +156,9 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 {
   echo "CONFIG_KSU=y"
+  echo "CONFIG_KSU_HACK_ARM64_BRANCH_LINK=y"
+  echo "CONFIG_KALLSYMS=y"
+  echo "CONFIG_KALLSYMS_ALL=y"
   echo "CONFIG_KPROBES=y"
   echo "CONFIG_HAVE_KPROBES=y"
   echo "CONFIG_KPROBE_EVENTS=y"
@@ -181,6 +179,9 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 } >> out/.config
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
+
+echo "=== Vérification des configs KSU ==="
+grep "CONFIG_KSU" out/.config | head -10
 
 echo "=== Patch signatures + tactile ==="
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
