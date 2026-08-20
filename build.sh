@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "=== Début du build Backslashxx KernelSU + SusFS (final v6) ==="
+echo "=== Début du build Backslashxx KernelSU + SusFS (final v7) ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -20,11 +20,38 @@ echo "=== Intégration Backslashxx KernelSU ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu || true
 curl -LSs "https://raw.githubusercontent.com/backslashxx/KernelSU/master/kernel/setup.sh" | bash
 
-echo "=== Téléchargement et exécution du script vfs_hook_patches.sh (Backslashxx officiel) ==="
+echo "=== Téléchargement et exécution du script vfs_hook_patches.sh ==="
 curl -LSs "https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Patches/op_kernel/vfs_hook_patches.sh" -o vfs_hook_patches.sh
 chmod +x vfs_hook_patches.sh
 bash vfs_hook_patches.sh 2>&1 | tee /tmp/vfs_hooks.log || true
 echo "Script vfs_hook_patches.sh exécuté"
+
+echo "=== Correction des déclarations manquantes dans exec.c ==="
+python3 << 'PYEOF'
+import re
+with open('fs/exec.c', 'r') as f:
+    content = f.read()
+
+# Vérifier si les déclarations existent déjà
+if 'extern bool ksu_execveat_hook' not in content:
+    declarations = '''
+extern bool ksu_execveat_hook __read_mostly;
+extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,
+			void *envp, int *flags);
+extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
+				 void *argv, void *envp, int *flags);
+'''
+    # Ajouter les déclarations après le premier #ifdef CONFIG_KSU
+    pattern = r'(#ifdef CONFIG_KSU\n)'
+    replacement = r'\1' + declarations
+    content = re.sub(pattern, replacement, content, count=1)
+    
+    with open('fs/exec.c', 'w') as f:
+        f.write(content)
+    print("OK: déclarations ajoutées dans exec.c")
+else:
+    print("OK: déclarations déjà présentes")
+PYEOF
 
 echo "=== Vérification des hooks ==="
 for f in fs/exec.c fs/open.c fs/read_write.c fs/stat.c drivers/input/input.c drivers/tty/pty.c; do
@@ -55,6 +82,31 @@ echo "OK: fichiers restaurés"
 echo "=== Réinjection des hooks Backslashxx APRÈS restauration ==="
 bash vfs_hook_patches.sh 2>&1 | tee /tmp/vfs_hooks2.log || true
 echo "Hooks réinjectés"
+
+echo "=== Correction des déclarations manquantes APRÈS réinjection ==="
+python3 << 'PYEOF'
+import re
+with open('fs/exec.c', 'r') as f:
+    content = f.read()
+
+if 'extern bool ksu_execveat_hook' not in content:
+    declarations = '''
+extern bool ksu_execveat_hook __read_mostly;
+extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,
+			void *envp, int *flags);
+extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
+				 void *argv, void *envp, int *flags);
+'''
+    pattern = r'(#ifdef CONFIG_KSU\n)'
+    replacement = r'\1' + declarations
+    content = re.sub(pattern, replacement, content, count=1)
+    
+    with open('fs/exec.c', 'w') as f:
+        f.write(content)
+    print("OK: déclarations ajoutées APRÈS réinjection")
+else:
+    print("OK: déclarations déjà présentes")
+PYEOF
 
 echo "=== Vérification des .rej ==="
 find . -name "*.rej" -type f | while read rej; do
