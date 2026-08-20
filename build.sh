@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "=== Début du build Backslashxx KernelSU (intégration CORRECTE) ==="
+echo "=== Début du build Backslashxx KernelSU (intégration CORRECTE v2) ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -16,22 +16,26 @@ echo "=== Clonage du kernel ==="
 git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git -b lineage-23.2 --depth=1 kernel_sources
 cd kernel_sources
 
-echo "=== Intégration Backslashxx (méthode CORRECTE - clone dans drivers/kernelsu) ==="
+echo "=== Intégration Backslashxx (clone dans drivers/kernelsu) ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu || true
 
 # Cloner le repo dans drivers/kernelsu
 git clone --depth=1 https://github.com/backslashxx/KernelSU.git drivers/kernelsu
 
-# Ajouter dans drivers/Kconfig
+echo "=== Structure du repo Backslashxx ==="
+ls -la drivers/kernelsu/
+ls -la drivers/kernelsu/kernel/ 2>/dev/null | head -20
+
+# Ajouter dans drivers/Kconfig (chemin CORRECT : kernel/Kconfig)
 if ! grep -q "kernelsu" drivers/Kconfig; then
-  echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
-  echo "OK: Kconfig modifié"
+  echo 'source "drivers/kernelsu/kernel/Kconfig"' >> drivers/Kconfig
+  echo "OK: Kconfig modifié (kernel/Kconfig)"
 fi
 
-# Ajouter dans drivers/Makefile
+# Ajouter dans drivers/Makefile (chemin CORRECT : kernel/)
 if ! grep -q "kernelsu" drivers/Makefile; then
-  echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
-  echo "OK: Makefile modifié"
+  echo 'obj-$(CONFIG_KSU) += kernelsu/kernel/' >> drivers/Makefile
+  echo "OK: Makefile modifié (kernel/)"
 fi
 
 echo "=== Configuration ==="
