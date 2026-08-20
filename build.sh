@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "=== Début du build Backslashxx KernelSU + SusFS ==="
+echo "=== Début du build Backslashxx KernelSU + SusFS (v8 original) ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -161,23 +161,6 @@ if [ -f "boot-stock.img" ]; then
   cd repack
   ./magiskboot unpack boot.img
   cp $GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image kernel
-  
-  # === AJOUT DE KSUD DANS LE RAMDISK ===
-  if [ -f "$GITHUB_WORKSPACE/ksud" ]; then
-    mkdir -p ramdisk/data/adb/ksud 2>/dev/null || true
-    cp $GITHUB_WORKSPACE/ksud ramdisk/data/adb/ksud/ksud 2>/dev/null || {
-      cp $GITHUB_WORKSPACE/ksud ramdisk/ksud 2>/dev/null || true
-    }
-    chmod 755 ramdisk/ksud 2>/dev/null || true
-    chmod 755 ramdisk/data/adb/ksud/ksud 2>/dev/null || true
-    echo "OK: ksud ajouté au boot.img"
-    ls -la ramdisk/ | grep ksud || true
-    ls -la ramdisk/data/adb/ksud/ 2>/dev/null || true
-  else
-    echo "ATTENTION: ksud non trouvé dans le workspace"
-  fi
-  # === FIN AJOUT KSUD ===
-  
   ./magiskboot repack boot.img new-boot.img
   mv new-boot.img ../final_boot.img
   cd ..
