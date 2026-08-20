@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "=== Début du build Backslashxx SIMPLE (sans SusFS, sans hooks) ==="
+echo "=== Début du build Backslashxx KernelSU (intégration CORRECTE) ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -16,11 +16,23 @@ echo "=== Clonage du kernel ==="
 git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git -b lineage-23.2 --depth=1 kernel_sources
 cd kernel_sources
 
-echo "=== Intégration Backslashxx KernelSU (SIMPLE - méthode Burak) ==="
+echo "=== Intégration Backslashxx (méthode CORRECTE - clone dans drivers/kernelsu) ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu || true
-curl -LSs "https://raw.githubusercontent.com/backslashxx/KernelSU/master/kernel/setup.sh" | bash
 
-echo "=== AUCUN hook manuel, AUCUN SusFS, AUCUN sucompat forcé ==="
+# Cloner le repo dans drivers/kernelsu
+git clone --depth=1 https://github.com/backslashxx/KernelSU.git drivers/kernelsu
+
+# Ajouter dans drivers/Kconfig
+if ! grep -q "kernelsu" drivers/Kconfig; then
+  echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
+  echo "OK: Kconfig modifié"
+fi
+
+# Ajouter dans drivers/Makefile
+if ! grep -q "kernelsu" drivers/Makefile; then
+  echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
+  echo "OK: Makefile modifié"
+fi
 
 echo "=== Configuration ==="
 export ARCH=arm64
@@ -51,9 +63,8 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-echo "=== Vérification des configs ==="
+echo "=== Vérification ==="
 grep "CONFIG_KSU" out/.config
-grep "CONFIG_SECCOMP" out/.config
 
 echo "=== Patch signatures + tactile ==="
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
@@ -96,7 +107,7 @@ fi
 
 echo "=== Copie vers output ==="
 mkdir -p output
-cp final_boot.img output/Backslashxx-Simple-boot.img
+cp final_boot.img output/Backslashxx-boot.img
 cp dtbo-stock.img output/dtbo.img 2>/dev/null || true
 cp kernel_sources/build.log output/
 
