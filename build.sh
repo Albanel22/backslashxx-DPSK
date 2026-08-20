@@ -58,7 +58,11 @@ if [ -z "$CONFIG" ]; then
   exit 1
 fi
 
-CONFIG_NAME=$(basename "$CONFIG")
+# IMPORTANT : garder le chemin relatif à arch/arm64/configs/, sous-dossier inclus.
+# basename seul casse le build si le defconfig est dans un sous-dossier
+# (ex: arch/arm64/configs/vendor/lito-perf_defconfig -> il faut passer
+# "vendor/lito-perf_defconfig" à make, pas juste "lito-perf_defconfig").
+CONFIG_NAME=${CONFIG#arch/arm64/configs/}
 echo "Config utilisée: $CONFIG_NAME"
 # Pas besoin de copier le fichier : il est déjà dans arch/arm64/configs/,
 # le faire causait une erreur fatale (source == destination).
