@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "=== Début du build Backslashxx KernelSU + SusFS (v8 original) ==="
+echo "=== Début du build Backslashxx SIMPLE (sans SusFS, sans hooks) ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -16,79 +16,11 @@ echo "=== Clonage du kernel ==="
 git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git -b lineage-23.2 --depth=1 kernel_sources
 cd kernel_sources
 
-echo "=== Intégration Backslashxx KernelSU ==="
+echo "=== Intégration Backslashxx KernelSU (SIMPLE - méthode Burak) ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu || true
 curl -LSs "https://raw.githubusercontent.com/backslashxx/KernelSU/master/kernel/setup.sh" | bash
 
-echo "=== Téléchargement du repo JackA1ltman ==="
-git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git /tmp/jack_repo 2>/dev/null || true
-
-echo "=== Application du patch SusFS 4.19 ==="
-PATCH_419=$(find /tmp/jack_repo/Patches -name "*4.19*" -name "*.patch" | head -1)
-if [ -n "$PATCH_419" ]; then
-  echo "Application du patch: $PATCH_419"
-  patch -p1 < "$PATCH_419" 2>&1 | tee /tmp/susfs_patch.log || true
-  echo "Patch appliqué"
-else
-  echo "Recherche des patches..."
-  find /tmp/jack_repo/Patches -name "*.patch" | head -20
-fi
-
-echo "=== Vérification des .rej ==="
-find . -name "*.rej" -type f | while read rej; do
-  echo "REJ: $rej"
-done
-
-echo "=== Corrections post-patch ==="
-
-# 1. Supprimer la variable vma non utilisée (ligne 1617)
-sed -i '1617d' fs/proc/task_mmu.c 2>/dev/null || true
-echo "OK: task_mmu.c corrigé"
-
-# 2. Ajouter l'include susfs_def.h dans namespace.c
-if ! grep -q "susfs_def.h" fs/namespace.c; then
-  sed -i '/#include <linux\/sched\/task.h>/a #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n#include <linux/susfs_def.h>\n#endif\n\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nextern bool susfs_is_current_ksu_domain(void);\nextern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n#define CL_COPY_MNT_NS BIT(25)\n#endif' fs/namespace.c
-  echo "OK: include namespace.c ajouté"
-fi
-
-# 3. Ajouter ksu_handle_setresuid APRÈS bool ruid_new
-if ! grep -q "ksu_handle_setresuid" kernel/sys.c; then
-  cat > /tmp/hook_setresuid.py << 'PYEOF'
-import re
-with open('kernel/sys.c', 'r') as f:
-    content = f.read()
-if 'ksu_handle_setresuid' not in content:
-    extern_decl = '''
-#ifdef CONFIG_KSU_SUSFS
-extern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);
-#endif
-'''
-    pattern = r'(long __sys_setresuid)'
-    content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
-    old_code = '''	bool ruid_new, euid_new, suid_new;'''
-    new_code = '''	bool ruid_new, euid_new, suid_new;
-#ifdef CONFIG_KSU_SUSFS
-	(void)ksu_handle_setresuid(ruid, euid, suid);
-#endif'''
-    if old_code in content:
-        content = content.replace(old_code, new_code, 1)
-        print("OK: setresuid APRÈS bool ruid_new")
-    else:
-        old_code2 = '''	kuid_t kruid, keuid, ksuid;'''
-        new_code2 = '''	kuid_t kruid, keuid, ksuid;
-#ifdef CONFIG_KSU_SUSFS
-	(void)ksu_handle_setresuid(ruid, euid, suid);
-#endif'''
-        if old_code2 in content:
-            content = content.replace(old_code2, new_code2, 1)
-            print("OK: setresuid APRÈS kuid_t")
-        else:
-            print("ERREUR: pattern non trouvé")
-with open('kernel/sys.c', 'w') as f:
-    f.write(content)
-PYEOF
-  python3 /tmp/hook_setresuid.py
-fi
+echo "=== AUCUN hook manuel, AUCUN SusFS, AUCUN sucompat forcé ==="
 
 echo "=== Configuration ==="
 export ARCH=arm64
@@ -106,6 +38,8 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 {
   echo "CONFIG_KSU=y"
+  echo "CONFIG_SECCOMP=y"
+  echo "CONFIG_SECCOMP_FILTER=y"
   echo "CONFIG_KPROBES=y"
   echo "CONFIG_HAVE_KPROBES=y"
   echo "CONFIG_KPROBE_EVENTS=y"
@@ -113,19 +47,13 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
   echo "CONFIG_COMPAT_32BIT_TIME=y"
   echo "# CONFIG_COMPAT_VDSO is not set"
   echo "# CONFIG_VDSO32 is not set"
-  echo "CONFIG_KSU_SUSFS=y"
-  echo "CONFIG_KSU_SUSFS_SUS_PATH=y"
-  echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y"
-  echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y"
-  echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y"
-  echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y"
-  echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y"
-  echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y"
-  echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y"
-  echo "CONFIG_KSU_SUSFS_SUS_MAP=y"
 } >> out/.config
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
+
+echo "=== Vérification des configs ==="
+grep "CONFIG_KSU" out/.config
+grep "CONFIG_SECCOMP" out/.config
 
 echo "=== Patch signatures + tactile ==="
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
@@ -168,7 +96,7 @@ fi
 
 echo "=== Copie vers output ==="
 mkdir -p output
-cp final_boot.img output/Backslashxx-SusFS-boot.img
+cp final_boot.img output/Backslashxx-Simple-boot.img
 cp dtbo-stock.img output/dtbo.img 2>/dev/null || true
 cp kernel_sources/build.log output/
 
