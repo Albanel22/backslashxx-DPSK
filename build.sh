@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "=== Début du build Backslashxx KernelSU + SusFS (final v11 - SANS hook inline, hijacking ARM64) ==="
+echo "=== Début du build Backslashxx KernelSU + SusFS (v12 - KSU_TAMPER_SYSCALL_TABLE) ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -20,7 +20,7 @@ echo "=== Intégration Backslashxx KernelSU ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu || true
 curl -LSs "https://raw.githubusercontent.com/backslashxx/KernelSU/master/kernel/setup.sh" | bash
 
-echo "=== AUCUN hook inline - KSU_HACK_ARM64_BRANCH_LINK gère tout automatiquement ==="
+echo "=== AUCUN hook inline - KSU_TAMPER_SYSCALL_TABLE gère tout ==="
 
 echo "=== Téléchargement du repo JackA1ltman ==="
 git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git /tmp/jack_repo 2>/dev/null || true
@@ -109,7 +109,7 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 {
   echo "CONFIG_KSU=y"
-  echo "CONFIG_KSU_HACK_ARM64_BRANCH_LINK=y"
+  echo "CONFIG_KSU_TAMPER_SYSCALL_TABLE=y"
   echo "CONFIG_KALLSYMS=y"
   echo "CONFIG_KALLSYMS_ALL=y"
   echo "CONFIG_KPROBES=y"
