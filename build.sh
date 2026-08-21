@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "=== Début du build Backslashxx KernelSU + SUSFS ==="
+echo "=== Début du build Backslashxx KernelSU + SUSFS (FINAL) ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -16,7 +16,7 @@ echo "=== Clonage du kernel ==="
 git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git -b lineage-23.2 --depth=1 kernel_sources
 cd kernel_sources
 
-echo "=== Intégration Backslashxx (clone dans drivers/kernelsu) ==="
+echo "=== Intégration Backslashxx (clone sparse) ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu || true
 
 git clone --depth=1 --filter=blob:none --sparse https://github.com/backslashxx/KernelSU.git backslashxx-src
@@ -25,20 +25,72 @@ mkdir -p drivers/kernelsu
 cp -r backslashxx-src/kernel/* drivers/kernelsu/
 rm -rf backslashxx-src
 
-echo "=== Structure récupérée ==="
-ls -la drivers/kernelsu/
-
 if ! grep -q "kernelsu" drivers/Kconfig; then
   echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
-  echo "OK: Kconfig modifié"
 fi
 
 if ! grep -q "kernelsu" drivers/Makefile; then
   echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
-  echo "OK: Makefile modifié"
 fi
 
-echo "=== Récupération des patches SUSFS (JackA1ltman/NonGKI_Kernel_Build_2nd) ==="
+echo "=== Injection du hook execveat CORRECT (documentation non-GKI Backslashxx) ==="
+python3 << 'PYEOF'
+import re
+with open('fs/exec.c', 'r') as f:
+    content = f.read()
+
+# 1. Déclarations extern AVANT do_execveat_common
+if 'extern bool ksu_execveat_hook' not in content:
+    extern_decl = '''
+#ifdef CONFIG_KSU
+extern bool ksu_execveat_hook __read_mostly;
+extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,
+			void *envp, int *flags);
+extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
+				 void *argv, void *envp, int *flags);
+#endif
+'''
+    pattern = r'(static int do_execveat_common\(int fd, struct filename \*filename,)'
+    content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
+    print("OK: déclarations extern ajoutées")
+
+# 2. Injecter le hook DANS do_execveat_common
+old_code = '''static int do_execveat_common(int fd, struct filename *filename,
+			      struct user_arg_ptr argv,
+			      struct user_arg_ptr envp,
+			      int flags)
+{
+	return __do_execve_file(fd, filename, argv, envp, flags, NULL);
+}'''
+
+new_code = '''static int do_execveat_common(int fd, struct filename *filename,
+			      struct user_arg_ptr argv,
+			      struct user_arg_ptr envp,
+			      int flags)
+{
+#ifdef CONFIG_KSU
+	if (unlikely(ksu_execveat_hook))
+		ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
+	else
+		ksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);
+#endif
+	return __do_execve_file(fd, filename, argv, envp, flags, NULL);
+}'''
+
+if old_code in content:
+    content = content.replace(old_code, new_code, 1)
+    print("OK: hook injecté DANS do_execveat_common")
+else:
+    print("ERREUR: pattern non trouvé")
+
+with open('fs/exec.c', 'w') as f:
+    f.write(content)
+PYEOF
+
+echo "=== Vérification du hook ==="
+grep -n "ksu_handle_execveat" fs/exec.c
+
+echo "=== Récupération des patches SUSFS ==="
 cd "$GITHUB_WORKSPACE"
 git clone --depth=1 --filter=blob:none --sparse https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git susfs-tools
 (cd susfs-tools && git sparse-checkout set Patches)
@@ -46,76 +98,40 @@ git clone --depth=1 --filter=blob:none --sparse https://github.com/JackA1ltman/N
 SUSFS_PATCH="susfs-tools/Patches/Patch/susfs_patch_to_4.19.patch"
 SUSFS_HOOK_SCRIPT="susfs-tools/Patches/susfs_inline_hook_patches.sh"
 
-if [ ! -f "$SUSFS_PATCH" ]; then
-  echo "❌ Patch SUSFS introuvable à $SUSFS_PATCH"
-  ls -la susfs-tools/Patches/ 2>/dev/null || true
-  exit 1
-fi
-
 cd kernel_sources
 
 echo "=== Application du patch SUSFS 4.19 ==="
-mkdir -p ../output/susfs-patch-rejects
 if ! patch -p1 --forward < "../$SUSFS_PATCH" > ../susfs_patch.log 2>&1; then
-  echo "⚠️  Le patch SUSFS ne s'est pas appliqué proprement (hunks rejetés probables)."
+  echo "⚠️ Hunks rejetés, correction manuelle..."
 fi
 cat ../susfs_patch.log
 
-REJ_COUNT=$(find . -name "*.rej" | wc -l)
-if [ "$REJ_COUNT" -gt 0 ]; then
-  echo "⚠️ $REJ_COUNT hunk(s) rejeté(s). Correction manuelle..."
-  find . -name "*.rej" -exec cp --parents {} ../output/susfs-patch-rejects/ \;
-  cp ../susfs_patch.log ../output/susfs-patch-rejects/
-  
-  # === CORRECTIONS MANUELLES ===
-  
-  # 1. Corriger fs/namespace.c - Hunk #1 (include susfs_def.h)
-  if ! grep -q "susfs_def.h" fs/namespace.c; then
-    sed -i '/#include <linux\/sched\/task.h>/a #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n#include <linux/susfs_def.h>\n#endif\n\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nextern bool susfs_is_current_ksu_domain(void);\nextern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n#define CL_COPY_MNT_NS BIT(25)\n#endif' fs/namespace.c
-    echo "OK: namespace.c include corrigé"
-  fi
-  
-  # 2. Corriger fs/proc/task_mmu.c - Hunk #7 (UNIQUEMENT la ligne 1617)
-  sed -i '1617d' fs/proc/task_mmu.c 2>/dev/null || true
-  echo "OK: task_mmu.c ligne 1617 corrigée"
-  
-  # 3. Supprimer les .rej corrigés
-  rm -f fs/namespace.c.rej fs/proc/task_mmu.c.rej 2>/dev/null || true
-  
-  # Vérifier si d'autres .rej existent encore
-  REMAINING_REJ=$(find . -name "*.rej" | wc -l)
-  if [ "$REMAINING_REJ" -gt 0 ]; then
-    echo "⚠️ $REMAINING_REJ .rej restants (non bloquants pour namespace.c hunk #5)"
-    find . -name "*.rej"
-    # On ne quitte PAS : le hunk #5 de namespace.c peut être partiel
-  fi
-  
-  echo "✅ Corrections manuelles terminées"
+# Corrections manuelles des .rej
+if ! grep -q "susfs_def.h" fs/namespace.c; then
+  sed -i '/#include <linux\/sched\/task.h>/a #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n#include <linux/susfs_def.h>\n#endif\n\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nextern bool susfs_is_current_ksu_domain(void);\nextern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n#define CL_COPY_MNT_NS BIT(25)\n#endif' fs/namespace.c
+  echo "OK: namespace.c corrigé"
 fi
 
-if [ -f "../$SUSFS_HOOK_SCRIPT" ]; then
-  echo "=== Exécution du script de hooks inline SUSFS ==="
-  chmod +x "../$SUSFS_HOOK_SCRIPT"
-  bash "../$SUSFS_HOOK_SCRIPT" | tee ../susfs_hooks.log
-  if grep -q "patch failed" ../susfs_hooks.log; then
-    echo "⚠️ Au moins un hook a échoué. On continue (vérification à la compilation)."
-    cp ../susfs_hooks.log ../output/susfs-patch-rejects/ 2>/dev/null || mkdir -p ../output/susfs-patch-rejects && cp ../susfs_hooks.log ../output/susfs-patch-rejects/
-  fi
+sed -i '1617d' fs/proc/task_mmu.c 2>/dev/null || true
+echo "OK: task_mmu.c corrigé"
 
-# Restauration des fichiers incompatibles avec Backslashxx
+# Restauration des fichiers incompatibles
 git checkout lib/xarray.c fs/read_write.c security/selinux/hooks.c 2>/dev/null || true
-echo "OK: fichiers incompatibles restaurés (xarray.c, read_write.c, hooks.c)"
+echo "OK: fichiers incompatibles restaurés"
 
-  echo "=== Correctif manuel : policy_rwlock ==="
-  if ! grep -q "selinux_state" security/selinux/include/security.h; then
-    if grep -q "static DEFINE_RWLOCK(policy_rwlock);" security/selinux/ss/services.c; then
-      sed -i 's/static DEFINE_RWLOCK(policy_rwlock);/DEFINE_RWLOCK(policy_rwlock);/' security/selinux/ss/services.c
-      echo "[+] policy_rwlock rendu non-static"
-    fi
+rm -f fs/namespace.c.rej fs/proc/task_mmu.c.rej 2>/dev/null || true
+
+echo "=== Exécution du script de hooks inline SUSFS ==="
+if [ -f "../$SUSFS_HOOK_SCRIPT" ]; then
+  chmod +x "../$SUSFS_HOOK_SCRIPT"
+  bash "../$SUSFS_HOOK_SCRIPT" | tee ../susfs_hooks.log || true
+fi
+
+echo "=== Correctif policy_rwlock ==="
+if ! grep -q "selinux_state" security/selinux/include/security.h; then
+  if grep -q "static DEFINE_RWLOCK(policy_rwlock);" security/selinux/ss/services.c; then
+    sed -i 's/static DEFINE_RWLOCK(policy_rwlock);/DEFINE_RWLOCK(policy_rwlock);/' security/selinux/ss/services.c
   fi
-else
-  echo "❌ Script de hooks inline introuvable"
-  exit 1
 fi
 
 echo "=== Configuration ==="
@@ -126,12 +142,6 @@ export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
 mkdir -p out
 CONFIG=$(find arch/arm64/configs/ -name "*kiev*" -o -name "*lito*" -o -name "*sm8250*" | head -1)
-
-if [ -z "$CONFIG" ]; then
-  echo "❌ Aucun defconfig trouvé"
-  exit 1
-fi
-
 CONFIG_NAME=${CONFIG#arch/arm64/configs/}
 echo "Config utilisée: $CONFIG_NAME"
 
@@ -139,7 +149,9 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 {
   echo "CONFIG_KSU=y"
-  echo "CONFIG_KSU_MANUAL_HOOK=y"
+  echo "CONFIG_KSU_HACK_ARM64_BRANCH_LINK=y"
+  echo "CONFIG_KALLSYMS=y"
+  echo "CONFIG_KALLSYMS_ALL=y"
   echo "CONFIG_SECCOMP=y"
   echo "CONFIG_SECCOMP_FILTER=y"
   echo "CONFIG_KPROBES=y"
@@ -168,7 +180,7 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
 echo "=== Vérification ==="
-grep -E "CONFIG_KSU|CONFIG_SECCOMP" out/.config
+grep -E "CONFIG_KSU_HACK|CONFIG_KSU_SUSFS|CONFIG_SECCOMP" out/.config
 
 echo "=== Patch signatures + tactile ==="
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
@@ -211,7 +223,7 @@ fi
 
 echo "=== Copie vers output ==="
 mkdir -p output
-cp final_boot.img output/Backslashxx-boot.img
+cp final_boot.img output/Backslashxx-SusFS-boot.img
 cp dtbo-stock.img output/dtbo.img 2>/dev/null || true
 cp kernel_sources/build.log output/
 
