@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "=== Début du build Backslashxx KernelSU + SUSFS (FINAL) ==="
+echo "=== Début du build Backslashxx KernelSU + SUSFS (FINAL v2) ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -33,62 +33,7 @@ if ! grep -q "kernelsu" drivers/Makefile; then
   echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
 fi
 
-echo "=== Injection du hook execveat CORRECT (documentation non-GKI Backslashxx) ==="
-python3 << 'PYEOF'
-import re
-with open('fs/exec.c', 'r') as f:
-    content = f.read()
-
-# 1. Déclarations extern AVANT do_execveat_common
-if 'extern bool ksu_execveat_hook' not in content:
-    extern_decl = '''
-#ifdef CONFIG_KSU
-extern bool ksu_execveat_hook __read_mostly;
-extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,
-			void *envp, int *flags);
-extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
-				 void *argv, void *envp, int *flags);
-#endif
-'''
-    pattern = r'(static int do_execveat_common\(int fd, struct filename \*filename,)'
-    content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
-    print("OK: déclarations extern ajoutées")
-
-# 2. Injecter le hook DANS do_execveat_common
-old_code = '''static int do_execveat_common(int fd, struct filename *filename,
-			      struct user_arg_ptr argv,
-			      struct user_arg_ptr envp,
-			      int flags)
-{
-	return __do_execve_file(fd, filename, argv, envp, flags, NULL);
-}'''
-
-new_code = '''static int do_execveat_common(int fd, struct filename *filename,
-			      struct user_arg_ptr argv,
-			      struct user_arg_ptr envp,
-			      int flags)
-{
-#ifdef CONFIG_KSU
-	if (unlikely(ksu_execveat_hook))
-		ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
-	else
-		ksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);
-#endif
-	return __do_execve_file(fd, filename, argv, envp, flags, NULL);
-}'''
-
-if old_code in content:
-    content = content.replace(old_code, new_code, 1)
-    print("OK: hook injecté DANS do_execveat_common")
-else:
-    print("ERREUR: pattern non trouvé")
-
-with open('fs/exec.c', 'w') as f:
-    f.write(content)
-PYEOF
-
-echo "=== Vérification du hook ==="
-grep -n "ksu_handle_execveat" fs/exec.c
+echo "=== AUCUN hook manuel - HACK_ARM64_BRANCH_LINK gère tout ==="
 
 echo "=== Récupération des patches SUSFS ==="
 cd "$GITHUB_WORKSPACE"
@@ -115,9 +60,9 @@ fi
 sed -i '1617d' fs/proc/task_mmu.c 2>/dev/null || true
 echo "OK: task_mmu.c corrigé"
 
-# Restauration des fichiers incompatibles
-git checkout lib/xarray.c fs/read_write.c security/selinux/hooks.c 2>/dev/null || true
-echo "OK: fichiers incompatibles restaurés"
+# Restauration des fichiers incompatibles (y compris fs/exec.c)
+git checkout lib/xarray.c fs/read_write.c security/selinux/hooks.c fs/exec.c 2>/dev/null || true
+echo "OK: fichiers incompatibles restaurés (xarray.c, read_write.c, hooks.c, exec.c)"
 
 rm -f fs/namespace.c.rej fs/proc/task_mmu.c.rej 2>/dev/null || true
 
