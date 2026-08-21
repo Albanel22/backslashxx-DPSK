@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "=== Début du build Backslashxx KernelSU + SusFS + ksud compilé ==="
+echo "=== Début du build Backslashxx KernelSU + SusFS + ksud ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -29,19 +29,24 @@ if [ -n "$PATCH_419" ]; then
   echo "Application du patch: $PATCH_419"
   patch -p1 < "$PATCH_419" 2>&1 | tee /tmp/susfs_patch.log || true
   echo "Patch appliqué"
+else
+  echo "Recherche des patches..."
+  find /tmp/jack_repo/Patches -name "*.patch" | head -20
 fi
 
-echo "=== Application des hooks manuels inline ==="
-HOOK_SCRIPT=$(find /tmp/jack_repo -iname "susfs_inline_hook_patches.sh" | head -1)
-if [ -n "$HOOK_SCRIPT" ]; then
-  bash "$HOOK_SCRIPT" 2>&1 | tee /tmp/inline_hooks.log || true
-fi
+echo "=== Vérification des .rej ==="
+find . -name "*.rej" -type f | while read rej; do
+  echo "REJ: $rej"
+done
 
 echo "=== Corrections post-patch ==="
+
 sed -i '1617d' fs/proc/task_mmu.c 2>/dev/null || true
+echo "OK: task_mmu.c corrigé"
 
 if ! grep -q "susfs_def.h" fs/namespace.c; then
   sed -i '/#include <linux\/sched\/task.h>/a #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n#include <linux/susfs_def.h>\n#endif\n\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nextern bool susfs_is_current_ksu_domain(void);\nextern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n#define CL_COPY_MNT_NS BIT(25)\n#endif' fs/namespace.c
+  echo "OK: include namespace.c ajouté"
 fi
 
 if ! grep -q "ksu_handle_setresuid" kernel/sys.c; then
@@ -64,7 +69,7 @@ extern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);
 #endif'''
     if old_code in content:
         content = content.replace(old_code, new_code, 1)
-        print("OK: setresuid")
+        print("OK: setresuid APRÈS bool ruid_new")
     else:
         old_code2 = '''	kuid_t kruid, keuid, ksuid;'''
         new_code2 = '''	kuid_t kruid, keuid, ksuid;
@@ -73,7 +78,9 @@ extern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);
 #endif'''
         if old_code2 in content:
             content = content.replace(old_code2, new_code2, 1)
-            print("OK: setresuid (alt)")
+            print("OK: setresuid APRÈS kuid_t")
+        else:
+            print("ERREUR: pattern non trouvé")
 with open('kernel/sys.c', 'w') as f:
     f.write(content)
 PYEOF
@@ -96,7 +103,6 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 {
   echo "CONFIG_KSU=y"
-  echo "CONFIG_KSU_MANUAL_HOOK=y"
   echo "CONFIG_KPROBES=y"
   echo "CONFIG_HAVE_KPROBES=y"
   echo "CONFIG_KPROBE_EVENTS=y"
@@ -136,27 +142,20 @@ fi
 
 echo "=== Compilation de ksud (Rust + NDK) ==="
 
-# Installer Rust
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 source "$HOME/.cargo/env"
 
-# Ajouter la cible Android ARM64
 rustup target add aarch64-linux-android
 
-# Télécharger le NDK Android
 cd "$GITHUB_WORKSPACE"
 wget -q https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
 unzip -q android-ndk-r26d-linux.zip
 export ANDROID_NDK_ROOT="$GITHUB_WORKSPACE/android-ndk-r26d"
-
 export AARCH64_CLANG_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
 export AARCH64_CLANG++_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang++"
 export AR_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
 
-# Compiler ksud
 cd kernel_sources/drivers/kernelsu/userspace/ksud 2>/dev/null || {
-  echo "Dossier ksud non trouvé, recherche..."
-  find kernel_sources/drivers/kernelsu -name "Cargo.toml" | head -5
   KSUD_DIR=$(find kernel_sources/drivers/kernelsu -name "Cargo.toml" | xargs dirname | head -1)
   cd "$GITHUB_WORKSPACE/$KSUD_DIR"
 }
@@ -178,15 +177,15 @@ KSUD_BINARY=$(find target/aarch64-linux-android/release -name "ksud" | head -1)
 if [ -n "$KSUD_BINARY" ]; then
   cp "$KSUD_BINARY" "$GITHUB_WORKSPACE/ksud"
   chmod 755 "$GITHUB_WORKSPACE/ksud"
-  echo "OK: ksud compilé : $KSUD_BINARY"
+  echo "OK: ksud compilé"
   ls -lh "$GITHUB_WORKSPACE/ksud"
 else
-  echo "⚠️ ksud non trouvé dans target/aarch64-linux-android/release"
+  echo "⚠️ ksud binaire non trouvé, recherche..."
   find target -name "ksud" 2>/dev/null | head -5
 fi
 
 echo "=== Téléchargement des images stock ==="
-cd "$GITHUB_WORKSPACE"
+cd $GITHUB_WORKSPACE
 curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260809/boot.img" 2>/dev/null || {
   mkbootimg --kernel kernel_sources/out/arch/arm64/boot/Image --ramdisk /dev/null --output final_boot.img --header_version 2 --pagesize 4096 --base 0x00000000 --kernel_offset 0x00008000 --ramdisk_offset 0x01000000 --tags_offset 0x00000100 --cmdline "androidboot.hardware=kiev androidboot.selinux=permissive"
 }
@@ -202,19 +201,21 @@ if [ -f "boot-stock.img" ]; then
   rm -rf Magisk-v27.0.apk lib/
   cd repack
   ./magiskboot unpack boot.img
-  cp "$GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image" kernel
+  cp $GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image kernel
   
-  # === AJOUT DE KSUD COMPILÉ DANS LE RAMDISK ===
   if [ -f "$GITHUB_WORKSPACE/ksud" ]; then
-    mkdir -p ramdisk/data/adb/ksud
-    cp "$GITHUB_WORKSPACE/ksud" ramdisk/data/adb/ksud/ksud
-    chmod 755 ramdisk/data/adb/ksud/ksud
-    echo "OK: ksud compilé ajouté dans ramdisk/data/adb/ksud/"
-    ls -la ramdisk/data/adb/ksud/
+    mkdir -p ramdisk/data/adb/ksud 2>/dev/null || true
+    cp $GITHUB_WORKSPACE/ksud ramdisk/data/adb/ksud/ksud 2>/dev/null || {
+      cp $GITHUB_WORKSPACE/ksud ramdisk/ksud 2>/dev/null || true
+    }
+    chmod 755 ramdisk/ksud 2>/dev/null || true
+    chmod 755 ramdisk/data/adb/ksud/ksud 2>/dev/null || true
+    echo "OK: ksud ajouté au boot.img"
+    ls -la ramdisk/ | grep ksud || true
+    ls -la ramdisk/data/adb/ksud/ 2>/dev/null || true
   else
-    echo "ATTENTION: ksud non disponible pour le ramdisk"
+    echo "ATTENTION: ksud non trouvé dans le workspace"
   fi
-  # === FIN AJOUT KSUD ===
   
   ./magiskboot repack boot.img new-boot.img
   mv new-boot.img ../final_boot.img
