@@ -63,7 +63,7 @@ fi
 echo "=== Application du patch SUSFS 4.19 ==="
 if [ -f "../$SUSFS_PATCH" ]; then
   if ! patch -p1 --forward < "../$SUSFS_PATCH" > ../susfs_patch.log 2>&1; then
-    echo "⚠️ Hunks rejetés"
+    echo "⚠️ Hunks rejetés (pris en charge par les corrections manuelles)"
   fi
   cat ../susfs_patch.log
 else
@@ -72,7 +72,7 @@ else
   exit 1
 fi
 
-# Corrections manuelles
+# Corrections manuelles initiales des includes dans namespace.c
 if ! grep -q "susfs_def.h" fs/namespace.c; then
   sed -i '/#include <linux\/sched\/task.h>/a #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n#include <linux/susfs_def.h>\n#endif\n\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nextern bool susfs_is_current_ksu_domain(void);\nextern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n#define CL_COPY_MNT_NS BIT(25)\n#endif' fs/namespace.c
   echo "OK: namespace.c corrigé"
@@ -85,26 +85,16 @@ echo "OK: task_mmu.c corrigé"
 git checkout lib/xarray.c fs/read_write.c security/selinux/hooks.c 2>/dev/null || true
 echo "OK: fichiers restaurés"
 
-# === AFFICHER LE CONTENU DES .REJ EN TEXTE ===
-if [ -f "fs/namespace.c.rej" ]; then
-  echo "=== CONTENU DE fs/namespace.c.rej ==="
-  cat fs/namespace.c.rej
-  echo "=== FIN ==="
-fi
+rm -f fs/namespace.c.rej fs/proc/task_mmu.c.rej 2>/dev/null || true
 
-if [ -f "fs/proc/task_mmu.c.rej" ]; then
-  echo "=== CONTENU DE fs/proc/task_mmu.c.rej ==="
-  cat fs/proc/task_mmu.c.rej
-  echo "=== FIN ==="
-fi
-
-# === CORRECTION HUNK #5 : vfs_kern_mount ===
+# === CORRECTION ROBUSTE HUNK #5 : vfs_kern_mount ===
 python3 << 'PYEOF'
 import re
 with open('fs/namespace.c', 'r') as f:
     content = f.read()
 
-old_code = '''	mnt = alloc_vfsmnt(name);'''
+# Pattern large pour capturer alloc_vfsmnt(name) indépendamment des retours à la ligne
+old_pattern = r'(mnt\s*=\s*alloc_vfsmnt\s*\(\s*name\s*\)\s*;)'
 new_code = '''#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 	if (static_branch_unlikely(&susfs_is_sdcard_android_data_not_decrypted)) {
 		if (susfs_is_current_ksu_domain()) {
@@ -113,13 +103,13 @@ new_code = '''#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 		}
 	}
 #endif
-	mnt = alloc_vfsmnt(name);
+	\g<1>
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 bypass_orig_flow:
 #endif'''
 
-if old_code in content:
-    content = content.replace(old_code, new_code, 1)
+content, count = re.subn(old_pattern, new_code, content, count=1)
+if count > 0:
     print("OK: vfs_kern_mount corrigé (Hunk #5)")
 else:
     print("ERREUR: pattern vfs_kern_mount non trouvé")
@@ -207,7 +197,6 @@ import re
 with open('fs/proc/task_mmu.c', 'r') as f:
     content = f.read()
 
-# Ajouter la déclaration vma si nécessaire
 if 'struct vm_area_struct *vma;' not in content:
     old_decl = '''	int ret = 0, copied = 0;'''
     new_decl = '''	int ret = 0, copied = 0;
@@ -239,7 +228,7 @@ with open('fs/proc/task_mmu.c', 'w') as f:
     f.write(content)
 PYEOF
 
-# === RESTAURER LE TACTILE AVANT LE PATCH TACTILE ===
+# Restauration propre de msm_drv.c avant d'appliquer le patch tactile
 git checkout techpack/display/msm/msm_drv.c 2>/dev/null || true
 echo "OK: msm_drv.c restauré pour le tactile"
 
@@ -287,10 +276,9 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-echo "=== Patch signatures + tactile ==="
+echo "=== Contournement du contrôle de version strict des modules + patch tactile ==="
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
-
 
 echo "=== Compilation finale ==="
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image 2>&1 | tee build.log
