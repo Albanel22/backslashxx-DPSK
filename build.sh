@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "=== Début du build Backslashxx KernelSU + SUSFS (FINAL v2) ==="
+echo "=== Début du build Backslashxx KernelSU + SUSFS (FINAL v3) ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -33,17 +33,33 @@ if ! grep -q "kernelsu" drivers/Makefile; then
   echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
 fi
 
-echo "=== AUCUN hook manuel - HACK_ARM64_BRANCH_LINK gère tout ==="
-
-echo "=== Récupération des patches SUSFS ==="
+echo "=== Téléchargement des scripts JackA1ltman ==="
 cd "$GITHUB_WORKSPACE"
 git clone --depth=1 --filter=blob:none --sparse https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git susfs-tools
 (cd susfs-tools && git sparse-checkout set Patches)
 
 SUSFS_PATCH="susfs-tools/Patches/Patch/susfs_patch_to_4.19.patch"
-SUSFS_HOOK_SCRIPT="susfs-tools/Patches/susfs_inline_hook_patches.sh"
+SYSCALL_HOOK_SCRIPT="susfs-tools/Patches/syscall_hook_patches.sh"
 
 cd kernel_sources
+
+echo "=== Exécution du script syscall_hook_patches.sh (Backslashxx) ==="
+if [ -f "../$SYSCALL_HOOK_SCRIPT" ]; then
+  chmod +x "../$SYSCALL_HOOK_SCRIPT"
+  bash "../$SYSCALL_HOOK_SCRIPT" | tee ../syscall_hooks.log
+  echo "Script syscall_hook_patches.sh exécuté"
+else
+  echo "❌ syscall_hook_patches.sh introuvable"
+  exit 1
+fi
+
+echo "=== Vérification des hooks Backslashxx ==="
+for f in fs/exec.c fs/open.c fs/read_write.c fs/stat.c kernel/reboot.c kernel/sys.c drivers/input/input.c; do
+  if [ -f "$f" ]; then
+    COUNT=$(grep -c "ksu_handle" "$f" 2>/dev/null || echo "0")
+    echo "$f: $COUNT hooks"
+  fi
+done
 
 echo "=== Application du patch SUSFS 4.19 ==="
 if ! patch -p1 --forward < "../$SUSFS_PATCH" > ../susfs_patch.log 2>&1; then
@@ -60,17 +76,11 @@ fi
 sed -i '1617d' fs/proc/task_mmu.c 2>/dev/null || true
 echo "OK: task_mmu.c corrigé"
 
-# Restauration des fichiers incompatibles (y compris fs/exec.c)
-git checkout lib/xarray.c fs/read_write.c security/selinux/hooks.c fs/exec.c 2>/dev/null || true
-echo "OK: fichiers incompatibles restaurés (xarray.c, read_write.c, hooks.c, exec.c)"
+echo "=== Restauration des fichiers modifiés par le patch SusFS avec symboles absents de Backslashxx ==="
+git checkout lib/xarray.c fs/read_write.c security/selinux/hooks.c 2>/dev/null || true
+echo "OK: lib/xarray.c, fs/read_write.c, security/selinux/hooks.c restaurés"
 
 rm -f fs/namespace.c.rej fs/proc/task_mmu.c.rej 2>/dev/null || true
-
-echo "=== Exécution du script de hooks inline SUSFS ==="
-if [ -f "../$SUSFS_HOOK_SCRIPT" ]; then
-  chmod +x "../$SUSFS_HOOK_SCRIPT"
-  bash "../$SUSFS_HOOK_SCRIPT" | tee ../susfs_hooks.log || true
-fi
 
 echo "=== Correctif policy_rwlock ==="
 if ! grep -q "selinux_state" security/selinux/include/security.h; then
