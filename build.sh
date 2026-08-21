@@ -102,6 +102,10 @@ if [ -f "../$SUSFS_HOOK_SCRIPT" ]; then
     cp ../susfs_hooks.log ../output/susfs-patch-rejects/ 2>/dev/null || mkdir -p ../output/susfs-patch-rejects && cp ../susfs_hooks.log ../output/susfs-patch-rejects/
   fi
 
+# Restauration des fichiers incompatibles avec Backslashxx
+git checkout lib/xarray.c fs/read_write.c security/selinux/hooks.c 2>/dev/null || true
+echo "OK: fichiers incompatibles restaurés (xarray.c, read_write.c, hooks.c)"
+
   echo "=== Correctif manuel : policy_rwlock ==="
   if ! grep -q "selinux_state" security/selinux/include/security.h; then
     if grep -q "static DEFINE_RWLOCK(policy_rwlock);" security/selinux/ss/services.c; then
