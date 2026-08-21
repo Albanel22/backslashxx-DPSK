@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "=== Début du build Backslashxx + SusFS (FINAL - vfs_create_mount) ==="
+echo "=== Début du build Backslashxx KernelSU + SusFS ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -8,219 +8,92 @@ sudo apt-get clean
 sudo sed -i 's/azure.archive.ubuntu.com/archive.ubuntu.com/g' /etc/apt/sources.list 2>/dev/null || true
 
 sudo apt-get update
-sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf-dev libssl-dev libncurses-dev gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi clang llvm lld device-tree-compiler zip unzip curl git python3 mkbootimg patch
+sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf-dev libssl-dev libncurses-dev gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi clang llvm lld device-tree-compiler zip unzip curl git python3 mkbootimg
 
-cd "$GITHUB_WORKSPACE"
+cd $GITHUB_WORKSPACE
 
 echo "=== Clonage du kernel ==="
 git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git -b lineage-23.2 --depth=1 kernel_sources
 cd kernel_sources
 
-echo "=== Nettoyage clean_hook.sh (branche mainline) ==="
-curl -LSs "https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/mainline/Bin/clean_hook.sh" -o clean_hook.sh
-chmod +x clean_hook.sh
-bash clean_hook.sh 2>&1 | tee ../clean_hook.log
-echo "OK: clean_hook.sh exécuté"
-
-echo "=== Intégration Backslashxx (clone sparse) ==="
+echo "=== Intégration Backslashxx KernelSU (mode legacy) ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu || true
+# IMPORTANT: on force le mode "legacy" car les hooks kprobe sont peu fiables
+# sur ce noyau 4.19 fortement patché Motorola/Qualcomm. Sans ce flag, le
+# hook kprobe qui lance ksud au boot peut échouer silencieusement : le
+# driver kernel fonctionne (manager, liste superuser, flash OK) mais
+# ksud ne démarre jamais et aucun binaire su n'est monté nulle part.
+curl -LSs "https://raw.githubusercontent.com/backslashxx/KernelSU/master/kernel/setup.sh" | bash -s legacy
 
-git clone --depth=1 --filter=blob:none --sparse https://github.com/backslashxx/KernelSU.git backslashxx-src
-(cd backslashxx-src && git sparse-checkout set kernel)
-mkdir -p drivers/kernelsu
-cp -r backslashxx-src/kernel/* drivers/kernelsu/
-rm -rf backslashxx-src
+echo "=== Téléchargement du repo JackA1ltman ==="
+git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git /tmp/jack_repo 2>/dev/null || true
 
-if ! grep -q "kernelsu" drivers/Kconfig; then
-  echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
-fi
-
-if ! grep -q "kernelsu" drivers/Makefile; then
-  echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
-fi
-
-echo "=== Téléchargement des scripts JackA1ltman (mainline) ==="
-cd "$GITHUB_WORKSPACE"
-git clone --depth=1 --filter=blob:none --sparse --branch mainline https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git susfs-tools
-(cd susfs-tools && git sparse-checkout set Patches Bin)
-
-SUSFS_PATCH="susfs-tools/Patches/Patch/susfs_patch_to_4.19.patch"
-SYSCALL_HOOK_SCRIPT="susfs-tools/Patches/syscall_hook_patches.sh"
-
-cd kernel_sources
-
-echo "=== Exécution du script syscall_hook_patches.sh ==="
-if [ -f "../$SYSCALL_HOOK_SCRIPT" ]; then
-  chmod +x "../$SYSCALL_HOOK_SCRIPT"
-  bash "../$SYSCALL_HOOK_SCRIPT" | tee ../syscall_hooks.log
-  echo "Script exécuté"
+echo "=== Application du patch SusFS 4.19 ==="
+PATCH_419=$(find /tmp/jack_repo/Patches -name "*4.19*" -name "*.patch" | head -1)
+if [ -n "$PATCH_419" ]; then
+  echo "Application du patch: $PATCH_419"
+  patch -p1 < "$PATCH_419" 2>&1 | tee /tmp/susfs_patch.log || true
+  echo "Patch appliqué"
 else
-  echo "❌ syscall_hook_patches.sh introuvable"
-  find ../susfs-tools -name "*.sh" | head -10
-  exit 1
+  echo "Recherche des patches..."
+  find /tmp/jack_repo/Patches -name "*.patch" | head -20
 fi
 
-echo "=== Application du patch SUSFS 4.19 ==="
-if [ -f "../$SUSFS_PATCH" ]; then
-  if ! patch -p1 --forward < "../$SUSFS_PATCH" > ../susfs_patch.log 2>&1; then
-    echo "⚠️ Hunks rejetés"
-  fi
-  cat ../susfs_patch.log
-else
-  echo "❌ Patch SUSFS introuvable"
-  find ../susfs-tools -name "*4.19*" | head -10
-  exit 1
-fi
+echo "=== Vérification des .rej ==="
+find . -name "*.rej" -type f | while read rej; do
+  echo "REJ: $rej"
+done
 
-# Corrections manuelles
-if ! grep -q "susfs_def.h" fs/namespace.c; then
-  sed -i '/#include <linux\/sched\/task.h>/a #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n#include <linux/susfs_def.h>\n#endif\n\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nextern bool susfs_is_current_ksu_domain(void);\nextern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n#define CL_COPY_MNT_NS BIT(25)\n#endif' fs/namespace.c
-  echo "OK: namespace.c corrigé"
-fi
+echo "=== Corrections post-patch ==="
 
+# 1. Supprimer la variable vma non utilisée (ligne 1617)
 sed -i '1617d' fs/proc/task_mmu.c 2>/dev/null || true
 echo "OK: task_mmu.c corrigé"
 
-# Restauration des fichiers avec symboles absents de Backslashxx
-git checkout lib/xarray.c fs/read_write.c security/selinux/hooks.c 2>/dev/null || true
-echo "OK: fichiers restaurés"
+# 2. Ajouter l'include susfs_def.h dans namespace.c
+if ! grep -q "susfs_def.h" fs/namespace.c; then
+  sed -i '/#include <linux\/sched\/task.h>/a #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n#include <linux/susfs_def.h>\n#endif\n\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nextern bool susfs_is_current_ksu_domain(void);\nextern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n#define CL_COPY_MNT_NS BIT(25)\n#endif' fs/namespace.c
+  echo "OK: include namespace.c ajouté"
+fi
 
-# === CORRECTION Hunk #5 : vfs_create_mount (PAS vfs_kern_mount) ===
-python3 << 'PYEOF'
+# 3. Ajouter ksu_handle_setresuid APRÈS bool ruid_new
+if ! grep -q "ksu_handle_setresuid" kernel/sys.c; then
+  cat > /tmp/hook_setresuid.py << 'PYEOF'
 import re
-with open('fs/namespace.c', 'r') as f:
+with open('kernel/sys.c', 'r') as f:
     content = f.read()
-
-# Vérifier si la fonction susfs_alloc existe déjà
-if 'susfs_alloc_non_unshare_ksu_vfsmnt' not in content:
-    # Ajouter la fonction AVANT alloc_vfsmnt
-    susfs_func = '''
-#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-static struct mount *susfs_alloc_non_unshare_ksu_vfsmnt(const char *name)
-{
-	struct mount *mnt = kmem_cache_zalloc(mnt_cache, GFP_KERNEL);
-	int res;
-
-	if (mnt) {
-		res = ida_alloc_min(&mnt_id_ida, DEFAULT_KSU_MNT_ID, GFP_KERNEL);
-		if (res < 0)
-			goto out_free_cache;
-
-		mnt->mnt_id = res;
-
-		if (name) {
-			mnt->mnt_devname = kstrdup_const(name, GFP_KERNEL_ACCOUNT);
-			if (!mnt->mnt_devname)
-				goto out_free_id;
-		}
-
-#ifdef CONFIG_SMP
-		mnt->mnt_pcp = alloc_percpu(struct mnt_pcp);
-		if (!mnt->mnt_pcp)
-			goto out_free_devname;
-		this_cpu_add(mnt->mnt_pcp->mnt_count, 1);
-#else
-		mnt->mnt_count = 1;
-		mnt->mnt_writers = 0;
+if 'ksu_handle_setresuid' not in content:
+    extern_decl = '''
+#ifdef CONFIG_KSU_SUSFS
+extern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);
 #endif
-
-		INIT_HLIST_NODE(&mnt->mnt_hash);
-		INIT_LIST_HEAD(&mnt->mnt_child);
-		INIT_LIST_HEAD(&mnt->mnt_mounts);
-		INIT_LIST_HEAD(&mnt->mnt_list);
-		INIT_LIST_HEAD(&mnt->mnt_expire);
-		INIT_LIST_HEAD(&mnt->mnt_share);
-		INIT_LIST_HEAD(&mnt->mnt_slave_list);
-		INIT_LIST_HEAD(&mnt->mnt_slave);
-		INIT_HLIST_NODE(&mnt->mnt_mp_list);
-		INIT_LIST_HEAD(&mnt->mnt_umounting);
-		init_fs_pin(&mnt->mnt_umount, drop_mountpoint);
-	}
-	return mnt;
-
-#ifdef CONFIG_SMP
-out_free_devname:
-	kfree_const(mnt->mnt_devname);
-#endif
-out_free_id:
-	mnt_free_id(mnt);
-out_free_cache:
-	kmem_cache_free(mnt_cache, mnt);
-	return NULL;
-}
-#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 '''
-    pattern = r'(static struct mount \*alloc_vfsmnt\(const char \*name\))'
-    content = re.sub(pattern, susfs_func + '\n' + r'\1', content, count=1)
-    print("OK: susfs_alloc_non_unshare_ksu_vfsmnt ajoutée")
-else:
-    print("INFO: susfs_alloc_non_unshare_ksu_vfsmnt déjà présente")
-
-# Chercher dans vfs_create_mount (PAS vfs_kern_mount)
-old_code = '''	mnt = alloc_vfsmnt(fc->source ?: "none");'''
-new_code = '''#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-	if (static_branch_unlikely(&susfs_is_sdcard_android_data_not_decrypted)) {
-		if (susfs_is_current_ksu_domain()) {
-			mnt = susfs_alloc_non_unshare_ksu_vfsmnt(fc->source ?: "none");
-			goto bypass_orig_flow;
-		}
-	}
-#endif
-	mnt = alloc_vfsmnt(fc->source ?: "none");
-#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-bypass_orig_flow:
+    pattern = r'(long __sys_setresuid)'
+    content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
+    old_code = '''	bool ruid_new, euid_new, suid_new;'''
+    new_code = '''	bool ruid_new, euid_new, suid_new;
+#ifdef CONFIG_KSU_SUSFS
+	(void)ksu_handle_setresuid(ruid, euid, suid);
 #endif'''
-
-if old_code in content:
-    content = content.replace(old_code, new_code, 1)
-    print("OK: vfs_create_mount corrigé (Hunk #5 adapté pour API fs_context)")
-else:
-    print("ERREUR: pattern vfs_create_mount non trouvé")
-
-with open('fs/namespace.c', 'w') as f:
+    if old_code in content:
+        content = content.replace(old_code, new_code, 1)
+        print("OK: setresuid APRÈS bool ruid_new")
+    else:
+        old_code2 = '''	kuid_t kruid, keuid, ksuid;'''
+        new_code2 = '''	kuid_t kruid, keuid, ksuid;
+#ifdef CONFIG_KSU_SUSFS
+	(void)ksu_handle_setresuid(ruid, euid, suid);
+#endif'''
+        if old_code2 in content:
+            content = content.replace(old_code2, new_code2, 1)
+            print("OK: setresuid APRÈS kuid_t")
+        else:
+            print("ERREUR: pattern non trouvé")
+with open('kernel/sys.c', 'w') as f:
     f.write(content)
 PYEOF
-
-# === CORRECTION Hunk #7 : pagemap_read SUS_MAP ===
-python3 << 'PYEOF'
-import re
-with open('fs/proc/task_mmu.c', 'r') as f:
-    content = f.read()
-
-if 'struct vm_area_struct *vma;' not in content:
-    old_decl = '''	int ret = 0, copied = 0;'''
-    new_decl = '''	int ret = 0, copied = 0;
-#ifdef CONFIG_KSU_SUSFS_SUS_MAP
-	struct vm_area_struct *vma;
-#endif'''
-    if old_decl in content:
-        content = content.replace(old_decl, new_decl, 1)
-        print("OK: déclaration vma ajoutée")
-
-old_code = '''		ret = walk_page_range(start_vaddr, end, &pagemap_walk);'''
-new_code = '''#ifdef CONFIG_KSU_SUSFS_SUS_MAP
-		vma = find_vma(mm, start_vaddr);
-		if (vma && vma->vm_file && SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))
-			goto bypass_orig_flow;
-#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
-		ret = walk_page_range(start_vaddr, end, &pagemap_walk);
-#ifdef CONFIG_KSU_SUSFS_SUS_MAP
-bypass_orig_flow:
-#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP'''
-
-if old_code in content:
-    content = content.replace(old_code, new_code, 1)
-    print("OK: pagemap_read corrigé (Hunk #7)")
-else:
-    print("INFO: pagemap_read déjà corrigé ou pattern différent")
-
-with open('fs/proc/task_mmu.c', 'w') as f:
-    f.write(content)
-PYEOF
-
-# === RESTAURER LE TACTILE AVANT LE PATCH TACTILE ===
-git checkout techpack/display/msm/msm_drv.c 2>/dev/null || true
-echo "OK: msm_drv.c restauré pour le tactile"
+  python3 /tmp/hook_setresuid.py
+fi
 
 echo "=== Configuration ==="
 export ARCH=arm64
@@ -230,17 +103,14 @@ export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
 mkdir -p out
 CONFIG=$(find arch/arm64/configs/ -name "*kiev*" -o -name "*lito*" -o -name "*sm8250*" | head -1)
-CONFIG_NAME=${CONFIG#arch/arm64/configs/}
-echo "Config utilisée: $CONFIG_NAME"
+CONFIG_NAME=$(basename "$CONFIG")
+cp "$CONFIG" arch/arm64/configs/$CONFIG_NAME
+echo "Config utilisée: $CONFIG"
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 $CONFIG_NAME
 
 {
   echo "CONFIG_KSU=y"
-  echo "CONFIG_KALLSYMS=y"
-  echo "CONFIG_KALLSYMS_ALL=y"
-  echo "CONFIG_SECCOMP=y"
-  echo "CONFIG_SECCOMP_FILTER=y"
   echo "CONFIG_KPROBES=y"
   echo "CONFIG_HAVE_KPROBES=y"
   echo "CONFIG_KPROBE_EVENTS=y"
@@ -251,17 +121,13 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
   echo "CONFIG_KSU_SUSFS=y"
   echo "CONFIG_KSU_SUSFS_SUS_PATH=y"
   echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y"
-  echo "CONFIG_KSU_SUSFS_SUS_MAP=y"
-  echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y"
-  echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y"
   echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y"
-  echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y"
-  echo "CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y"
   echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y"
   echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y"
   echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y"
   echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y"
   echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y"
+  echo "CONFIG_KSU_SUSFS_SUS_MAP=y"
 } >> out/.config
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
@@ -283,7 +149,7 @@ else
 fi
 
 echo "=== Téléchargement des images stock ==="
-cd "$GITHUB_WORKSPACE"
+cd $GITHUB_WORKSPACE
 curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260809/boot.img" 2>/dev/null || {
   mkbootimg --kernel kernel_sources/out/arch/arm64/boot/Image --ramdisk /dev/null --output final_boot.img --header_version 2 --pagesize 4096 --base 0x00000000 --kernel_offset 0x00008000 --ramdisk_offset 0x01000000 --tags_offset 0x00000100 --cmdline "androidboot.hardware=kiev androidboot.selinux=permissive"
 }
@@ -299,7 +165,17 @@ if [ -f "boot-stock.img" ]; then
   rm -rf Magisk-v27.0.apk lib/
   cd repack
   ./magiskboot unpack boot.img
-  cp "$GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image" kernel
+  cp $GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image kernel
+
+  # NOTE: on n'injecte plus manuellement de binaire "ksud" dans le ramdisk.
+  # Avec l'intégration non-GKI via kernel/setup.sh (mode legacy inclus),
+  # ksud est embarqué DANS le driver kernel lui-même (drivers/kernelsu) et
+  # démarré automatiquement au boot par le noyau (ksu_ksud_init), sans
+  # avoir besoin de service init.rc ni de fichier ramdisk séparé.
+  # L'ancienne étape "AJOUT DE KSUD DANS LE RAMDISK" est supprimée : elle
+  # ne faisait rien d'utile ($GITHUB_WORKSPACE/ksud n'existait jamais) et
+  # ne correspond pas au mécanisme réel de cette intégration.
+
   ./magiskboot repack boot.img new-boot.img
   mv new-boot.img ../final_boot.img
   cd ..
