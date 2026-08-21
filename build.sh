@@ -85,7 +85,22 @@ echo "OK: task_mmu.c corrigé"
 git checkout lib/xarray.c fs/read_write.c security/selinux/hooks.c 2>/dev/null || true
 echo "OK: fichiers restaurés"
 
-rm -f fs/namespace.c.rej fs/proc/task_mmu.c.rej 2>/dev/null || true
+# === AFFICHER LE CONTENU DES .REJ EN TEXTE ===
+if [ -f "fs/namespace.c.rej" ]; then
+  echo "=== CONTENU DE fs/namespace.c.rej ==="
+  cat fs/namespace.c.rej
+  echo "=== FIN ==="
+fi
+
+if [ -f "fs/proc/task_mmu.c.rej" ]; then
+  echo "=== CONTENU DE fs/proc/task_mmu.c.rej ==="
+  cat fs/proc/task_mmu.c.rej
+  echo "=== FIN ==="
+fi
+
+# === RESTAURER LE TACTILE AVANT LE PATCH TACTILE ===
+git checkout techpack/display/msm/msm_drv.c 2>/dev/null || true
+echo "OK: msm_drv.c restauré pour le tactile"
 
 echo "=== Configuration ==="
 export ARCH=arm64
