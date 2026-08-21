@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "=== Début du build Backslashxx + SusFS (mainline) ==="
+echo "=== Début du build Backslashxx + SusFS (FINAL - vfs_create_mount) ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -63,7 +63,7 @@ fi
 echo "=== Application du patch SUSFS 4.19 ==="
 if [ -f "../$SUSFS_PATCH" ]; then
   if ! patch -p1 --forward < "../$SUSFS_PATCH" > ../susfs_patch.log 2>&1; then
-    echo "⚠️ Hunks rejetés (pris en charge par les corrections manuelles)"
+    echo "⚠️ Hunks rejetés"
   fi
   cat ../susfs_patch.log
 else
@@ -72,7 +72,7 @@ else
   exit 1
 fi
 
-# Corrections manuelles initiales des includes dans namespace.c
+# Corrections manuelles
 if ! grep -q "susfs_def.h" fs/namespace.c; then
   sed -i '/#include <linux\/sched\/task.h>/a #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n#include <linux/susfs_def.h>\n#endif\n\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nextern bool susfs_is_current_ksu_domain(void);\nextern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n#define CL_COPY_MNT_NS BIT(25)\n#endif' fs/namespace.c
   echo "OK: namespace.c corrigé"
@@ -85,46 +85,15 @@ echo "OK: task_mmu.c corrigé"
 git checkout lib/xarray.c fs/read_write.c security/selinux/hooks.c 2>/dev/null || true
 echo "OK: fichiers restaurés"
 
-rm -f fs/namespace.c.rej fs/proc/task_mmu.c.rej 2>/dev/null || true
-
-# === CORRECTION ROBUSTE HUNK #5 : vfs_kern_mount ===
+# === CORRECTION Hunk #5 : vfs_create_mount (PAS vfs_kern_mount) ===
 python3 << 'PYEOF'
 import re
 with open('fs/namespace.c', 'r') as f:
     content = f.read()
 
-# Pattern large pour capturer alloc_vfsmnt(name) indépendamment des retours à la ligne
-old_pattern = r'(mnt\s*=\s*alloc_vfsmnt\s*\(\s*name\s*\)\s*;)'
-new_code = '''#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-	if (static_branch_unlikely(&susfs_is_sdcard_android_data_not_decrypted)) {
-		if (susfs_is_current_ksu_domain()) {
-			mnt = susfs_alloc_non_unshare_ksu_vfsmnt(name ?:"none");
-			goto bypass_orig_flow;
-		}
-	}
-#endif
-	\g<1>
-#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-bypass_orig_flow:
-#endif'''
-
-content, count = re.subn(old_pattern, new_code, content, count=1)
-if count > 0:
-    print("OK: vfs_kern_mount corrigé (Hunk #5)")
-else:
-    print("ERREUR: pattern vfs_kern_mount non trouvé")
-
-with open('fs/namespace.c', 'w') as f:
-    f.write(content)
-PYEOF
-
-# === AJOUTER susfs_alloc_non_unshare_ksu_vfsmnt ===
-python3 << 'PYEOF'
-import re
-with open('fs/namespace.c', 'r') as f:
-    content = f.read()
-
+# Vérifier si la fonction susfs_alloc existe déjà
 if 'susfs_alloc_non_unshare_ksu_vfsmnt' not in content:
+    # Ajouter la fonction AVANT alloc_vfsmnt
     susfs_func = '''
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 static struct mount *susfs_alloc_non_unshare_ksu_vfsmnt(const char *name)
@@ -183,15 +152,36 @@ out_free_cache:
 '''
     pattern = r'(static struct mount \*alloc_vfsmnt\(const char \*name\))'
     content = re.sub(pattern, susfs_func + '\n' + r'\1', content, count=1)
-    
-    with open('fs/namespace.c', 'w') as f:
-        f.write(content)
     print("OK: susfs_alloc_non_unshare_ksu_vfsmnt ajoutée")
 else:
-    print("OK: susfs_alloc_non_unshare_ksu_vfsmnt déjà présente")
+    print("INFO: susfs_alloc_non_unshare_ksu_vfsmnt déjà présente")
+
+# Chercher dans vfs_create_mount (PAS vfs_kern_mount)
+old_code = '''	mnt = alloc_vfsmnt(fc->source ?: "none");'''
+new_code = '''#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+	if (static_branch_unlikely(&susfs_is_sdcard_android_data_not_decrypted)) {
+		if (susfs_is_current_ksu_domain()) {
+			mnt = susfs_alloc_non_unshare_ksu_vfsmnt(fc->source ?: "none");
+			goto bypass_orig_flow;
+		}
+	}
+#endif
+	mnt = alloc_vfsmnt(fc->source ?: "none");
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+bypass_orig_flow:
+#endif'''
+
+if old_code in content:
+    content = content.replace(old_code, new_code, 1)
+    print("OK: vfs_create_mount corrigé (Hunk #5 adapté pour API fs_context)")
+else:
+    print("ERREUR: pattern vfs_create_mount non trouvé")
+
+with open('fs/namespace.c', 'w') as f:
+    f.write(content)
 PYEOF
 
-# === CORRECTION HUNK #7 : pagemap_read SUS_MAP ===
+# === CORRECTION Hunk #7 : pagemap_read SUS_MAP ===
 python3 << 'PYEOF'
 import re
 with open('fs/proc/task_mmu.c', 'r') as f:
@@ -222,13 +212,13 @@ if old_code in content:
     content = content.replace(old_code, new_code, 1)
     print("OK: pagemap_read corrigé (Hunk #7)")
 else:
-    print("ERREUR: pattern pagemap_read non trouvé")
+    print("INFO: pagemap_read déjà corrigé ou pattern différent")
 
 with open('fs/proc/task_mmu.c', 'w') as f:
     f.write(content)
 PYEOF
 
-# Restauration propre de msm_drv.c avant d'appliquer le patch tactile
+# === RESTAURER LE TACTILE AVANT LE PATCH TACTILE ===
 git checkout techpack/display/msm/msm_drv.c 2>/dev/null || true
 echo "OK: msm_drv.c restauré pour le tactile"
 
@@ -276,7 +266,7 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-echo "=== Contournement du contrôle de version strict des modules + patch tactile ==="
+echo "=== Patch signatures + tactile ==="
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
 
