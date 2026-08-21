@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "=== Début du build Backslashxx KernelSU (intégration CORRECTE v2) ==="
+echo "=== Début du build Backslashxx KernelSU + SUSFS ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -8,9 +8,9 @@ sudo apt-get clean
 sudo sed -i 's/azure.archive.ubuntu.com/archive.ubuntu.com/g' /etc/apt/sources.list 2>/dev/null || true
 
 sudo apt-get update
-sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf-dev libssl-dev libncurses-dev gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi clang llvm lld device-tree-compiler zip unzip curl git python3 mkbootimg
+sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf-dev libssl-dev libncurses-dev gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi clang llvm lld device-tree-compiler zip unzip curl git python3 mkbootimg patch
 
-cd $GITHUB_WORKSPACE
+cd "$GITHUB_WORKSPACE"
 
 echo "=== Clonage du kernel ==="
 git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git -b lineage-23.2 --depth=1 kernel_sources
@@ -19,12 +19,8 @@ cd kernel_sources
 echo "=== Intégration Backslashxx (clone dans drivers/kernelsu) ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu || true
 
-# Clone sparse : seul le dossier kernel/ du repo nous intéresse (driver C),
-# on évite de récupérer le manager Kotlin, le site web, le code Rust, etc.
 git clone --depth=1 --filter=blob:none --sparse https://github.com/backslashxx/KernelSU.git backslashxx-src
-cd backslashxx-src
-git sparse-checkout set kernel
-cd ..
+(cd backslashxx-src && git sparse-checkout set kernel)
 mkdir -p drivers/kernelsu
 cp -r backslashxx-src/kernel/* drivers/kernelsu/
 rm -rf backslashxx-src
@@ -32,16 +28,85 @@ rm -rf backslashxx-src
 echo "=== Structure récupérée ==="
 ls -la drivers/kernelsu/
 
-# Ajouter dans drivers/Kconfig
 if ! grep -q "kernelsu" drivers/Kconfig; then
   echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
   echo "OK: Kconfig modifié"
 fi
 
-# Ajouter dans drivers/Makefile
 if ! grep -q "kernelsu" drivers/Makefile; then
   echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
   echo "OK: Makefile modifié"
+fi
+
+echo "=== Récupération des patches SUSFS (JackA1ltman/NonGKI_Kernel_Build_2nd) ==="
+cd "$GITHUB_WORKSPACE"
+git clone --depth=1 --filter=blob:none --sparse https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git susfs-tools
+(cd susfs-tools && git sparse-checkout set Patches)
+
+SUSFS_PATCH="susfs-tools/Patches/Patch/susfs_patch_to_4.19.patch"
+SUSFS_HOOK_SCRIPT="susfs-tools/Patches/susfs_inline_hook_patches.sh"
+
+if [ ! -f "$SUSFS_PATCH" ]; then
+  echo "❌ Patch SUSFS introuvable à $SUSFS_PATCH"
+  echo "    -> vérifie l'arborescence réelle du repo (elle a pu changer) et corrige le chemin ci-dessus."
+  ls -la susfs-tools/Patches/ 2>/dev/null || true
+  exit 1
+fi
+
+cd kernel_sources
+
+echo "=== Application du patch SUSFS 4.19 ==="
+mkdir -p ../output/susfs-patch-rejects
+if ! patch -p1 --forward < "../$SUSFS_PATCH" > ../susfs_patch.log 2>&1; then
+  echo "⚠️  Le patch SUSFS ne s'est pas appliqué proprement (hunks rejetés probables)."
+fi
+cat ../susfs_patch.log
+
+# Récupère tous les .rej générés par patch pour inspection, où qu'ils soient
+REJ_COUNT=$(find . -name "*.rej" | wc -l)
+if [ "$REJ_COUNT" -gt 0 ]; then
+  echo "❌ $REJ_COUNT hunk(s) rejeté(s). Copie des .rej dans output/susfs-patch-rejects/ pour inspection."
+  find . -name "*.rej" -exec cp --parents {} ../output/susfs-patch-rejects/ \;
+  cp ../susfs_patch.log ../output/susfs-patch-rejects/
+  echo "    -> Résous les conflits manuellement (ton arbre a déjà des patches sur les mêmes fichiers, ex: le patch tactile), puis relance."
+  exit 1
+fi
+echo "✅ Patch SUSFS appliqué sans rejet."
+
+if [ -f "../$SUSFS_HOOK_SCRIPT" ]; then
+  echo "=== Exécution du script de hooks inline SUSFS (sans argument, lit Makefile) ==="
+  chmod +x "../$SUSFS_HOOK_SCRIPT"
+  bash "../$SUSFS_HOOK_SCRIPT" | tee ../susfs_hooks.log
+  if grep -q "patch failed" ../susfs_hooks.log; then
+    echo "❌ Au moins un hook a échoué à s'appliquer (voir 'patch failed' ci-dessus)."
+    cp ../susfs_hooks.log ../output/susfs-patch-rejects/ 2>/dev/null || mkdir -p ../output/susfs-patch-rejects && cp ../susfs_hooks.log ../output/susfs-patch-rejects/
+    exit 1
+  fi
+
+  echo "=== Correctif manuel : policy_rwlock (bug de condition version dans susfs_inline_hook_patches.sh) ==="
+  # Le script upstream ne rend policy_rwlock non-static que si
+  # FIRST_VERSION < 5 ET SECOND_VERSION < 15, ce qui exclut à tort
+  # tous les kernels 4.19.x (19 n'est pas < 15). Sans ce correctif,
+  # KernelSU ne peut pas modifier la policy SELinux à la volée et
+  # l'octroi de root échoue silencieusement (SELinux Enforcing).
+  if ! grep -q "selinux_state" security/selinux/include/security.h; then
+    if grep -q "static DEFINE_RWLOCK(policy_rwlock);" security/selinux/ss/services.c; then
+      sed -i 's/static DEFINE_RWLOCK(policy_rwlock);/DEFINE_RWLOCK(policy_rwlock);/' security/selinux/ss/services.c
+      if grep -q "^DEFINE_RWLOCK(policy_rwlock);" security/selinux/ss/services.c; then
+        echo "[+] policy_rwlock rendu non-static (correctif appliqué)"
+      else
+        echo "❌ Le correctif policy_rwlock n'a pas pris, à vérifier manuellement."
+        exit 1
+      fi
+    else
+      echo "[-] 'static DEFINE_RWLOCK(policy_rwlock);' introuvable — déjà patché ou fichier différent, à vérifier."
+    fi
+  else
+    echo "[-] selinux_state présent : ce kernel n'a pas besoin du correctif policy_rwlock, ignoré."
+  fi
+else
+  echo "❌ Script de hooks inline introuvable à $SUSFS_HOOK_SCRIPT — arrêt (SUSFS serait incomplet sans les hooks manuels)."
+  exit 1
 fi
 
 echo "=== Configuration ==="
@@ -58,21 +123,19 @@ if [ -z "$CONFIG" ]; then
   exit 1
 fi
 
-# IMPORTANT : garder le chemin relatif à arch/arm64/configs/, sous-dossier inclus.
-# basename seul casse le build si le defconfig est dans un sous-dossier
-# (ex: arch/arm64/configs/vendor/lito-perf_defconfig -> il faut passer
-# "vendor/lito-perf_defconfig" à make, pas juste "lito-perf_defconfig").
 CONFIG_NAME=${CONFIG#arch/arm64/configs/}
 echo "Config utilisée: $CONFIG_NAME"
-# Pas besoin de copier le fichier : il est déjà dans arch/arm64/configs/,
-# le faire causait une erreur fatale (source == destination).
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 $CONFIG_NAME
 
 {
   echo "CONFIG_KSU=y"
+  echo "CONFIG_KSU_MANUAL_HOOK=y"
+
+  # --- Seccomp en mode filter ---
   echo "CONFIG_SECCOMP=y"
   echo "CONFIG_SECCOMP_FILTER=y"
+
   echo "CONFIG_KPROBES=y"
   echo "CONFIG_HAVE_KPROBES=y"
   echo "CONFIG_KPROBE_EVENTS=y"
@@ -80,12 +143,31 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
   echo "CONFIG_COMPAT_32BIT_TIME=y"
   echo "# CONFIG_COMPAT_VDSO is not set"
   echo "# CONFIG_VDSO32 is not set"
+
+  # --- SUSFS ---
+  # Jeu d'options standard susfs4ksu pour kernel 4.19 : vérifie-le contre
+  # le Kconfig réellement ajouté par le patch (il peut différer selon la
+  # version exacte du patch tirée du repo).
+  echo "CONFIG_KSU_SUSFS=y"
+  echo "CONFIG_KSU_SUSFS_SUS_PATH=y"
+  echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y"
+  echo "CONFIG_KSU_SUSFS_SUS_MAP=y"
+  echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y"
+  echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y"
+  echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y"
+  echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y"
+  echo "CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y"
+  echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y"
+  echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y"
+  echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y"
+  echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y"
+  echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y"
 } >> out/.config
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
 echo "=== Vérification ==="
-grep "CONFIG_KSU" out/.config
+grep -E "CONFIG_KSU|CONFIG_SECCOMP" out/.config
 
 echo "=== Patch signatures + tactile ==="
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
@@ -104,7 +186,7 @@ else
 fi
 
 echo "=== Téléchargement des images stock ==="
-cd $GITHUB_WORKSPACE
+cd "$GITHUB_WORKSPACE"
 curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260809/boot.img" 2>/dev/null || {
   mkbootimg --kernel kernel_sources/out/arch/arm64/boot/Image --ramdisk /dev/null --output final_boot.img --header_version 2 --pagesize 4096 --base 0x00000000 --kernel_offset 0x00008000 --ramdisk_offset 0x01000000 --tags_offset 0x00000100 --cmdline "androidboot.hardware=kiev androidboot.selinux=permissive"
 }
@@ -120,7 +202,7 @@ if [ -f "boot-stock.img" ]; then
   rm -rf Magisk-v27.0.apk lib/
   cd repack
   ./magiskboot unpack boot.img
-  cp $GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image kernel
+  cp "$GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image" kernel
   ./magiskboot repack boot.img new-boot.img
   mv new-boot.img ../final_boot.img
   cd ..
