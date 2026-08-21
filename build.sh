@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "=== Début du build Backslashxx + SusFS (avec clean_hook.sh) ==="
+echo "=== Début du build Backslashxx + SusFS (mainline) ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -16,10 +16,10 @@ echo "=== Clonage du kernel ==="
 git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git -b lineage-23.2 --depth=1 kernel_sources
 cd kernel_sources
 
-echo "=== Nettoyage clean_hook.sh (au cas où) ==="
-curl -LSs "https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/main/bin/clean_hook.sh" -o clean_hook.sh 2>/dev/null || true
-chmod +x clean_hook.sh 2>/dev/null || true
-bash clean_hook.sh 2>&1 | tee ../clean_hook.log || true
+echo "=== Nettoyage clean_hook.sh (branche mainline) ==="
+curl -LSs "https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/mainline/Bin/clean_hook.sh" -o clean_hook.sh
+chmod +x clean_hook.sh
+bash clean_hook.sh 2>&1 | tee ../clean_hook.log
 echo "OK: clean_hook.sh exécuté"
 
 echo "=== Intégration Backslashxx (clone sparse) ==="
@@ -39,10 +39,10 @@ if ! grep -q "kernelsu" drivers/Makefile; then
   echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
 fi
 
-echo "=== Téléchargement des scripts JackA1ltman ==="
+echo "=== Téléchargement des scripts JackA1ltman (mainline) ==="
 cd "$GITHUB_WORKSPACE"
-git clone --depth=1 --filter=blob:none --sparse https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git susfs-tools
-(cd susfs-tools && git sparse-checkout set Patches)
+git clone --depth=1 --filter=blob:none --sparse --branch mainline https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git susfs-tools
+(cd susfs-tools && git sparse-checkout set Patches Bin)
 
 SUSFS_PATCH="susfs-tools/Patches/Patch/susfs_patch_to_4.19.patch"
 SYSCALL_HOOK_SCRIPT="susfs-tools/Patches/syscall_hook_patches.sh"
@@ -54,22 +54,34 @@ if [ -f "../$SYSCALL_HOOK_SCRIPT" ]; then
   chmod +x "../$SYSCALL_HOOK_SCRIPT"
   bash "../$SYSCALL_HOOK_SCRIPT" | tee ../syscall_hooks.log
   echo "Script exécuté"
+else
+  echo "❌ syscall_hook_patches.sh introuvable"
+  find ../susfs-tools -name "*.sh" | head -10
+  exit 1
 fi
 
 echo "=== Application du patch SUSFS 4.19 ==="
-if ! patch -p1 --forward < "../$SUSFS_PATCH" > ../susfs_patch.log 2>&1; then
-  echo "⚠️ Hunks rejetés"
+if [ -f "../$SUSFS_PATCH" ]; then
+  if ! patch -p1 --forward < "../$SUSFS_PATCH" > ../susfs_patch.log 2>&1; then
+    echo "⚠️ Hunks rejetés"
+  fi
+  cat ../susfs_patch.log
+else
+  echo "❌ Patch SUSFS introuvable"
+  find ../susfs-tools -name "*4.19*" | head -10
+  exit 1
 fi
-cat ../susfs_patch.log
 
 # Corrections manuelles
 if ! grep -q "susfs_def.h" fs/namespace.c; then
   sed -i '/#include <linux\/sched\/task.h>/a #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n#include <linux/susfs_def.h>\n#endif\n\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nextern bool susfs_is_current_ksu_domain(void);\nextern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n#define CL_COPY_MNT_NS BIT(25)\n#endif' fs/namespace.c
+  echo "OK: namespace.c corrigé"
 fi
 
 sed -i '1617d' fs/proc/task_mmu.c 2>/dev/null || true
+echo "OK: task_mmu.c corrigé"
 
-# Restauration des fichiers avec symboles absents
+# Restauration des fichiers avec symboles absents de Backslashxx
 git checkout lib/xarray.c fs/read_write.c security/selinux/hooks.c 2>/dev/null || true
 echo "OK: fichiers restaurés"
 
@@ -90,7 +102,6 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 {
   echo "CONFIG_KSU=y"
-  echo "CONFIG_KSU_HACK_ARM64_BRANCH_LINK=y"
   echo "CONFIG_KALLSYMS=y"
   echo "CONFIG_KALLSYMS_ALL=y"
   echo "CONFIG_SECCOMP=y"
