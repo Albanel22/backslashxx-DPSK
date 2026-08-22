@@ -144,19 +144,23 @@ echo "=== Compilation de ksud (Rust + NDK) ==="
 
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 source "$HOME/.cargo/env"
+
 rustup target add aarch64-linux-android
 
 cd "$GITHUB_WORKSPACE"
 wget -q https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
 unzip -q android-ndk-r26d-linux.zip
+
 export ANDROID_NDK_ROOT="$GITHUB_WORKSPACE/android-ndk-r26d"
 export ANDROID_NDK_HOME="$ANDROID_NDK_ROOT"
-
 export AARCH64_CLANG_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
 export AARCH64_CLANGXX_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang++"
 export AR_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
 
-# Cloner le repo COMPLET (nécessaire pour bindgen -I../../)
+# CORRECTION BINDGEN : utiliser le sysroot Android
+export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot -I$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/aarch64-linux-android"
+
+# Cloner le repo Backslashxx COMPLET pour ksud
 git clone --depth=1 https://github.com/backslashxx/KernelSU.git ksud-src
 cd ksud-src/userspace/ksud
 
@@ -169,6 +173,7 @@ linker = "$AARCH64_CLANG_PATH"
 CC_aarch64_linux_android = "$AARCH64_CLANG_PATH"
 CXX_aarch64_linux_android = "$AARCH64_CLANGXX_PATH"
 AR_aarch64_linux_android = "$AR_PATH"
+BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android = "$BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android"
 EOF
 
 cargo build --release --target aarch64-linux-android
