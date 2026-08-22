@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "=== Début du build Backslashxx KernelSU + SusFS + ksud + sucompat ==="
+echo "=== Début du build Backslashxx + SusFS + ksud + TAMPER_SYSCALL_TABLE ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -30,11 +30,6 @@ if [ -n "$PATCH_419" ]; then
   patch -p1 < "$PATCH_419" 2>&1 | tee /tmp/susfs_patch.log || true
   echo "Patch appliqué"
 fi
-
-echo "=== Vérification des .rej ==="
-find . -name "*.rej" -type f | while read rej; do
-  echo "REJ: $rej"
-done
 
 echo "=== Corrections post-patch ==="
 
@@ -82,21 +77,7 @@ PYEOF
   python3 /tmp/hook_setresuid.py
 fi
 
-echo "=== Application des hooks sucompat (syscall_hook_patches.sh) ==="
-SYSCALL_HOOK=$(find /tmp/jack_repo -name "syscall_hook_patches.sh" | head -1)
-if [ -n "$SYSCALL_HOOK" ]; then
-  bash "$SYSCALL_HOOK" 2>&1 | tee /tmp/syscall_hooks.log || true
-  echo "Hooks sucompat injectés"
-else
-  echo "WARNING: syscall_hook_patches.sh non trouvé, recherche..."
-  find /tmp/jack_repo -name "*.sh" | head -10
-fi
-
-echo "=== Vérification des hooks ==="
-for f in fs/exec.c fs/open.c fs/stat.c kernel/reboot.c kernel/sys.c; do
-  COUNT=$(grep -c "ksu_handle" "$f" 2>/dev/null || echo "0")
-  echo "$f: $COUNT hooks"
-done
+echo "=== PAS de hooks manuels - TAMPER_SYSCALL_TABLE gère tout ==="
 
 echo "=== Configuration ==="
 export ARCH=arm64
@@ -115,6 +96,9 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 {
   echo "CONFIG_KSU=y"
   echo "CONFIG_KSU_MANUAL_HOOK=y"
+  echo "CONFIG_KSU_TAMPER_SYSCALL_TABLE=y"
+  echo "CONFIG_KALLSYMS=y"
+  echo "CONFIG_KALLSYMS_ALL=y"
   echo "CONFIG_KPROBES=y"
   echo "CONFIG_HAVE_KPROBES=y"
   echo "CONFIG_KPROBE_EVENTS=y"
@@ -135,6 +119,9 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 } >> out/.config
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
+
+echo "=== Vérification des configs ==="
+grep -E "CONFIG_KSU|CONFIG_SECCOMP" out/.config
 
 echo "=== Patch signatures + tactile ==="
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
