@@ -144,23 +144,21 @@ echo "=== Compilation de ksud (Rust + NDK) ==="
 
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 source "$HOME/.cargo/env"
-
 rustup target add aarch64-linux-android
 
 cd "$GITHUB_WORKSPACE"
 wget -q https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
 unzip -q android-ndk-r26d-linux.zip
 export ANDROID_NDK_ROOT="$GITHUB_WORKSPACE/android-ndk-r26d"
+export ANDROID_NDK_HOME="$ANDROID_NDK_ROOT"
 
-# CORRECTION : pas de + dans les noms de variables
 export AARCH64_CLANG_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
 export AARCH64_CLANGXX_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang++"
 export AR_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
 
-cd kernel_sources/drivers/kernelsu/userspace/ksud 2>/dev/null || {
-  KSUD_DIR=$(find kernel_sources/drivers/kernelsu -name "Cargo.toml" | xargs dirname | head -1)
-  cd "$GITHUB_WORKSPACE/$KSUD_DIR"
-}
+# Cloner le repo COMPLET (nécessaire pour bindgen -I../../)
+git clone --depth=1 https://github.com/backslashxx/KernelSU.git ksud-src
+cd ksud-src/userspace/ksud
 
 mkdir -p .cargo
 cat > .cargo/config.toml << EOF
@@ -175,15 +173,15 @@ EOF
 
 cargo build --release --target aarch64-linux-android
 
-KSUD_BINARY=$(find target/aarch64-linux-android/release -name "ksud" | head -1)
-if [ -n "$KSUD_BINARY" ]; then
+KSUD_BINARY="$GITHUB_WORKSPACE/ksud-src/userspace/ksud/target/aarch64-linux-android/release/ksud"
+if [ -f "$KSUD_BINARY" ]; then
   cp "$KSUD_BINARY" "$GITHUB_WORKSPACE/ksud"
   chmod 755 "$GITHUB_WORKSPACE/ksud"
   echo "OK: ksud compilé"
   ls -lh "$GITHUB_WORKSPACE/ksud"
 else
-  echo "⚠️ ksud binaire non trouvé, recherche..."
-  find target -name "ksud" 2>/dev/null | head -5
+  echo "⚠️ ksud non trouvé, recherche..."
+  find "$GITHUB_WORKSPACE/ksud-src" -name "ksud" -type f 2>/dev/null | head -5
 fi
 
 echo "=== Téléchargement des images stock ==="
