@@ -151,8 +151,10 @@ cd "$GITHUB_WORKSPACE"
 wget -q https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
 unzip -q android-ndk-r26d-linux.zip
 export ANDROID_NDK_ROOT="$GITHUB_WORKSPACE/android-ndk-r26d"
+
+# CORRECTION : pas de + dans les noms de variables
 export AARCH64_CLANG_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
-export AARCH64_CLANG++_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang++"
+export AARCH64_CLANGXX_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang++"
 export AR_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
 
 cd kernel_sources/drivers/kernelsu/userspace/ksud 2>/dev/null || {
@@ -167,7 +169,7 @@ linker = "$AARCH64_CLANG_PATH"
 
 [env]
 CC_aarch64_linux_android = "$AARCH64_CLANG_PATH"
-CXX_aarch64_linux_android = "$AARCH64_CLANG++_PATH"
+CXX_aarch64_linux_android = "$AARCH64_CLANGXX_PATH"
 AR_aarch64_linux_android = "$AR_PATH"
 EOF
 
