@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "=== Début du build Backslashxx KernelSU + SusFS + ksud ==="
+echo "=== Début du build Backslashxx KernelSU + SusFS + ksud + sucompat ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -29,9 +29,6 @@ if [ -n "$PATCH_419" ]; then
   echo "Application du patch: $PATCH_419"
   patch -p1 < "$PATCH_419" 2>&1 | tee /tmp/susfs_patch.log || true
   echo "Patch appliqué"
-else
-  echo "Recherche des patches..."
-  find /tmp/jack_repo/Patches -name "*.patch" | head -20
 fi
 
 echo "=== Vérification des .rej ==="
@@ -69,7 +66,7 @@ extern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);
 #endif'''
     if old_code in content:
         content = content.replace(old_code, new_code, 1)
-        print("OK: setresuid APRÈS bool ruid_new")
+        print("OK: setresuid")
     else:
         old_code2 = '''	kuid_t kruid, keuid, ksuid;'''
         new_code2 = '''	kuid_t kruid, keuid, ksuid;
@@ -78,14 +75,28 @@ extern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);
 #endif'''
         if old_code2 in content:
             content = content.replace(old_code2, new_code2, 1)
-            print("OK: setresuid APRÈS kuid_t")
-        else:
-            print("ERREUR: pattern non trouvé")
+            print("OK: setresuid (alt)")
 with open('kernel/sys.c', 'w') as f:
     f.write(content)
 PYEOF
   python3 /tmp/hook_setresuid.py
 fi
+
+echo "=== Application des hooks sucompat (syscall_hook_patches.sh) ==="
+SYSCALL_HOOK=$(find /tmp/jack_repo -name "syscall_hook_patches.sh" | head -1)
+if [ -n "$SYSCALL_HOOK" ]; then
+  bash "$SYSCALL_HOOK" 2>&1 | tee /tmp/syscall_hooks.log || true
+  echo "Hooks sucompat injectés"
+else
+  echo "WARNING: syscall_hook_patches.sh non trouvé, recherche..."
+  find /tmp/jack_repo -name "*.sh" | head -10
+fi
+
+echo "=== Vérification des hooks ==="
+for f in fs/exec.c fs/open.c fs/stat.c kernel/reboot.c kernel/sys.c; do
+  COUNT=$(grep -c "ksu_handle" "$f" 2>/dev/null || echo "0")
+  echo "$f: $COUNT hooks"
+done
 
 echo "=== Configuration ==="
 export ARCH=arm64
@@ -103,7 +114,7 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 {
   echo "CONFIG_KSU=y"
-  echo "CONFIG_KSU_MANUAL_HOOK=y"    # ← AJOUTE CECI !
+  echo "CONFIG_KSU_MANUAL_HOOK=y"
   echo "CONFIG_KPROBES=y"
   echo "CONFIG_HAVE_KPROBES=y"
   echo "CONFIG_KPROBE_EVENTS=y"
@@ -145,7 +156,6 @@ echo "=== Compilation de ksud (Rust + NDK) ==="
 
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 source "$HOME/.cargo/env"
-
 rustup target add aarch64-linux-android
 
 cd "$GITHUB_WORKSPACE"
@@ -157,11 +167,8 @@ export ANDROID_NDK_HOME="$ANDROID_NDK_ROOT"
 export AARCH64_CLANG_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
 export AARCH64_CLANGXX_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang++"
 export AR_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
-
-# CORRECTION BINDGEN : utiliser le sysroot Android
 export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot -I$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/aarch64-linux-android"
 
-# Cloner le repo Backslashxx COMPLET pour ksud
 git clone --depth=1 https://github.com/backslashxx/KernelSU.git ksud-src
 cd ksud-src/userspace/ksud
 
@@ -179,14 +186,13 @@ EOF
 
 cargo build --release --target aarch64-linux-android
 
-KSUD_BINARY="$GITHUB_WORKSPACE/ksud-src/userspace/ksud/target/aarch64-linux-android/release/ksud"
+KSUD_BINARY="$GITHUB_WORKSPACE/ksud-src/target/aarch64-linux-android/release/ksud"
 if [ -f "$KSUD_BINARY" ]; then
   cp "$KSUD_BINARY" "$GITHUB_WORKSPACE/ksud"
   chmod 755 "$GITHUB_WORKSPACE/ksud"
   echo "OK: ksud compilé"
-  ls -lh "$GITHUB_WORKSPACE/ksud"
 else
-  echo "⚠️ ksud non trouvé, recherche..."
+  echo "⚠️ Recherche ksud..."
   find "$GITHUB_WORKSPACE/ksud-src" -name "ksud" -type f 2>/dev/null | head -5
 fi
 
@@ -210,17 +216,10 @@ if [ -f "boot-stock.img" ]; then
   cp $GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image kernel
   
   if [ -f "$GITHUB_WORKSPACE/ksud" ]; then
-    mkdir -p ramdisk/data/adb/ksud 2>/dev/null || true
-    cp $GITHUB_WORKSPACE/ksud ramdisk/data/adb/ksud/ksud 2>/dev/null || {
-      cp $GITHUB_WORKSPACE/ksud ramdisk/ksud 2>/dev/null || true
-    }
-    chmod 755 ramdisk/ksud 2>/dev/null || true
-    chmod 755 ramdisk/data/adb/ksud/ksud 2>/dev/null || true
-    echo "OK: ksud ajouté au boot.img"
-    ls -la ramdisk/ | grep ksud || true
-    ls -la ramdisk/data/adb/ksud/ 2>/dev/null || true
-  else
-    echo "ATTENTION: ksud non trouvé dans le workspace"
+    mkdir -p ramdisk/data/adb/ksud
+    cp $GITHUB_WORKSPACE/ksud ramdisk/data/adb/ksud/ksud
+    chmod 755 ramdisk/data/adb/ksud/ksud
+    echo "OK: ksud dans le ramdisk"
   fi
   
   ./magiskboot repack boot.img new-boot.img
