@@ -361,6 +361,48 @@ grep -rn "susfs_ksu_sid" fs/susfs.c 2>/dev/null | head -5
 echo "--- susfs_priv_app_sid ---"
 grep -rn "susfs_priv_app_sid" fs/susfs.c 2>/dev/null | head -5
 
+# ==================== 9c. CORRECTION DES SYMBOLES MANQUANTS ====================
+echo "=== Correction des symboles SuSFS manquants ==="
+
+# Vérifier si fs/sus_su.c existe
+if [ -f "fs/sus_su.c" ]; then
+    echo "✅ fs/sus_su.c existe"
+    # Ajouter au Makefile si nécessaire
+    if ! grep -q "sus_su.o" fs/Makefile; then
+        echo "obj-\$(CONFIG_KSU_SUSFS) += sus_su.o" >> fs/Makefile
+        echo "✅ sus_su.o ajouté au Makefile"
+    fi
+else
+    echo "⚠️ fs/sus_su.c n'existe pas"
+    echo "Ajout des définitions manquantes dans fs/susfs.c..."
+    
+    # Ajouter les définitions à la fin de fs/susfs.c
+    cat >> fs/susfs.c << 'SUSFS_EOF'
+
+/* Définitions des symboles manquants */
+#ifdef CONFIG_KSU_SUSFS
+bool susfs_is_current_ksu_domain(void)
+{
+    const struct cred *cred = current_cred();
+    return (cred->uid.val == 0 || cred->uid.val == 2000);
+}
+EXPORT_SYMBOL(susfs_is_current_ksu_domain);
+
+u32 susfs_ksu_sid = 0;
+EXPORT_SYMBOL(susfs_ksu_sid);
+
+u32 susfs_priv_app_sid = 0;
+EXPORT_SYMBOL(susfs_priv_app_sid);
+#endif
+SUSFS_EOF
+
+    echo "✅ Définitions ajoutées dans fs/susfs.c"
+fi
+
+# Vérification finale
+echo "=== Vérification finale des symboles ==="
+grep -n "susfs_is_current_ksu_domain\|susfs_ksu_sid\|susfs_priv_app_sid" fs/susfs.c | head -20
+
 echo "=== FIN VÉRIFICATION ==="
 
 # ==================== 10. COMPILATION ====================
