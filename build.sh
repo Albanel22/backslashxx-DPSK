@@ -141,7 +141,18 @@ fi
 find . -name "*.rej" -type f -delete 2>/dev/null || true
 find . -name "*.orig" -type f -delete 2>/dev/null || true
 
-echo "✅ Patch SuSFS appliqué"
+# ==================== 5b. CORRECTION TASK_MMU.C (VARIABLE VMA) ====================
+echo "=== Correction task_mmu.c ==="
+
+# La variable vma est déclarée mais non utilisée si SUS_MAP n'est pas activé
+# Solution : ajouter __maybe_unused pour éviter l'erreur de compilation
+if [ -f "fs/proc/task_mmu.c" ]; then
+    # Remplacer la déclaration pour ajouter __maybe_unused
+    sed -i 's/struct vm_area_struct \*vma;/struct vm_area_struct *vma __maybe_unused;/g' fs/proc/task_mmu.c
+    echo "✅ Variable vma corrigée avec __maybe_unused"
+fi
+
+echo "✅ Patch SuSFS appliqué et corrigé"
 
 # ==================== 6. AJOUT DU KCONFIG SUSFS ====================
 echo "=== Ajout du Kconfig SuSFS ==="
