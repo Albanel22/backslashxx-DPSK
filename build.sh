@@ -134,6 +134,19 @@ find . -name "*.rej" -type f | while read -r rej; do
   cat "$rej" 2>/dev/null || true
 done
 
+echo "=== Application du script susfs_inline_hook_patches.sh ==="
+
+HOOK_SCRIPT="/tmp/jack_repo/Patches/susfs_inline_hook_patches.sh"
+
+if [ -f "$HOOK_SCRIPT" ]; then
+  cp "$HOOK_SCRIPT" ./susfs_inline_hook_patches.sh
+  chmod +x ./susfs_inline_hook_patches.sh
+  bash ./susfs_inline_hook_patches.sh 2>&1 | tee /tmp/susfs_hook_script.log
+else
+  echo "❌ susfs_inline_hook_patches.sh introuvable"
+  find /tmp/jack_repo -iname "*.sh"
+fi
+
 echo "=== Corrections manuelles des rejets SusFS ==="
 
 # ---------- Correction fs/namespace.c ----------
@@ -245,11 +258,11 @@ if 'SUSFS_IS_INODE_SUS_MAP' not in content:
 		vma = find_vma(mm, start_vaddr);
 		if (vma && vma->vm_file && SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))
 			goto bypass_orig_flow;
-#endif
+#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
 		ret = walk_page_range(start_vaddr, end, &pagemap_walk);
 #ifdef CONFIG_KSU_SUSFS_SUS_MAP
 bypass_orig_flow:
-#endif
+#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
 		up_read(&mm->mmap_sem);'''
 
     if old in content:
@@ -337,6 +350,10 @@ PYEOF
   python3 /tmp/hook_setresuid.py
 fi
 
+echo "=== Contenu Kconfig KernelSU ==="
+cat drivers/kernelsu/Kconfig
+echo "=== Fin Kconfig KernelSU ==="
+
 echo "=== Configuration ==="
 
 export ARCH=arm64
@@ -389,7 +406,7 @@ make O=out LLVM=1 \
 echo "=== Vérification ==="
 
 grep -E \
-  "CONFIG_KSU=|CONFIG_KSU_MANUAL_HOOK|CONFIG_KPROBES" \
+  "CONFIG_KSU=|CONFIG_KSU_MANUAL_HOOK|CONFIG_KPROBES|CONFIG_KSU_SUSFS" \
   out/.config
 
 echo "=== Patch signatures + tactile ==="
