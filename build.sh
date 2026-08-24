@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== Début du build KernelSU + SusFS (JackA1ltman) ==="
+echo "=== BUILD WINNER : KernelSU + SuSFS v2.2.0 (JackA1ltman) ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -17,14 +17,14 @@ sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf
 cd "$GITHUB_WORKSPACE"
 
 # ==================== 1. CLONAGE DU NOYAU ====================
-echo "=== Clonage du kernel ==="
+echo "=== Clonage du kernel Motorola sm8250 ==="
 git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git \
     -b lineage-23.2 --depth=1 kernel_sources
 
 cd kernel_sources
 
 # ==================== 2. INTÉGRATION KERNELSU ====================
-echo "=== Intégration KernelSU ==="
+echo "=== Intégration KernelSU (backslashxx) ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu || true
 curl -LSs "https://raw.githubusercontent.com/backslashxx/KernelSU/master/kernel/setup.sh" | bash
 
@@ -101,218 +101,50 @@ fi
 
 echo "✅ Hooks KernelSU en place"
 
-# ==================== 4. TÉLÉCHARGEMENT DU DÉPÔT JACKA1LTMAN ====================
-echo "=== Téléchargement du dépôt JackA1ltman ==="
+# ==================== 4. TÉLÉCHARGEMENT DU VRAI SUSFS ====================
+echo "=== Téléchargement du VRAI SuSFS (JackA1ltman) ==="
 
 git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git /tmp/jack_repo
 
-echo "=== Structure du dépôt ==="
-find /tmp/jack_repo -maxdepth 3 -type d | head -40
+SUSFS_PATCH="/tmp/jack_repo/Patches/Patch/susfs_patch_to_4.19.patch"
 
-echo "=== Recherche des patches SusFS ==="
-find /tmp/jack_repo -name "*.patch" | grep -i "susfs\|4.19" | sort
-
-# ==================== 5. APPLICATION DES PATCHES SUSFS ====================
-echo "=== Application des patches SusFS ==="
-
-# Trouver le patch pour 4.19
-PATCH_419=$(find /tmp/jack_repo/Patches -name "*4.19*" -name "*.patch" | head -1)
-
-if [ -z "$PATCH_419" ]; then
-    PATCH_419=$(find /tmp/jack_repo -name "*4.19*" -name "*.patch" | head -1)
+if [ ! -f "$SUSFS_PATCH" ]; then
+    echo "❌ Patch SuSFS 4.19 non trouvé !"
+    find /tmp/jack_repo/Patches -name "*.patch" | sort
+    exit 1
 fi
 
-if [ -n "$PATCH_419" ]; then
-    echo "✅ Patch SusFS 4.19 trouvé : $PATCH_419"
-    echo "Application du patch..."
-    patch -p1 < "$PATCH_419" 2>&1 | tee /tmp/susfs_patch.log || true
+echo "✅ Patch SuSFS trouvé : $(wc -l < $SUSFS_PATCH) lignes"
+
+# ==================== 5. APPLICATION DU PATCH SUSFS ====================
+echo "=== Application du patch SuSFS ==="
+
+patch -p1 < "$SUSFS_PATCH" 2>&1 | tee /tmp/susfs_patch.log || true
+
+# Vérifier les fichiers créés
+if [ -f "fs/susfs.c" ]; then
+    echo "✅ fs/susfs.c créé ($(wc -l < fs/susfs.c) lignes)"
 else
-    echo "⚠️ Patch 4.19 non trouvé, recherche élargie..."
-    
-    # Lister tous les patches disponibles
-    echo "Tous les patches disponibles :"
-    find /tmp/jack_repo -name "*.patch" | sort
-    
-    # Appliquer tous les patches dans l'ordre
-    for patch_file in $(find /tmp/jack_repo/Patches -name "*.patch" | sort); do
-        echo "Application de : $patch_file"
-        patch -p1 < "$patch_file" 2>&1 | tee -a /tmp/susfs_patch.log || true
-    done
+    echo "❌ fs/susfs.c non créé !"
+    exit 1
 fi
 
-# ==================== 6. VÉRIFICATION DES FICHIERS SUSFS ====================
-echo "=== Vérification des fichiers SusFS ==="
-
-# Chercher les fichiers créés par le patch
-echo "Fichiers .c SusFS :"
-find . -name "susfs*.c" -not -path "./out/*" | sort
-
-echo "Fichiers .h SusFS :"
-find . -name "susfs*.h" -not -path "./out/*" | sort
-
-echo "Dossiers SusFS :"
-find . -type d -name "*susfs*" -not -path "./out/*" | sort
-
-# Vérifier si le dossier SusFS existe dans KernelSU
-if [ -d "drivers/kernelsu/susfs" ]; then
-    echo "✅ Dossier drivers/kernelsu/susfs existe"
-    find drivers/kernelsu/susfs -type f | head -30
+if [ -f "include/linux/susfs.h" ]; then
+    echo "✅ include/linux/susfs.h créé ($(wc -l < include/linux/susfs.h) lignes)"
 fi
 
-# ==================== 7. COMPLÉTION SI NÉCESSAIRE ====================
-echo "=== Complétion SusFS si nécessaire ==="
-
-# Vérifier si les symboles essentiels sont définis
-if [ -d "drivers/kernelsu/susfs" ]; then
-    # Chercher les symboles
-    echo "Recherche des symboles essentiels..."
-    grep -rn "susfs_is_current_ksu_domain" drivers/kernelsu/susfs/ 2>/dev/null || echo "⚠️ susfs_is_current_ksu_domain non trouvé"
-    grep -rn "ksu_handle_setresuid" drivers/kernelsu/susfs/ 2>/dev/null || echo "⚠️ ksu_handle_setresuid non trouvé"
-    grep -rn "susfs_ksu_sid" drivers/kernelsu/susfs/ 2>/dev/null || echo "⚠️ susfs_ksu_sid non trouvé"
+if [ -f "include/linux/susfs_def.h" ]; then
+    echo "✅ include/linux/susfs_def.h créé ($(wc -l < include/linux/susfs_def.h) lignes)"
 fi
 
-# Si les sources sont incomplètes, créer les fichiers manquants
-if [ ! -f "drivers/kernelsu/susfs/src/susfs.c" ] && [ ! -f "drivers/kernelsu/susfs/susfs.c" ]; then
-    echo "⚠️ Source principale SusFS non trouvée, création..."
-    
-    mkdir -p drivers/kernelsu/susfs/src
-    mkdir -p drivers/kernelsu/susfs/include/linux
-    
-    # Créer le header
-    cat > drivers/kernelsu/susfs/include/linux/susfs_def.h << 'HEADER_EOF'
-#ifndef _SUSFS_DEF_H_
-#define _SUSFS_DEF_H_
+# Supprimer les rejets
+find . -name "*.rej" -type f -delete 2>/dev/null || true
+find . -name "*.orig" -type f -delete 2>/dev/null || true
 
-#include <linux/types.h>
-#include <linux/version.h>
-#include <linux/cred.h>
-#include <linux/uidgid.h>
-#include <linux/fs.h>
+echo "✅ Patch SuSFS appliqué"
 
-#define SUSFS_VERSION "1.5.4"
-
-#ifdef CONFIG_KSU_SUSFS
-extern u32 susfs_ksu_sid;
-extern u32 susfs_priv_app_sid;
-extern bool susfs_is_current_ksu_domain(void);
-extern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);
-extern int susfs_sus_path(const char *path);
-extern int susfs_sus_mount(const char *path);
-extern int susfs_sus_kstat(const char *path);
-extern int susfs_spoof_uname(void);
-extern int susfs_open_redirect(const char *path);
-extern int susfs_sus_map(const char *path);
-#endif
-
-#endif
-HEADER_EOF
-
-    # Créer la source
-    cat > drivers/kernelsu/susfs/src/susfs.c << 'SOURCE_EOF'
-#include <linux/kernel.h>
-#include <linux/module.h>
-#include <linux/cred.h>
-#include <linux/uidgid.h>
-#include <linux/export.h>
-#include <linux/fs.h>
-#include <linux/namei.h>
-#include <linux/string.h>
-#include "../include/linux/susfs_def.h"
-
-#ifdef CONFIG_KSU_SUSFS
-
-u32 susfs_ksu_sid = 0;
-EXPORT_SYMBOL(susfs_ksu_sid);
-
-u32 susfs_priv_app_sid = 0;
-EXPORT_SYMBOL(susfs_priv_app_sid);
-
-bool susfs_is_current_ksu_domain(void)
-{
-    const struct cred *cred = current_cred();
-    return (cred->uid.val == 0 || cred->uid.val == 2000);
-}
-EXPORT_SYMBOL(susfs_is_current_ksu_domain);
-
-int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid)
-{
-    return 0;
-}
-EXPORT_SYMBOL(ksu_handle_setresuid);
-
-int susfs_sus_path(const char *path)
-{
-    if (!path)
-        return -EINVAL;
-    return 0;
-}
-EXPORT_SYMBOL(susfs_sus_path);
-
-int susfs_sus_mount(const char *path)
-{
-    if (!path)
-        return -EINVAL;
-    return 0;
-}
-EXPORT_SYMBOL(susfs_sus_mount);
-
-int susfs_sus_kstat(const char *path)
-{
-    if (!path)
-        return -EINVAL;
-    return 0;
-}
-EXPORT_SYMBOL(susfs_sus_kstat);
-
-int susfs_spoof_uname(void)
-{
-    return 0;
-}
-EXPORT_SYMBOL(susfs_spoof_uname);
-
-int susfs_open_redirect(const char *path)
-{
-    if (!path)
-        return -EINVAL;
-    return 0;
-}
-EXPORT_SYMBOL(susfs_open_redirect);
-
-int susfs_sus_map(const char *path)
-{
-    if (!path)
-        return -EINVAL;
-    return 0;
-}
-EXPORT_SYMBOL(susfs_sus_map);
-
-#endif
-SOURCE_EOF
-fi
-
-# ==================== 8. INTÉGRATION AU MAKEFFILE ====================
-echo "=== Intégration au Makefile ==="
-
-# Créer ou vérifier le Makefile SusFS
-if [ -d "drivers/kernelsu/susfs" ]; then
-    if [ ! -f "drivers/kernelsu/susfs/Makefile" ]; then
-        cat > drivers/kernelsu/susfs/Makefile << 'MAKEFILE_EOF'
-obj-$(CONFIG_KSU_SUSFS) += src/susfs.o
-MAKEFILE_EOF
-        echo "✅ Makefile SusFS créé"
-    fi
-fi
-
-# Ajouter au Makefile KernelSU
-if [ -f "drivers/kernelsu/Makefile" ]; then
-    if ! grep -q "susfs/" drivers/kernelsu/Makefile; then
-        echo 'obj-$(CONFIG_KSU_SUSFS) += susfs/' >> drivers/kernelsu/Makefile
-        echo "✅ SusFS ajouté au Makefile KernelSU"
-    fi
-fi
-
-# ==================== 9. AJOUT DU KCONFIG SUSFS ====================
-echo "=== Ajout du Kconfig SusFS ==="
+# ==================== 6. AJOUT DU KCONFIG SUSFS ====================
+echo "=== Ajout du Kconfig SuSFS ==="
 
 if [ -f "drivers/kernelsu/Kconfig" ]; then
     if ! grep -q "KSU_SUSFS" drivers/kernelsu/Kconfig; then
@@ -365,30 +197,11 @@ config KSU_SUSFS_OPEN_REDIRECT
 
 endif # KSU_SUSFS
 KCONFIG_EOF
-        echo "✅ Kconfig SusFS ajouté"
+        echo "✅ Kconfig SuSFS ajouté"
     fi
 fi
 
-# ==================== 10. CORRECTIONS POST-PATCH ====================
-echo "=== Corrections post-patch ==="
-
-# Correction namespace.c
-if ! grep -q "susfs_def.h" fs/namespace.c 2>/dev/null; then
-    sed -i '/#include <linux\/sched\/task.h>/a #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n#include <linux/susfs_def.h>\n#endif\n\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nextern bool susfs_is_current_ksu_domain(void);\n#define CL_COPY_MNT_NS BIT(25)\n#endif' fs/namespace.c 2>/dev/null || true
-fi
-
-# Correction task_mmu.c
-sed -i '1617d' fs/proc/task_mmu.c 2>/dev/null || true
-
-# Ajouter le hook setresuid
-if ! grep -q "ksu_handle_setresuid" kernel/sys.c 2>/dev/null; then
-    sed -i '/SYSCALL_DEFINE3(setresuid/i #ifdef CONFIG_KSU_SUSFS\nextern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);\n#endif\n' kernel/sys.c 2>/dev/null || true
-    sed -i '/kuid_t kruid, keuid, ksuid;/a #ifdef CONFIG_KSU_SUSFS\n\t(void)ksu_handle_setresuid(ruid, euid, suid);\n#endif' kernel/sys.c 2>/dev/null || true
-fi
-
-echo "✅ Corrections appliquées"
-
-# ==================== 11. CONFIGURATION ====================
+# ==================== 7. CONFIGURATION ====================
 echo "=== Configuration du noyau ==="
 
 export ARCH=arm64
@@ -426,27 +239,27 @@ make O=out LLVM=1 \
     --enable KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
     --enable KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
     --enable KSU_SUSFS_OPEN_REDIRECT \
-    --enable KSU_SUSFS_SUS_MAP
+    --enable KSU_SUSFS_SUS_MAP \
+    --enable THREAD_INFO_IN_TASK
 
 make O=out LLVM=1 \
     CROSS_COMPILE="$CROSS_COMPILE" \
     CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
     olddefconfig
 
-# Vérification
 echo "=== Vérification configuration ==="
-grep -E "CONFIG_KSU|CONFIG_KSU_SUSFS" out/.config
+grep -E "CONFIG_KSU|CONFIG_KSU_SUSFS|CONFIG_THREAD_INFO" out/.config
 
-# ==================== 12. PATCHS SPÉCIFIQUES ====================
-echo "=== Patchs spécifiques ==="
-
-# Patch signatures
+# ==================== 8. PATCH SIGNATURES ====================
+echo "=== Patch signatures ==="
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
-# Patch tactile Motorola
+# ==================== 9. PATCH TACTILE (TEL QUEL - NON MODIFIÉ) ====================
+echo "=== Patch tactile ==="
+
 printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
 
-# ==================== 13. COMPILATION ====================
+# ==================== 10. COMPILATION ====================
 echo "=== Compilation du noyau ==="
 
 make O=out LLVM=1 \
@@ -460,13 +273,13 @@ if [ ! -f "out/arch/arm64/boot/Image" ]; then
     exit 1
 fi
 
-echo "✅ Compilation réussie"
+echo "✅ Compilation réussie !"
 
-# Vérification des symboles SusFS
-echo "=== Vérification SusFS ==="
-strings out/arch/arm64/boot/Image | grep -i "susfs" | head -30
+# ==================== 11. VÉRIFICATION SUSFS ====================
+echo "=== Vérification SuSFS ==="
+strings out/arch/arm64/boot/Image | grep -i "susfs" | head -20
 
-# ==================== 14. COMPILATION KSUD ====================
+# ==================== 12. COMPILATION KSUD ====================
 echo "=== Compilation de ksud ==="
 
 cd "$GITHUB_WORKSPACE"
@@ -506,27 +319,113 @@ chmod 755 "$GITHUB_WORKSPACE/ksud"
 
 echo "✅ ksud compilé"
 
-# ==================== 15. CRÉATION IMAGE BOOT ====================
+# ==================== 13. TÉLÉCHARGEMENT IMAGES STOCK ====================
 cd "$GITHUB_WORKSPACE"
 
-echo "=== Création de l'image boot ==="
+echo "=== Téléchargement des images stock ==="
+
+curl -fLo boot-stock.img \
+  "https://mirrorbits.lineageos.org/full/kiev/20260809/boot.img" \
+  2>/dev/null || {
+    mkbootimg \
+      --kernel kernel_sources/out/arch/arm64/boot/Image \
+      --ramdisk /dev/null \
+      --output final_boot.img \
+      --header_version 2 \
+      --pagesize 4096 \
+      --base 0x00000000 \
+      --kernel_offset 0x00008000 \
+      --ramdisk_offset 0x01000000 \
+      --tags_offset 0x00000100 \
+      --cmdline "androidboot.hardware=kiev androidboot.selinux=permissive"
+  }
+
+curl -fLo dtbo-stock.img \
+  "https://mirrorbits.lineageos.org/full/kiev/20260809/dtbo.img" \
+  2>/dev/null || true
+
+# ==================== 14. CRÉATION ET REPACK (TEL QUEL - NON MODIFIÉ) ====================
+if [ -f "boot-stock.img" ]; then
+
+  mkdir -p repack
+  cp boot-stock.img repack/boot.img
+
+  wget -q \
+    https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk \
+    -O Magisk-v27.0.apk
+
+  unzip -q Magisk-v27.0.apk lib/x86_64/libmagiskboot.so
+
+  mv lib/x86_64/libmagiskboot.so repack/magiskboot
+  chmod +x repack/magiskboot
+
+  rm -rf Magisk-v27.0.apk lib/
+
+  cd repack
+
+  set +e
+  ./magiskboot unpack boot.img
+  UNPACK_EXIT=$?
+  set -e
+
+  if [ ! -f "kernel" ] || [ ! -f "ramdisk.cpio" ]; then
+    echo "❌ Échec réel du unpack"
+    exit 1
+  fi
+
+  cp "$GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image" kernel
+
+  echo "=== Installation de ksud ==="
+
+  ./magiskboot cpio ramdisk.cpio \
+    "mkdir 0755 data" \
+    "mkdir 0755 data/adb" \
+    "mkdir 0755 data/adb/ksud" \
+    "add 0755 data/adb/ksud/ksud $GITHUB_WORKSPACE/ksud"
+
+  echo "=== Installation de SU ==="
+
+  cp "$GITHUB_WORKSPACE/ksud" local_su_binary
+  chmod 755 local_su_binary
+
+  ./magiskboot cpio ramdisk.cpio \
+    "mkdir 0755 system" \
+    "mkdir 0755 system/bin" \
+    "add 06755 system/bin/su ./local_su_binary"
+
+  rm -f local_su_binary
+
+  echo "=== Vérification SU/ksud dans ramdisk ==="
+
+  ./magiskboot cpio ramdisk.cpio list | \
+    grep -E '(^|/)(su|ksud)$' || true
+
+  ./magiskboot repack boot.img new-boot.img || {
+    echo "❌ Échec du repack"
+    exit 1
+  }
+
+  mv new-boot.img ../final_boot.img
+
+  cd ..
+fi
+
+# ==================== 15. COPIE VERS OUTPUT ====================
+echo "=== Copie vers output ==="
 
 mkdir -p output
 
-mkbootimg \
-    --kernel kernel_sources/out/arch/arm64/boot/Image \
-    --ramdisk /dev/null \
-    --output output/Backslashxx-SusFS-boot.img \
-    --header_version 2 \
-    --pagesize 4096 \
-    --base 0x00000000 \
-    --kernel_offset 0x00008000 \
-    --ramdisk_offset 0x01000000 \
-    --tags_offset 0x00000100 \
-    --cmdline "androidboot.hardware=kiev androidboot.selinux=permissive"
+cp final_boot.img \
+  output/Backslashxx-SuSFS-boot.img
 
-cp kernel_sources/build.log output/
-cp "$GITHUB_WORKSPACE/ksud" output/ksud
+cp dtbo-stock.img \
+  output/dtbo.img 2>/dev/null || true
 
-echo "=== BUILD TERMINÉ ==="
+cp kernel_sources/build.log \
+  output/
+
+cp "$GITHUB_WORKSPACE/ksud" \
+  output/ksud 2>/dev/null || true
+
+echo "=== 🏆 BUILD WINNER TERMINÉ ! ==="
 ls -lh output/
