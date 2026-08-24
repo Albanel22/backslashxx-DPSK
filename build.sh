@@ -130,29 +130,72 @@ else
 fi
 
 if [ -f "include/linux/susfs.h" ]; then
-    echo "✅ include/linux/susfs.h créé ($(wc -l < include/linux/susfs.h) lignes)"
+    echo "✅ include/linux/susfs.h créé"
 fi
 
 if [ -f "include/linux/susfs_def.h" ]; then
-    echo "✅ include/linux/susfs_def.h créé ($(wc -l < include/linux/susfs_def.h) lignes)"
+    echo "✅ include/linux/susfs_def.h créé"
 fi
 
 # Supprimer les rejets
 find . -name "*.rej" -type f -delete 2>/dev/null || true
 find . -name "*.orig" -type f -delete 2>/dev/null || true
 
-# ==================== 5b. CORRECTION TASK_MMU.C (VARIABLE VMA) ====================
+# ==================== 5b. CORRECTION NAMESPACE.C - INCLUDE SUSFS_DEF.H ====================
+echo "=== Correction fs/namespace.c ==="
+
+# Vérifier si susfs_def.h est inclus dans namespace.c
+if ! grep -q "susfs_def.h" fs/namespace.c; then
+    echo "⚠️ susfs_def.h non inclus dans namespace.c, ajout..."
+    
+    # Ajouter l'include après sched/task.h
+    sed -i '/#include <linux\/sched\/task.h>/a #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n#include <linux/susfs_def.h>\n#endif' fs/namespace.c
+    
+    # Ajouter les déclarations extern après les includes
+    sed -i '/#include "pnode.h"/a \n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nextern bool susfs_is_current_ksu_domain(void);\nextern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n#define CL_COPY_MNT_NS BIT(25)\n#endif' fs/namespace.c
+    
+    echo "✅ Include susfs_def.h ajouté dans namespace.c"
+else
+    echo "✅ susfs_def.h déjà inclus dans namespace.c"
+fi
+
+# Vérifier les symboles après correction
+echo "=== Vérification des symboles ==="
+for sym in "susfs_def.h" "susfs_is_current_ksu_domain" "CL_COPY_MNT_NS" "DEFAULT_KSU_MNT_ID"; do
+    if grep -q "$sym" fs/namespace.c; then
+        echo "✅ $sym : présent"
+    else
+        echo "❌ $sym : MANQUANT"
+    fi
+done
+
+# ==================== 5c. CORRECTION TASK_MMU.C (VARIABLE VMA) ====================
 echo "=== Correction task_mmu.c ==="
 
-# La variable vma est déclarée mais non utilisée si SUS_MAP n'est pas activé
-# Solution : ajouter __maybe_unused pour éviter l'erreur de compilation
 if [ -f "fs/proc/task_mmu.c" ]; then
-    # Remplacer la déclaration pour ajouter __maybe_unused
     sed -i 's/struct vm_area_struct \*vma;/struct vm_area_struct *vma __maybe_unused;/g' fs/proc/task_mmu.c
     echo "✅ Variable vma corrigée avec __maybe_unused"
 fi
 
-echo "✅ Patch SuSFS appliqué et corrigé"
+# ==================== 5d. VÉRIFICATION AUTRES FICHIERS ====================
+echo "=== Vérification des autres fichiers SuSFS ==="
+
+for file in fs/namei.c fs/stat.c fs/statfs.c fs/readdir.c fs/proc_namespace.c fs/notify/fdinfo.c fs/proc/base.c fs/proc/fd.c fs/proc/cmdline.c; do
+    if [ -f "$file" ]; then
+        if grep -q "SUSFS\|susfs" "$file" 2>/dev/null; then
+            if ! grep -q "susfs_def.h" "$file"; then
+                echo "⚠️ $file utilise SuSFS sans inclure susfs_def.h"
+                # Ajouter l'include après le premier #include
+                sed -i '0,/#include <linux\//s//#ifdef CONFIG_KSU_SUSFS\n#include <linux\/susfs_def.h>\n#endif\n\n#include <linux\//' "$file"
+                echo "✅ Include ajouté dans $file"
+            else
+                echo "✅ $file : OK"
+            fi
+        fi
+    fi
+done
+
+echo "✅ Corrections post-patch terminées"
 
 # ==================== 6. AJOUT DU KCONFIG SUSFS ====================
 echo "=== Ajout du Kconfig SuSFS ==="
