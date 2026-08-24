@@ -425,7 +425,7 @@ echo "✅ Compilation réussie !"
 echo "=== Vérification SuSFS ==="
 strings out/arch/arm64/boot/Image | grep -i "susfs" | head -20
 
-# ==================== 12. COMPILATION KSUD ====================
+# ==================== 12. COMPILATION KSUD - CORRIGÉ ====================
 echo "=== Compilation de ksud ==="
 
 cd "$GITHUB_WORKSPACE"
@@ -444,6 +444,14 @@ export AARCH64_CLANG_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_
 export AARCH64_CLANGXX_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang++"
 export AR_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
 
+# AJOUT : Variables BINDGEN pour trouver les headers Android
+export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot -I$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/aarch64-linux-android"
+export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+
+# AJOUT : Path pour les headers système
+export C_INCLUDE_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include"
+export CPLUS_INCLUDE_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include"
+
 git clone --depth=1 https://github.com/backslashxx/KernelSU.git "$GITHUB_WORKSPACE/ksud-src"
 cd "$GITHUB_WORKSPACE/ksud-src/userspace/ksud"
 
@@ -456,6 +464,7 @@ linker = "$AARCH64_CLANG_PATH"
 CC_aarch64_linux_android = "$AARCH64_CLANG_PATH"
 CXX_aarch64_linux_android = "$AARCH64_CLANGXX_PATH"
 AR_aarch64_linux_android = "$AR_PATH"
+BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android = "--sysroot=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot -I$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/aarch64-linux-android"
 EOF
 
 cargo build --release --target aarch64-linux-android
