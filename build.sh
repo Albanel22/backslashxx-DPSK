@@ -141,7 +141,30 @@ fi
 find . -name "*.rej" -type f -delete 2>/dev/null || true
 find . -name "*.orig" -type f -delete 2>/dev/null || true
 
-# ==================== 5b. CORRECTION NAMESPACE.C - VERSION PYTHON ====================
+# ==================== 5b. CORRECTION FS/MAKEFILE - AJOUTER SUSFS.O ====================
+echo "=== Correction fs/Makefile - Ajout de susfs.o ==="
+
+if [ -f "fs/Makefile" ]; then
+    if ! grep -q "susfs.o" fs/Makefile; then
+        echo "⚠️ susfs.o non trouvé dans fs/Makefile, ajout..."
+        
+        # Ajouter susfs.o après la première ligne obj-y
+        sed -i '/^obj-y :=/a obj-$(CONFIG_KSU_SUSFS) += susfs.o' fs/Makefile
+        
+        echo "✅ susfs.o ajouté dans fs/Makefile"
+    else
+        echo "✅ susfs.o déjà présent dans fs/Makefile"
+    fi
+    
+    # Vérification
+    echo "=== Vérification fs/Makefile ==="
+    grep -n "susfs" fs/Makefile
+else
+    echo "❌ fs/Makefile non trouvé !"
+    exit 1
+fi
+
+# ==================== 5c. CORRECTION NAMESPACE.C - VERSION PYTHON ====================
 echo "=== Correction fs/namespace.c ==="
 
 python3 - << 'PYEOF'
@@ -179,7 +202,7 @@ PYEOF
 echo "=== Vérification ==="
 grep -n "susfs_def.h\|susfs_is_current_ksu_domain\|CL_COPY_MNT_NS" fs/namespace.c | head -10
 
-# ==================== 5c. CORRECTION TASK_MMU.C (VARIABLE VMA) ====================
+# ==================== 5d. CORRECTION TASK_MMU.C (VARIABLE VMA) ====================
 echo "=== Correction task_mmu.c ==="
 
 if [ -f "fs/proc/task_mmu.c" ]; then
@@ -187,7 +210,7 @@ if [ -f "fs/proc/task_mmu.c" ]; then
     echo "✅ Variable vma corrigée avec __maybe_unused"
 fi
 
-# ==================== 5d. VÉRIFICATION AUTRES FICHIERS ====================
+# ==================== 5e. VÉRIFICATION AUTRES FICHIERS ====================
 echo "=== Vérification des autres fichiers SuSFS ==="
 
 for file in fs/namei.c fs/stat.c fs/statfs.c fs/readdir.c fs/proc_namespace.c fs/notify/fdinfo.c fs/proc/base.c fs/proc/fd.c fs/proc/cmdline.c; do
