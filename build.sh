@@ -141,33 +141,43 @@ fi
 find . -name "*.rej" -type f -delete 2>/dev/null || true
 find . -name "*.orig" -type f -delete 2>/dev/null || true
 
-# ==================== 5b. CORRECTION NAMESPACE.C - INCLUDE SUSFS_DEF.H ====================
+# ==================== 5b. CORRECTION NAMESPACE.C - VERSION PYTHON ====================
 echo "=== Correction fs/namespace.c ==="
 
-# Vérifier si susfs_def.h est inclus dans namespace.c
-if ! grep -q "susfs_def.h" fs/namespace.c; then
-    echo "⚠️ susfs_def.h non inclus dans namespace.c, ajout..."
-    
-    # Ajouter l'include après sched/task.h
-    sed -i '/#include <linux\/sched\/task.h>/a #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n#include <linux/susfs_def.h>\n#endif' fs/namespace.c
-    
-    # Ajouter les déclarations extern après les includes
-    sed -i '/#include "pnode.h"/a \n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nextern bool susfs_is_current_ksu_domain(void);\nextern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n#define CL_COPY_MNT_NS BIT(25)\n#endif' fs/namespace.c
-    
-    echo "✅ Include susfs_def.h ajouté dans namespace.c"
-else
-    echo "✅ susfs_def.h déjà inclus dans namespace.c"
-fi
+python3 - << 'PYEOF'
+import re
 
-# Vérifier les symboles après correction
-echo "=== Vérification des symboles ==="
-for sym in "susfs_def.h" "susfs_is_current_ksu_domain" "CL_COPY_MNT_NS" "DEFAULT_KSU_MNT_ID"; do
-    if grep -q "$sym" fs/namespace.c; then
-        echo "✅ $sym : présent"
-    else
-        echo "❌ $sym : MANQUANT"
-    fi
-done
+with open('fs/namespace.c', 'r') as f:
+    content = f.read()
+
+# 1. Nettoyer les caractères parasites 'n' au début des lignes
+content = re.sub(r'^\s*n(?=#ifdef|#endif|#include|#define|extern)', '', content, flags=re.MULTILINE)
+
+# 2. Ajouter l'include susfs_def.h après sched/task.h si absent
+if '#include <linux/susfs_def.h>' not in content:
+    content = content.replace(
+        '#include <linux/sched/task.h>',
+        '#include <linux/sched/task.h>\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n#include <linux/susfs_def.h>\n#endif'
+    )
+    print("✅ Include susfs_def.h ajouté")
+
+# 3. Ajouter les déclarations extern après pnode.h si absentes
+if 'extern bool susfs_is_current_ksu_domain' not in content:
+    content = content.replace(
+        '#include "pnode.h"',
+        '#include "pnode.h"\n\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nextern bool susfs_is_current_ksu_domain(void);\nextern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n#define CL_COPY_MNT_NS BIT(25)\n#endif'
+    )
+    print("✅ Déclarations extern ajoutées")
+
+with open('fs/namespace.c', 'w') as f:
+    f.write(content)
+
+print("✅ fs/namespace.c corrigé")
+PYEOF
+
+# Vérification
+echo "=== Vérification ==="
+grep -n "susfs_def.h\|susfs_is_current_ksu_domain\|CL_COPY_MNT_NS" fs/namespace.c | head -10
 
 # ==================== 5c. CORRECTION TASK_MMU.C (VARIABLE VMA) ====================
 echo "=== Correction task_mmu.c ==="
