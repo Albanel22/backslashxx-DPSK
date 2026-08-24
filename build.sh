@@ -147,24 +147,18 @@ echo "=== Correction fs/Makefile - Ajout de susfs.o ==="
 if [ -f "fs/Makefile" ]; then
     if ! grep -q "susfs.o" fs/Makefile; then
         echo "⚠️ susfs.o non trouvé dans fs/Makefile, ajout..."
-        
-        # Ajouter susfs.o après la première ligne obj-y
-        sed -i '/^obj-y :=/a obj-$(CONFIG_KSU_SUSFS) += susfs.o' fs/Makefile
-        
+        echo "obj-\$(CONFIG_KSU_SUSFS) += susfs.o" >> fs/Makefile
         echo "✅ susfs.o ajouté dans fs/Makefile"
     else
         echo "✅ susfs.o déjà présent dans fs/Makefile"
     fi
-    
-    # Vérification
-    echo "=== Vérification fs/Makefile ==="
     grep -n "susfs" fs/Makefile
 else
     echo "❌ fs/Makefile non trouvé !"
     exit 1
 fi
 
-# ==================== 5c. CORRECTION NAMESPACE.C - VERSION PYTHON ====================
+# ==================== 5c. CORRECTION NAMESPACE.C ====================
 echo "=== Correction fs/namespace.c ==="
 
 python3 - << 'PYEOF'
@@ -173,10 +167,8 @@ import re
 with open('fs/namespace.c', 'r') as f:
     content = f.read()
 
-# 1. Nettoyer les caractères parasites 'n' au début des lignes
 content = re.sub(r'^\s*n(?=#ifdef|#endif|#include|#define|extern)', '', content, flags=re.MULTILINE)
 
-# 2. Ajouter l'include susfs_def.h après sched/task.h si absent
 if '#include <linux/susfs_def.h>' not in content:
     content = content.replace(
         '#include <linux/sched/task.h>',
@@ -184,7 +176,6 @@ if '#include <linux/susfs_def.h>' not in content:
     )
     print("✅ Include susfs_def.h ajouté")
 
-# 3. Ajouter les déclarations extern après pnode.h si absentes
 if 'extern bool susfs_is_current_ksu_domain' not in content:
     content = content.replace(
         '#include "pnode.h"',
@@ -198,16 +189,12 @@ with open('fs/namespace.c', 'w') as f:
 print("✅ fs/namespace.c corrigé")
 PYEOF
 
-# Vérification
-echo "=== Vérification ==="
-grep -n "susfs_def.h\|susfs_is_current_ksu_domain\|CL_COPY_MNT_NS" fs/namespace.c | head -10
-
-# ==================== 5d. CORRECTION TASK_MMU.C (VARIABLE VMA) ====================
+# ==================== 5d. CORRECTION TASK_MMU.C ====================
 echo "=== Correction task_mmu.c ==="
 
 if [ -f "fs/proc/task_mmu.c" ]; then
     sed -i 's/struct vm_area_struct \*vma;/struct vm_area_struct *vma __maybe_unused;/g' fs/proc/task_mmu.c
-    echo "✅ Variable vma corrigée avec __maybe_unused"
+    echo "✅ Variable vma corrigée"
 fi
 
 # ==================== 5e. VÉRIFICATION AUTRES FICHIERS ====================
@@ -218,11 +205,8 @@ for file in fs/namei.c fs/stat.c fs/statfs.c fs/readdir.c fs/proc_namespace.c fs
         if grep -q "SUSFS\|susfs" "$file" 2>/dev/null; then
             if ! grep -q "susfs_def.h" "$file"; then
                 echo "⚠️ $file utilise SuSFS sans inclure susfs_def.h"
-                # Ajouter l'include après le premier #include
                 sed -i '0,/#include <linux\//s//#ifdef CONFIG_KSU_SUSFS\n#include <linux\/susfs_def.h>\n#endif\n\n#include <linux\//' "$file"
                 echo "✅ Include ajouté dans $file"
-            else
-                echo "✅ $file : OK"
             fi
         fi
     fi
@@ -334,8 +318,27 @@ make O=out LLVM=1 \
     CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
     olddefconfig
 
+# ==================== 7b. FORCER CONFIG_KSU_SUSFS APRÈS OLDDEFCONFIG ====================
+echo "=== Forcer CONFIG_KSU_SUSFS après olddefconfig ==="
+
+{
+    echo "CONFIG_KSU_SUSFS=y"
+    echo "CONFIG_KSU_SUSFS_SUS_PATH=y"
+    echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y"
+    echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y"
+    echo "CONFIG_KSU_SUSFS_SUS_MAP=y"
+    echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y"
+    echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y"
+    echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y"
+    echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y"
+    echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y"
+} >> out/.config
+
+echo "=== Vérification CONFIG_KSU_SUSFS ==="
+grep "CONFIG_KSU_SUSFS" out/.config
+
 echo "=== Vérification configuration ==="
-grep -E "CONFIG_KSU|CONFIG_KSU_SUSFS|CONFIG_THREAD_INFO" out/.config
+grep -E "CONFIG_KSU=|CONFIG_KSU_SUSFS=|CONFIG_THREAD_INFO" out/.config
 
 # ==================== 8. PATCH SIGNATURES ====================
 echo "=== Patch signatures ==="
@@ -345,6 +348,20 @@ sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 echo "=== Patch tactile ==="
 
 printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
+
+# ==================== 9b. VÉRIFICATION DES SYMBOLES SUSFS ====================
+echo "=== Vérification des symboles SuSFS ==="
+
+echo "--- susfs_is_current_ksu_domain ---"
+grep -rn "susfs_is_current_ksu_domain" fs/susfs.c 2>/dev/null | head -5
+
+echo "--- susfs_ksu_sid ---"
+grep -rn "susfs_ksu_sid" fs/susfs.c 2>/dev/null | head -5
+
+echo "--- susfs_priv_app_sid ---"
+grep -rn "susfs_priv_app_sid" fs/susfs.c 2>/dev/null | head -5
+
+echo "=== FIN VÉRIFICATION ==="
 
 # ==================== 10. COMPILATION ====================
 echo "=== Compilation du noyau ==="
