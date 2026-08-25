@@ -28,6 +28,11 @@ git clone --depth=1 \
   https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git \
   /tmp/jack_repo 2>/dev/null || true
 
+echo "=== Sauvegarde pré-patch de lockdep.c (fichier sensible) ==="
+mkdir -p /tmp/kernel_backup/locking
+cp kernel/locking/lockdep.c /tmp/kernel_backup/locking/lockdep.c
+sha256sum /tmp/kernel_backup/locking/lockdep.c > /tmp/kernel_backup/locking/lockdep.c.sha256
+
 echo "=== Application du patch SusFS 4.19 ==="
 PATCH_419=$(find /tmp/jack_repo/Patches -name "*4.19*" -name "*.patch" | head -1)
 
@@ -688,18 +693,10 @@ sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
 printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
 
-echo "=== Restauration finale agressive de lockdep.c ==="
-# Le patch SusFS 4.19 corrompt lockdep.c sur ce kernel spécifique
-# On le restaure depuis git au tout dernier moment, juste avant make
-git checkout -- kernel/locking/lockdep.c 2>/dev/null || true
-# Vérification stricte : si les symboles foireux sont encore là, on force
+echo "=== Restauration finale de lockdep.c depuis sauvegarde ==="
+cp /tmp/kernel_backup/locking/lockdep.c kernel/locking/lockdep.c
 if grep -q "get_pending_free\|call_rcu_zapped\|__lockdep_free_key_range" kernel/locking/lockdep.c 2>/dev/null; then
-  echo "⚠️ git checkout a échoué, restauration forcée depuis le clone original"
-  # On récupère le fichier original depuis le repo git (même avec --depth=1)
-  git show HEAD:kernel/locking/lockdep.c > kernel/locking/lockdep.c
-fi
-if grep -q "get_pending_free\|call_rcu_zapped\|__lockdep_free_key_range" kernel/locking/lockdep.c 2>/dev/null; then
-  echo "❌ lockdep.c est encore corrompu après restauration, abandon"
+  echo "❌ lockdep.c est encore corrompu après restauration cp, abandon"
   exit 1
 else
   echo "[+] kernel/locking/lockdep.c est propre"
