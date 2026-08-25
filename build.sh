@@ -340,6 +340,20 @@ grep "CONFIG_KSU_SUSFS" out/.config
 echo "=== Vérification configuration ==="
 grep -E "CONFIG_KSU=|CONFIG_KSU_SUSFS=|CONFIG_THREAD_INFO" out/.config
 
+# ==================== 7c. ACTIVER SECCOMP_FILTER ====================
+echo "=== Activation SECCOMP_FILTER ==="
+
+# Ajouter les options seccomp
+{
+    echo "CONFIG_SECCOMP=y"
+    echo "CONFIG_SECCOMP_FILTER=y"
+} >> out/.config
+
+# Vérifier que c'est bien activé
+grep "CONFIG_SECCOMP" out/.config
+
+echo "✅ SECCOMP_FILTER aconfig
+
 # ==================== 8. PATCH SIGNATURES ====================
 echo "=== Patch signatures ==="
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
