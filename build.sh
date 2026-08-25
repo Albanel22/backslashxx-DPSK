@@ -26,7 +26,7 @@ cd kernel_sources
 # ==================== 2. INTÉGRATION KERNELSU (MAIN - PLUS RÉCENT) ====================
 echo "=== Intégration KernelSU (backslashxx - branche main) ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu || true
-curl -LSs "https://raw.githubusercontent.com/backslashxx/KernelSU/main/kernel/setup.sh" | bash
+curl -LSs "https://raw.githubusercontent.com/backslashxx/KernelSU/staging/kernel/setup.sh" | bash
 
 # ==================== 3. HOOKS MANUELS KERNELSU ====================
 echo "=== Hooks manuels KernelSU ==="
