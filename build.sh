@@ -17,20 +17,35 @@ echo "=== Clonage du kernel ==="
 git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git -b lineage-23.2 --depth=1 kernel_sources
 cd kernel_sources
 
-echo "=== Intégration Backslashxx KernelSU (staging-seccomp_filter_count) ==="
-rm -rf drivers/kernelsu KernelSU susfs4ksu || true
+echo "=== Intégration Backslashxx KernelSU (staging) ==="
+rm -rf drivers/kernelsu KernelSU susfs4ksu /tmp/KernelSU || true
 
-# CHANGEMENT : branche staging-seccomp_filter_count
-git clone --depth=1 -b staging-seccomp_filter_count https://github.com/backslashxx/KernelSU.git /tmp/KernelSU
+git clone --depth=1 -b staging https://github.com/backslashxx/KernelSU.git /tmp/KernelSU
+
 ln -sf /tmp/KernelSU/kernel drivers/kernelsu
-grep -q "kernelsu" drivers/Makefile || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> drivers/Makefile
-grep -q "source \"drivers/kernelsu/Kconfig\"" drivers/Kconfig || sed -i "/endmenu/i\source \"drivers/kernelsu/Kconfig\"" drivers/Kconfig
-echo "✅ KernelSU intégré (staging-seccomp_filter_count)"
+
+if [ -d "drivers/kernelsu" ]; then
+    echo "✅ Symlink OK"
+    ls drivers/kernelsu/ | head -5
+else
+    echo "❌ Symlink ÉCHOUÉ"
+    exit 1
+fi
+
+printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> drivers/Makefile
+echo "✅ Makefile modifié"
+
+sed -i "/endmenu/i\source \"drivers/kernelsu/Kconfig\"" drivers/Kconfig
+echo "✅ Kconfig modifié"
+
+grep -n "kernelsu" drivers/Makefile
+grep -n "kernelsu" drivers/Kconfig
+
+echo "✅ KernelSU intégré (staging)"
 
 echo "=== Hooks manuels sucompat (fs/exec.c, fs/open.c, fs/stat.c) ==="
 mkdir -p ../output/manual-hooks-diag
 
-# Ignore declaration-after-statement warnings
 sed -i '1i#pragma GCC diagnostic ignored "-Wdeclaration-after-statement"' fs/exec.c
 sed -i '1i#pragma GCC diagnostic ignored "-Wdeclaration-after-statement"' fs/open.c
 sed -i '1i#pragma GCC diagnostic ignored "-Wdeclaration-after-statement"' fs/stat.c
@@ -363,6 +378,12 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
+# ==================== DÉSACTIVER SECCOMP_FILTER ====================
+echo "=== Désactivation SECCOMP_FILTER ==="
+./scripts/config --file out/.config --disable SECCOMP_FILTER
+echo "# CONFIG_SECCOMP_FILTER is not set" >> out/.config
+grep "CONFIG_SECCOMP" out/.config
+
 echo "=== Vérification ==="
 grep -E "CONFIG_KSU=|CONFIG_KSU_MANUAL_HOOK|CONFIG_KPROBES|CONFIG_KSU_SUSFS" out/.config
 
@@ -398,7 +419,7 @@ export AARCH64_CLANGXX_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x8
 export AR_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
 export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot -I$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/aarch64-linux-android"
 
-git clone --depth=1 -b staging-seccomp_filter_count https://github.com/backslashxx/KernelSU.git ksud-src
+git clone --depth=1 -b staging https://github.com/backslashxx/KernelSU.git ksud-src
 cd ksud-src/userspace/ksud
 
 mkdir -p .cargo
