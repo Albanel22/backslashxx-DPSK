@@ -23,10 +23,32 @@ git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git \
 
 cd kernel_sources
 
-# ==================== 2. INTÉGRATION KERNELSU (STAGING - PLUS RÉCENT) ====================
-echo "=== Intégration KernelSU (backslashxx - branche staging) ==="
-rm -rf drivers/kernelsu kernelSU susfs4ksu || true
-curl -LSs "https://raw.githubusercontent.com/backslashxx/KernelSU/staging/kernel/setup.sh" | bash
+# ==================== 2. INTÉGRATION KERNELSU (COMMIT EXACT 4521784) ====================
+echo "=== Intégration KernelSU (commit exact 4521784) ==="
+rm -rf drivers/kernelsu kernelSU KernelSU susfs4ksu || true
+
+# Cloner le dépôt backslashxx (staging)
+git clone --depth=1 -b staging https://github.com/backslashxx/KernelSU.git /tmp/KernelSU
+
+# Aller au commit exact du manager
+cd /tmp/KernelSU
+git fetch --depth=1 origin 4521784328352c54334beb29e05c74360b60d7cb 2>/dev/null || true
+git checkout 4521784328352c54334beb29e05c74360b60d7cb 2>/dev/null || {
+    echo "⚠️ Commit exact non trouvé, utilisation du HEAD de staging"
+    git checkout staging
+}
+cd "$GITHUB_WORKSPACE/kernel_sources"
+
+# Créer le symlink vers le kernel
+ln -sf /tmp/KernelSU/kernel drivers/kernelsu
+
+# Ajouter au Makefile
+grep -q "kernelsu" drivers/Makefile || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> drivers/Makefile
+
+# Ajouter au Kconfig
+grep -q "source \"drivers/kernelsu/Kconfig\"" drivers/Kconfig || sed -i "/endmenu/i\source \"drivers/kernelsu/Kconfig\"" drivers/Kconfig
+
+echo "✅ KernelSU intégré avec le commit exact"
 
 # ==================== 3. HOOKS MANUELS KERNELSU ====================
 echo "=== Hooks manuels KernelSU ==="
@@ -343,6 +365,9 @@ export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_RO
 
 rm -rf "$GITHUB_WORKSPACE/ksud-src"
 git clone --depth=1 -b staging https://github.com/backslashxx/KernelSU.git "$GITHUB_WORKSPACE/ksud-src"
+cd "$GITHUB_WORKSPACE/ksud-src"
+git fetch --depth=1 origin 4521784328352c54334beb29e05c74360b60d7cb 2>/dev/null || true
+git checkout 4521784328352c54334beb29e05c74360b60d7cb 2>/dev/null || true
 cd "$GITHUB_WORKSPACE/ksud-src/userspace/ksud"
 
 mkdir -p .cargo
