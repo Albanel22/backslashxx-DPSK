@@ -340,19 +340,16 @@ grep "CONFIG_KSU_SUSFS" out/.config
 echo "=== Vérification configuration ==="
 grep -E "CONFIG_KSU=|CONFIG_KSU_SUSFS=|CONFIG_THREAD_INFO" out/.config
 
-# ==================== 7c. ACTIVER SECCOMP_FILTER ====================
-echo "=== Activation SECCOMP_FILTER ==="
+# ==================== 7c. CONFIG SECCOMP SIMPLE ====================
+echo "=== Configuration SECCOMP ==="
 
-# Ajouter les options seccomp
-{
-    echo "CONFIG_SECCOMP=y"
-    echo "CONFIG_SECCOMP_FILTER=y"
-} >> out/.config
+# Seulement SECCOMP de base (PAS de FILTER pour garder SU fonctionnel)
+echo "CONFIG_SECCOMP=y" >> out/.config
 
-# Vérifier que c'est bien activé
+# Vérifier
 grep "CONFIG_SECCOMP" out/.config
 
-echo "✅ SECCOMP_FILTER activé"
+echo "✅ SECCOMP configuré (sans FILTER)"
 
 # ==================== 8. PATCH SIGNATURES ====================
 echo "=== Patch signatures ==="
