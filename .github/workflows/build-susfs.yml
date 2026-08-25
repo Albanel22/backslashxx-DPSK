@@ -1,0 +1,36 @@
+name: Build Kernel (SusFS Test)
+
+on:
+  push:
+    branches: [ "Albanel22-patch-3" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  build-kernel:
+    name: Build Kernel SusFS
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: Albanel22-patch-3
+      
+      - name: Build Kernel
+        run: |
+          chmod +x build.sh
+          bash build.sh
+      
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Backslashxx-SusFS-boot
+          path: |
+            output/*.img
+            output/*.log
+            output/ksud
+          retention-days: 30
