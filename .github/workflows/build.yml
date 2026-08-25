@@ -1,4 +1,4 @@
-name: Build Kernel (SusFS Test)
+name: Build Backslashxx KernelSU
 
 on:
   push:
