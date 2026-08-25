@@ -340,17 +340,6 @@ grep "CONFIG_KSU_SUSFS" out/.config
 echo "=== Vérification configuration ==="
 grep -E "CONFIG_KSU=|CONFIG_KSU_SUSFS=|CONFIG_THREAD_INFO" out/.config
 
-# ==================== 7c. CONFIG SECCOMP SIMPLE ====================
-echo "=== Configuration SECCOMP ==="
-
-# Seulement SECCOMP de base (PAS de FILTER pour garder SU fonctionnel)
-echo "CONFIG_SECCOMP=y" >> out/.config
-
-# Vérifier
-grep "CONFIG_SECCOMP" out/.config
-
-echo "✅ SECCOMP configuré (sans FILTER)"
-
 # ==================== 8. PATCH SIGNATURES ====================
 echo "=== Patch signatures ==="
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
