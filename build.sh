@@ -28,7 +28,11 @@ git clone --depth=1 \
   https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git \
   /tmp/jack_repo 2>/dev/null || true
 
-echo "=== Application du patch SusFS 4.19 (sur kernel vierge) ==="
+echo "=== Sauvegarde pré-patch des fichiers sensibles ==="
+mkdir -p /tmp/kernel_backup/locking
+cp kernel/locking/lockdep.c /tmp/kernel_backup/locking/lockdep.c
+
+echo "=== Application du patch SusFS 4.19 (strict, pas de fuzzy) ==="
 PATCH_419=$(find /tmp/jack_repo/Patches -name "*4.19*" -name "*.patch" | head -1)
 
 if [ -z "$PATCH_419" ]; then
@@ -39,13 +43,22 @@ fi
 
 echo "Application du patch: $PATCH_419"
 set +e
-patch -p1 < "$PATCH_419" 2>&1 | tee /tmp/susfs_patch.log
+# -F0 = pas de fuzzy match, --no-backup-if-mismatch = pas de .orig
+patch -p1 --no-backup-if-mismatch -F0 < "$PATCH_419" 2>&1 | tee /tmp/susfs_patch.log
 PATCH_EXIT=$?
 set -e
 
 if [ "$PATCH_EXIT" -ne 0 ] && [ "$PATCH_EXIT" -ne 1 ]; then
   echo "❌ Échec critique du patch (code $PATCH_EXIT)"
   exit 1
+fi
+
+echo "=== Restauration des fichiers corrompus par fuzzy patch ==="
+# Le patch 4.19 peut corrompre lockdep.c sur LineageOS 4.19 via fuzzy match
+if grep -q "lockdep.c" /tmp/susfs_patch.log 2>/dev/null; then
+  echo "⚠️ Le patch a touché lockdep.c (non prévu), restauration..."
+  cp /tmp/kernel_backup/locking/lockdep.c kernel/locking/lockdep.c
+  echo "[+] kernel/locking/lockdep.c restauré"
 fi
 
 echo "=== Vérification des .rej ==="
