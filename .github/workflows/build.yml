@@ -1,8 +1,6 @@
 name: Build Backslashxx KernelSU
 
 on:
-  push:
-    branches: [ "Albanel22-patch-3" ]
   workflow_dispatch:
 
 permissions:
