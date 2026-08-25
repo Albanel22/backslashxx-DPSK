@@ -352,7 +352,7 @@ echo "=== Activation SECCOMP_FILTER ==="
 # Vérifier que c'est bien activé
 grep "CONFIG_SECCOMP" out/.config
 
-echo "✅ SECCOMP_FILTER aconfig
+echo "✅ SECCOMP_FILTER aconfig"
 
 # ==================== 8. PATCH SIGNATURES ====================
 echo "=== Patch signatures ==="
