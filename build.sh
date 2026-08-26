@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "=== Début du build Backslashxx KernelSU + SusFS (Manual Hook) ==="
+echo "=== Build KernelSU (commit 4a92049e UAPI2) + SuSFS ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -17,10 +17,14 @@ echo "=== Clonage du kernel ==="
 git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git -b lineage-23.2 --depth=1 kernel_sources
 cd kernel_sources
 
-echo "=== Intégration Backslashxx KernelSU (staging) ==="
+echo "=== Intégration Backslashxx KernelSU (commit 4a92049e UAPI2) ==="
 rm -rf drivers/kernelsu KernelSU susfs4ksu /tmp/KernelSU || true
 
-git clone --depth=1 -b staging https://github.com/backslashxx/KernelSU.git /tmp/KernelSU
+git clone --depth=1 -b master https://github.com/backslashxx/KernelSU.git /tmp/KernelSU
+cd /tmp/KernelSU
+git fetch --depth=1 origin 4a92049e
+git checkout 4a92049e
+cd $GITHUB_WORKSPACE/kernel_sources
 
 ln -sf /tmp/KernelSU/kernel drivers/kernelsu
 
@@ -41,98 +45,7 @@ echo "✅ Kconfig modifié"
 grep -n "kernelsu" drivers/Makefile
 grep -n "kernelsu" drivers/Kconfig
 
-echo "✅ KernelSU intégré (staging)"
-
-echo "=== Hooks manuels sucompat (fs/exec.c, fs/open.c, fs/stat.c) ==="
-mkdir -p ../output/manual-hooks-diag
-
-sed -i '1i#pragma GCC diagnostic ignored "-Wdeclaration-after-statement"' fs/exec.c
-sed -i '1i#pragma GCC diagnostic ignored "-Wdeclaration-after-statement"' fs/open.c
-sed -i '1i#pragma GCC diagnostic ignored "-Wdeclaration-after-statement"' fs/stat.c
-
-# ---------- fs/exec.c ----------
-if grep -q "do_execveat_common" fs/exec.c; then
-  if ! grep -q "ksu_handle_execveat_sucompat" fs/exec.c; then
-    sed -i '/static int do_execveat_common/i\
-#ifdef CONFIG_KSU\
-extern bool ksu_execveat_hook __read_mostly;\
-extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,\
-			void *envp, int *flags);\
-extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,\
-				 void *argv, void *envp, int *flags);\
-#endif' fs/exec.c
-  fi
-
-  if ! grep -q "ksu_handle_execveat_sucompat(&fd" fs/exec.c; then
-    sed -i '/static int do_execveat_common.*{/,+8 {
-      /{/a\
-#ifdef CONFIG_KSU\
-	if (unlikely(ksu_execveat_hook))\
-		ksu_handle_execveat(\&fd, \&filename, \&argv, \&envp, \&flags);\
-	else\
-		ksu_handle_execveat_sucompat(\&fd, \&filename, \&argv, \&envp, \&flags);\
-#endif
-    }' fs/exec.c
-  fi
-  echo "[+] Hook exec.c OK"
-else
-  echo "❌ do_execveat_common introuvable"
-  exit 1
-fi
-
-# ---------- fs/open.c ----------
-if grep -q "do_faccessat\|SYSCALL_DEFINE3(faccessat" fs/open.c; then
-  if ! grep -q "ksu_handle_faccessat" fs/open.c; then
-    sed -i '1i\
-#ifdef CONFIG_KSU\
-extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\
-#endif' fs/open.c
-
-    if grep -q "long do_faccessat" fs/open.c; then
-      sed -i '/long do_faccessat.*{/a\
-#ifdef CONFIG_KSU\
-	ksu_handle_faccessat(\&dfd, \&filename, \&mode, NULL);\
-#endif' fs/open.c
-    else
-      sed -i '/SYSCALL_DEFINE3(faccessat.*{/a\
-#ifdef CONFIG_KSU\
-	ksu_handle_faccessat(\&dfd, \&filename, \&mode, NULL);\
-#endif' fs/open.c
-    fi
-  fi
-  echo "[+] Hook open.c OK"
-else
-  echo "❌ faccessat introuvable"
-  exit 1
-fi
-
-# ---------- fs/stat.c ----------
-if grep -q "vfs_statx\|vfs_fstatat" fs/stat.c; then
-  if ! grep -q "ksu_handle_stat" fs/stat.c; then
-    sed -i '1i\
-#ifdef CONFIG_KSU\
-extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\
-#endif' fs/stat.c
-
-    if grep -q "int vfs_statx" fs/stat.c; then
-      sed -i '/int vfs_statx.*{/a\
-#ifdef CONFIG_KSU\
-	ksu_handle_stat(\&dfd, \&filename, \&flags);\
-#endif' fs/stat.c
-    else
-      sed -i '/int vfs_fstatat.*{/a\
-#ifdef CONFIG_KSU\
-	ksu_handle_stat(\&dfd, \&filename, \&flag);\
-#endif' fs/stat.c
-    fi
-  fi
-  echo "[+] Hook stat.c OK"
-else
-  echo "❌ vfs_statx / vfs_fstatat introuvable"
-  exit 1
-fi
-
-echo "✅ Les 3 hooks sucompat sont en place"
+echo "✅ KernelSU intégré (4a92049e UAPI2)"
 
 echo "=== Téléchargement du repo JackA1ltman ==="
 git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git /tmp/jack_repo 2>/dev/null || true
@@ -419,8 +332,11 @@ export AARCH64_CLANGXX_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x8
 export AR_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
 export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot -I$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/aarch64-linux-android"
 
-git clone --depth=1 -b staging https://github.com/backslashxx/KernelSU.git ksud-src
-cd ksud-src/userspace/ksud
+git clone --depth=1 -b master https://github.com/backslashxx/KernelSU.git ksud-src
+cd ksud-src
+git fetch --depth=1 origin 4a92049e
+git checkout 4a92049e
+cd userspace/ksud
 
 mkdir -p .cargo
 cat > .cargo/config.toml << EOF
