@@ -52,14 +52,14 @@ void *envp, int *flags);\
 extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,\
 void *argv, void *envp, int *flags);\
 #endif' fs/exec.c
-  sed -i '/static int do_execveat_common.*{/,+8 {/{/a\
+
+  sed -i '/static int do_execveat_common.*{/a\
 #ifdef CONFIG_KSU\
-if (unlikely(ksu_execveat_hook))\
-ksu_handle_execveat(\&fd, \&filename, \&argv, \&envp, \&flags);\
-else\
-ksu_handle_execveat_sucompat(\&fd, \&filename, \&argv, \&envp, \&flags);\
-#endif
-}}' fs/exec.c
+	if (unlikely(ksu_execveat_hook))\
+		ksu_handle_execveat(\&fd, \&filename, \&argv, \&envp, \&flags);\
+	else\
+		ksu_handle_execveat_sucompat(\&fd, \&filename, \&argv, \&envp, \&flags);\
+#endif' fs/exec.c
 fi
 
 # open.c
