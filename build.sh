@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "=== Build KernelSU (4a92049e UAPI2) + SuSFS ==="
+echo "=== Build KernelSU (commit 4a92049e UAPI2) + hooks manuels + SuSFS ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -48,6 +48,97 @@ grep -n "kernelsu" drivers/Makefile
 grep -n "kernelsu" drivers/Kconfig
 
 echo "✅ KernelSU intégré (commit $COMMIT_SHA UAPI2)"
+
+echo "=== Hooks manuels sucompat (fs/exec.c, fs/open.c, fs/stat.c) ==="
+mkdir -p ../output/manual-hooks-diag
+
+sed -i '1i#pragma GCC diagnostic ignored "-Wdeclaration-after-statement"' fs/exec.c
+sed -i '1i#pragma GCC diagnostic ignored "-Wdeclaration-after-statement"' fs/open.c
+sed -i '1i#pragma GCC diagnostic ignored "-Wdeclaration-after-statement"' fs/stat.c
+
+# ---------- fs/exec.c ----------
+if grep -q "do_execveat_common" fs/exec.c; then
+  if ! grep -q "ksu_handle_execveat_sucompat" fs/exec.c; then
+    sed -i '/static int do_execveat_common/i\
+#ifdef CONFIG_KSU\
+extern bool ksu_execveat_hook __read_mostly;\
+extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,\
+			void *envp, int *flags);\
+extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,\
+				 void *argv, void *envp, int *flags);\
+#endif' fs/exec.c
+  fi
+
+  if ! grep -q "ksu_handle_execveat_sucompat(&fd" fs/exec.c; then
+    sed -i '/static int do_execveat_common.*{/,+8 {
+      /{/a\
+#ifdef CONFIG_KSU\
+	if (unlikely(ksu_execveat_hook))\
+		ksu_handle_execveat(\&fd, \&filename, \&argv, \&envp, \&flags);\
+	else\
+		ksu_handle_execveat_sucompat(\&fd, \&filename, \&argv, \&envp, \&flags);\
+#endif
+    }' fs/exec.c
+  fi
+  echo "[+] Hook exec.c OK"
+else
+  echo "❌ do_execveat_common introuvable"
+  exit 1
+fi
+
+# ---------- fs/open.c ----------
+if grep -q "do_faccessat\|SYSCALL_DEFINE3(faccessat" fs/open.c; then
+  if ! grep -q "ksu_handle_faccessat" fs/open.c; then
+    sed -i '1i\
+#ifdef CONFIG_KSU\
+extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\
+#endif' fs/open.c
+
+    if grep -q "long do_faccessat" fs/open.c; then
+      sed -i '/long do_faccessat.*{/a\
+#ifdef CONFIG_KSU\
+	ksu_handle_faccessat(\&dfd, \&filename, \&mode, NULL);\
+#endif' fs/open.c
+    else
+      sed -i '/SYSCALL_DEFINE3(faccessat.*{/a\
+#ifdef CONFIG_KSU\
+	ksu_handle_faccessat(\&dfd, \&filename, \&mode, NULL);\
+#endif' fs/open.c
+    fi
+  fi
+  echo "[+] Hook open.c OK"
+else
+  echo "❌ faccessat introuvable"
+  exit 1
+fi
+
+# ---------- fs/stat.c ----------
+if grep -q "vfs_statx\|vfs_fstatat" fs/stat.c; then
+  if ! grep -q "ksu_handle_stat" fs/stat.c; then
+    sed -i '1i\
+#ifdef CONFIG_KSU\
+extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\
+#endif' fs/stat.c
+
+    if grep -q "int vfs_statx" fs/stat.c; then
+      sed -i '/int vfs_statx.*{/a\
+#ifdef CONFIG_KSU\
+	ksu_handle_stat(\&dfd, \&filename, \&flags);\
+#endif' fs/stat.c
+    else
+      sed -i '/int vfs_fstatat.*{/a\
+#ifdef CONFIG_KSU\
+	ksu_handle_stat(\&dfd, \&filename, \&flag);\
+#endif' fs/stat.c
+    fi
+  fi
+  echo "[+] Hook stat.c OK"
+else
+  echo "❌ vfs_statx / vfs_fstatat introuvable"
+  exit 1
+fi
+
+echo "✅ Les 3 hooks sucompat sont en place"
 
 echo "=== Téléchargement du repo JackA1ltman ==="
 git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git /tmp/jack_repo 2>/dev/null || true
