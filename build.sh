@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "=== Build KernelSU (commit 4a92049e UAPI2) + SuSFS ==="
+echo "=== Build KernelSU (4a92049e UAPI2) + SuSFS ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -20,10 +20,12 @@ cd kernel_sources
 echo "=== Intégration Backslashxx KernelSU (commit 4a92049e UAPI2) ==="
 rm -rf drivers/kernelsu KernelSU susfs4ksu /tmp/KernelSU || true
 
+COMMIT_SHA="4a92049e44cb4ad3ec50c889e3259bfa5d685b01"
+
 git clone --depth=1 -b master https://github.com/backslashxx/KernelSU.git /tmp/KernelSU
 cd /tmp/KernelSU
-git fetch --depth=1 origin 4a92049e
-git checkout 4a92049e
+git fetch --depth=1 origin "$COMMIT_SHA"
+git checkout "$COMMIT_SHA"
 cd $GITHUB_WORKSPACE/kernel_sources
 
 ln -sf /tmp/KernelSU/kernel drivers/kernelsu
@@ -45,7 +47,7 @@ echo "✅ Kconfig modifié"
 grep -n "kernelsu" drivers/Makefile
 grep -n "kernelsu" drivers/Kconfig
 
-echo "✅ KernelSU intégré (4a92049e UAPI2)"
+echo "✅ KernelSU intégré (commit $COMMIT_SHA UAPI2)"
 
 echo "=== Téléchargement du repo JackA1ltman ==="
 git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git /tmp/jack_repo 2>/dev/null || true
@@ -334,8 +336,8 @@ export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_RO
 
 git clone --depth=1 -b master https://github.com/backslashxx/KernelSU.git ksud-src
 cd ksud-src
-git fetch --depth=1 origin 4a92049e
-git checkout 4a92049e
+git fetch --depth=1 origin "$COMMIT_SHA"
+git checkout "$COMMIT_SHA"
 cd userspace/ksud
 
 mkdir -p .cargo
