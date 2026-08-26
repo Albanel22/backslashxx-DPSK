@@ -20,20 +20,20 @@ cd kernel_sources
 echo "=== Intégration Backslashxx KernelSU (commit 46645053) ==="
 rm -rf drivers/kernelsu KernelSU susfs4ksu /tmp/KernelSU || true
 
-git clone https://github.com/backslashxx/KernelSU.git /tmp/KernelSU
+FULL_SHA=$(curl -s https://api.github.com/repos/backslashxx/KernelSU/commits/46645053 | python3 -c "import sys, json; print(json.load(sys.stdin).get('sha', ''))")
+if [ -z "$FULL_SHA" ]; then
+  echo "❌ Impossible de récupérer le SHA complet"
+  exit 1
+fi
+echo "✅ SHA complet : $FULL_SHA"
+
+git clone --depth=1 -b master https://github.com/backslashxx/KernelSU.git /tmp/KernelSU
 cd /tmp/KernelSU
-git checkout 46645053
+git fetch --depth=1 origin "$FULL_SHA"
+git checkout "$FULL_SHA"
 cd $GITHUB_WORKSPACE/kernel_sources
 
 ln -sf /tmp/KernelSU/kernel drivers/kernelsu
-
-if [ -d "drivers/kernelsu" ]; then
-    echo "✅ Symlink OK"
-    ls drivers/kernelsu/ | head -5
-else
-    echo "❌ Symlink ÉCHOUÉ"
-    exit 1
-fi
 
 printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> drivers/Makefile
 echo "✅ Makefile modifié"
