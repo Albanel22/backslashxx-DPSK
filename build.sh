@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-echo "=== Build KernelSU (commit 46645053) + hooks + SuSFS ==="
+echo "=== Build KernelSU master backslashxx (non-GKI) + hooks + SuSFS ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -17,202 +17,122 @@ echo "=== Clonage du kernel ==="
 git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git -b lineage-23.2 --depth=1 kernel_sources
 cd kernel_sources
 
-echo "=== Intégration Backslashxx KernelSU (commit 46645053) ==="
+echo "=== Intégration Backslashxx KernelSU (master HEAD) ==="
 rm -rf drivers/kernelsu KernelSU susfs4ksu /tmp/KernelSU || true
 
-FULL_SHA=$(curl -s https://api.github.com/repos/backslashxx/KernelSU/commits/46645053 | python3 -c "import sys, json; print(json.load(sys.stdin).get('sha', ''))")
-if [ -z "$FULL_SHA" ]; then
-  echo "❌ Impossible de récupérer le SHA complet"
-  exit 1
-fi
-echo "✅ SHA complet : $FULL_SHA"
-
 git clone --depth=1 -b master https://github.com/backslashxx/KernelSU.git /tmp/KernelSU
-cd /tmp/KernelSU
-git fetch --depth=1 origin "$FULL_SHA"
-git checkout "$FULL_SHA"
 cd $GITHUB_WORKSPACE/kernel_sources
 
 ln -sf /tmp/KernelSU/kernel drivers/kernelsu
 
+if [ -d "drivers/kernelsu" ]; then
+    echo "✅ Symlink OK"
+    ls drivers/kernelsu/ | head -5
+else
+    echo "❌ Symlink ÉCHOUÉ"
+    exit 1
+fi
+
 printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> drivers/Makefile
-echo "✅ Makefile modifié"
-
 sed -i "/endmenu/i\source \"drivers/kernelsu/Kconfig\"" drivers/Kconfig
-echo "✅ Kconfig modifié"
+echo "✅ Makefile et Kconfig modifiés"
 
-grep -n "kernelsu" drivers/Makefile
-grep -n "kernelsu" drivers/Kconfig
-
-echo "✅ KernelSU intégré (commit 46645053)"
-
-echo "=== Hooks manuels sucompat (fs/exec.c, fs/open.c, fs/stat.c) ==="
-mkdir -p ../output/manual-hooks-diag
-
+echo "=== Hooks manuels sucompat ==="
 sed -i '1i#pragma GCC diagnostic ignored "-Wdeclaration-after-statement"' fs/exec.c
 sed -i '1i#pragma GCC diagnostic ignored "-Wdeclaration-after-statement"' fs/open.c
 sed -i '1i#pragma GCC diagnostic ignored "-Wdeclaration-after-statement"' fs/stat.c
 
-# ---------- fs/exec.c ----------
-if grep -q "do_execveat_common" fs/exec.c; then
-  if ! grep -q "ksu_handle_execveat_sucompat" fs/exec.c; then
-    sed -i '/static int do_execveat_common/i\
+# exec.c
+if ! grep -q "ksu_handle_execveat_sucompat" fs/exec.c; then
+  sed -i '/static int do_execveat_common/i\
 #ifdef CONFIG_KSU\
 extern bool ksu_execveat_hook __read_mostly;\
 extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,\
-			void *envp, int *flags);\
+void *envp, int *flags);\
 extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,\
-				 void *argv, void *envp, int *flags);\
+void *argv, void *envp, int *flags);\
 #endif' fs/exec.c
-  fi
 
-  if ! grep -q "ksu_handle_execveat_sucompat(&fd" fs/exec.c; then
-    sed -i '/static int do_execveat_common.*{/a\
+  sed -i '/static int do_execveat_common.*{/a\
 #ifdef CONFIG_KSU\
-	if (unlikely(ksu_execveat_hook))\
-		ksu_handle_execveat(\&fd, \&filename, \&argv, \&envp, \&flags);\
-	else\
-		ksu_handle_execveat_sucompat(\&fd, \&filename, \&argv, \&envp, \&flags);\
+if (unlikely(ksu_execveat_hook))\
+ksu_handle_execveat(\&fd, \&filename, \&argv, \&envp, \&flags);\
+else\
+ksu_handle_execveat_sucompat(\&fd, \&filename, \&argv, \&envp, \&flags);\
 #endif' fs/exec.c
-  fi
-  echo "[+] Hook exec.c OK"
-else
-  echo "❌ do_execveat_common introuvable"
-  exit 1
 fi
 
-# ---------- fs/open.c ----------
-if grep -q "do_faccessat\|SYSCALL_DEFINE3(faccessat" fs/open.c; then
-  if ! grep -q "ksu_handle_faccessat" fs/open.c; then
-    sed -i '1i\
+# open.c
+if ! grep -q "ksu_handle_faccessat" fs/open.c; then
+  sed -i '1i\
 #ifdef CONFIG_KSU\
 extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\
 #endif' fs/open.c
-
-    if grep -q "long do_faccessat" fs/open.c; then
-      sed -i '/long do_faccessat.*{/a\
+  if grep -q "long do_faccessat" fs/open.c; then
+    sed -i '/long do_faccessat.*{/a\
 #ifdef CONFIG_KSU\
-	ksu_handle_faccessat(\&dfd, \&filename, \&mode, NULL);\
+ksu_handle_faccessat(\&dfd, \&filename, \&mode, NULL);\
 #endif' fs/open.c
-    else
-      sed -i '/SYSCALL_DEFINE3(faccessat.*{/a\
+  else
+    sed -i '/SYSCALL_DEFINE3(faccessat.*{/a\
 #ifdef CONFIG_KSU\
-	ksu_handle_faccessat(\&dfd, \&filename, \&mode, NULL);\
+ksu_handle_faccessat(\&dfd, \&filename, \&mode, NULL);\
 #endif' fs/open.c
-    fi
   fi
-  echo "[+] Hook open.c OK"
-else
-  echo "❌ faccessat introuvable"
-  exit 1
 fi
 
-# ---------- fs/stat.c ----------
-if grep -q "vfs_statx\|vfs_fstatat" fs/stat.c; then
-  if ! grep -q "ksu_handle_stat" fs/stat.c; then
-    sed -i '1i\
+# stat.c
+if ! grep -q "ksu_handle_stat" fs/stat.c; then
+  sed -i '1i\
 #ifdef CONFIG_KSU\
 extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\
 #endif' fs/stat.c
-
-    if grep -q "int vfs_statx" fs/stat.c; then
-      sed -i '/int vfs_statx.*{/a\
+  if grep -q "int vfs_statx" fs/stat.c; then
+    sed -i '/int vfs_statx.*{/a\
 #ifdef CONFIG_KSU\
-	ksu_handle_stat(\&dfd, \&filename, \&flags);\
+ksu_handle_stat(\&dfd, \&filename, \&flags);\
 #endif' fs/stat.c
-    else
-      sed -i '/int vfs_fstatat.*{/a\
+  else
+    sed -i '/int vfs_fstatat.*{/a\
 #ifdef CONFIG_KSU\
-	ksu_handle_stat(\&dfd, \&filename, \&flag);\
+ksu_handle_stat(\&dfd, \&filename, \&flag);\
 #endif' fs/stat.c
-    fi
   fi
-  echo "[+] Hook stat.c OK"
-else
-  echo "❌ vfs_statx / vfs_fstatat introuvable"
-  exit 1
 fi
 
-echo "✅ Les 3 hooks sucompat sont en place"
-
-echo "=== Téléchargement du repo JackA1ltman ==="
-git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git /tmp/jack_repo 2>/dev/null || true
+echo "✅ Hooks manuels en place"
 
 echo "=== Application du patch SusFS 4.19 ==="
+git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git /tmp/jack_repo 2>/dev/null || true
 PATCH_419=$(find /tmp/jack_repo/Patches -name "*4.19*" -name "*.patch" | head -1)
 if [ -n "$PATCH_419" ]; then
-  echo "Application du patch: $PATCH_419"
   patch -p1 < "$PATCH_419" 2>&1 | tee /tmp/susfs_patch.log || true
-  echo "Patch appliqué"
-else
-  echo "Recherche des patches..."
-  find /tmp/jack_repo/Patches -name "*.patch" | head -20
 fi
 
-echo "=== Corrections manuelles des rejets SusFS ==="
-
-# ----- Correction fs/namespace.c -----
+# Corrections SusFS
 python3 - << 'PYEOF'
 import re
-
 with open('fs/namespace.c', 'r') as f:
     content = f.read()
-
 if 'susfs_def.h' not in content:
-    content = content.replace(
-        '#include <linux/sched/task.h>',
-        '''#include <linux/sched/task.h>
+    content = content.replace('#include <linux/sched/task.h>',
+'''#include <linux/sched/task.h>
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 #include <linux/susfs_def.h>
 #endif
-
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 extern bool susfs_is_current_ksu_domain(void);
 extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
-
-#define CL_COPY_MNT_NS BIT(25) /* used by copy_mnt_ns() */
-#endif'''
-    )
-
-if 'susfs_alloc_non_unshare_ksu_vfsmnt' not in content:
-    old = '''	if (!type)
-		return ERR_PTR(-ENODEV);
-
-	mnt = alloc_vfsmnt(name);
-	if (!mnt)
-		return ERR_PTR(-ENOMEM);'''
-    new = '''	if (!type)
-		return ERR_PTR(-ENODEV);
-
-#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-	if (static_branch_unlikely(&susfs_is_sdcard_android_data_not_decrypted)) {
-		if (susfs_is_current_ksu_domain()) {
-			mnt = susfs_alloc_non_unshare_ksu_vfsmnt(name ?:"none");
-			goto bypass_orig_flow;
-		}
-	}
-#endif
-
-	mnt = alloc_vfsmnt(name);
-
-#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-bypass_orig_flow:
-#endif
-	if (!mnt)
-		return ERR_PTR(-ENOMEM);'''
-    content = content.replace(old, new)
-
+#define CL_COPY_MNT_NS BIT(25)
+#endif''')
 with open('fs/namespace.c', 'w') as f:
     f.write(content)
 PYEOF
 
-# ----- Correction fs/proc/task_mmu.c -----
 python3 - << 'PYEOF'
 import re
-
 with open('fs/proc/task_mmu.c', 'r') as f:
     content = f.read()
-
 if 'SUSFS_IS_INODE_SUS_MAP' not in content:
     old = '''		ret = down_read_killable(&mm->mmap_sem);
 		if (ret)
@@ -233,14 +153,10 @@ bypass_orig_flow:
 #endif
 		up_read(&mm->mmap_sem);'''
     content = content.replace(old, new)
-
 with open('fs/proc/task_mmu.c', 'w') as f:
     f.write(content)
 PYEOF
 
-echo "=== Nettoyage et hook setresuid ==="
-find . -name "*.rej" -type f -delete 2>/dev/null || true
-find . -name "*.orig" -type f -delete 2>/dev/null || true
 sed -i '1617d' fs/proc/task_mmu.c 2>/dev/null || true
 
 if ! grep -q "ksu_handle_setresuid" kernel/sys.c; then
@@ -249,12 +165,12 @@ import re
 with open('kernel/sys.c', 'r') as f:
     content = f.read()
 if 'ksu_handle_setresuid' not in content:
-    extern_decl = '''
+    content = re.sub(r'(long __sys_setresuid)',
+'''
 #ifdef CONFIG_KSU_SUSFS
 extern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);
 #endif
-'''
-    content = re.sub(r'(long __sys_setresuid)', extern_decl + '\n' + r'\1', content, count=1)
+long __sys_setresuid''', content, count=1)
     content = content.replace('''	bool ruid_new, euid_new, suid_new;''',
 '''	bool ruid_new, euid_new, suid_new;
 #ifdef CONFIG_KSU_SUSFS
@@ -274,8 +190,6 @@ export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 mkdir -p out
 CONFIG=$(find arch/arm64/configs/ -name "*kiev*" -o -name "*lito*" -o -name "*sm8250*" | head -1)
 CONFIG_NAME=${CONFIG#arch/arm64/configs/}
-echo "Config utilisée: $CONFIG_NAME"
-
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 $CONFIG_NAME
 
 {
@@ -292,17 +206,16 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
   echo "CONFIG_KSU_SUSFS_SUS_PATH=y"
   echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y"
   echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y"
-  echo "CONFIG_KSU_SUSFS_SUS_MAP=y"
   echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y"
   echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y"
   echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y"
   echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y"
   echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y"
+  echo "CONFIG_KSU_SUSFS_SUS_MAP=y"
 } >> out/.config
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-# Désactiver SECCOMP_FILTER
 ./scripts/config --file out/.config --disable SECCOMP_FILTER
 echo "# CONFIG_SECCOMP_FILTER is not set" >> out/.config
 grep "CONFIG_SECCOMP" out/.config
@@ -311,18 +224,17 @@ echo "=== Patch signatures + tactile ==="
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
 
-echo "=== Compilation finale ==="
+echo "=== Compilation noyau ==="
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image 2>&1 | tee build.log
 
-if [ -f "out/arch/arm64/boot/Image" ]; then
-  echo "✅ Compilation réussie"
-else
+if [ ! -f "out/arch/arm64/boot/Image" ]; then
   echo "❌ BUILD FAILED"
   grep -i "error:" build.log | head -30
   exit 1
 fi
+echo "✅ Compilation réussie"
 
-echo "=== Compilation de ksud ==="
+echo "=== Compilation ksud ==="
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 source "$HOME/.cargo/env"
 rustup target add aarch64-linux-android
@@ -366,7 +278,7 @@ fi
 
 cd "$GITHUB_WORKSPACE"
 
-echo "=== Téléchargement des images stock ==="
+echo "=== Repack ==="
 curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260809/boot.img" 2>/dev/null || {
   mkbootimg --kernel kernel_sources/out/arch/arm64/boot/Image --ramdisk /dev/null --output final_boot.img --header_version 2 --pagesize 4096 --base 0x00000000 --kernel_offset 0x00008000 --ramdisk_offset 0x01000000 --tags_offset 0x00000100 --cmdline "androidboot.hardware=kiev androidboot.selinux=permissive"
 }
