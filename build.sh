@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD WINNER : KernelSU v3.2.5-70 (UAPI2) + SuSFS ==="
+echo "=== BUILD WINNER : KernelSU v3.2.5-70 (UAPI2 + fix version) + SuSFS ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -29,19 +29,20 @@ rm -rf drivers/kernelsu KernelSU susfs4ksu /tmp/KernelSU || true
 
 KSU_TAG="v3.2.5-70"
 
-# Récupérer setup.sh et intégrer le tag exact
 curl -LSs "https://raw.githubusercontent.com/backslashxx/KernelSU/master/kernel/setup.sh" | bash -s "$KSU_TAG"
 
 echo "✅ KernelSU intégré avec le tag $KSU_TAG"
 
-# Vérifier que l'UAPI 2 est bien présent dans le driver
-echo "=== Vérification UAPI2 dans le driver ==="
-if [ -d "KernelSU" ]; then
-  grep -n "uapi_version" KernelSU/kernel/supercall/dispatch.c || echo "⚠️ uapi_version introuvable dans dispatch.c"
-  grep -n "KERNEL_SU_UAPI_VERSION" KernelSU/uapi/supercall.h || echo "⚠️ KERNEL_SU_UAPI_VERSION introuvable dans supercall.h"
+# ==================== 2b. FIX KSU_VERSION ====================
+echo "=== Fix KSU_VERSION ==="
+if ! grep -q "CFLAGS_ksu.o += -DKSU_VERSION=" drivers/kernelsu/Makefile; then
+    echo "CFLAGS_ksu.o += -DKSU_VERSION=32595" >> drivers/kernelsu/Makefile
+    echo "[+] KSU_VERSION=32595 ajouté au Makefile"
 else
-  echo "⚠️ Dossier KernelSU introuvable"
+    echo "[+] KSU_VERSION déjà présent"
 fi
+
+grep -n "KSU_VERSION" drivers/kernelsu/Makefile
 
 # ==================== 3. HOOKS MANUELS KERNELSU ====================
 echo "=== Hooks manuels KernelSU ==="
