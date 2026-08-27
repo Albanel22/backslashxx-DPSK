@@ -23,21 +23,23 @@ git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git \
 
 cd kernel_sources
 
-echo "=== Intégration KernelSU (backslashxx UAPI 2) ==="
-
-rm -rf /tmp/KernelSU
-git clone --depth=1 https://github.com/backslashxx/KernelSU.git /tmp/KernelSU
-
-cd /tmp/KernelSU
-git checkout 45217843
-
-cd "$GITHUB_WORKSPACE/kernel_sources"
-
+# ==================== 2. INTÉGRATION KERNELSU ====================
+echo "=== Intégration KernelSU (backslashxx) ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu || true
+curl -LSs "https://raw.githubusercontent.com/backslashxx/KernelSU/master/kernel/setup.sh" | bash
 
-cp -r /tmp/KernelSU/kernel drivers/kernelsu
-
-echo "✅ KernelSU kernel intégré depuis la même source que ksud"
+# ===== ALIGNER LE DRIVER SUR LE COMMIT DU KSUD (45217843) =====
+echo "=== Alignement du driver KernelSU sur 45217843 ==="
+if [ -d "KernelSU" ]; then
+  cd KernelSU
+  git fetch --depth=1 origin 45217843
+  git checkout 45217843
+  cd ..
+  ln -sf "$(realpath KernelSU/kernel)" drivers/kernelsu
+  echo "✅ Driver KernelSU aligné sur 45217843"
+else
+  echo "⚠️ Dossier KernelSU introuvable"
+fi
 
 # ==================== 3. HOOKS MANUELS KERNELSU ====================
 echo "=== Hooks manuels KernelSU ==="
@@ -151,11 +153,9 @@ find . -name "*.rej" -type f -delete 2>/dev/null || true
 find . -name "*.orig" -type f -delete 2>/dev/null || true
 
 # ==================== 5b. CORRECTION FS/MAKEFILE ====================
-echo "=== Correction fs/Makefile ==="
 if [ -f "fs/Makefile" ]; then
     if ! grep -q "susfs.o" fs/Makefile; then
         echo "obj-\$(CONFIG_KSU_SUSFS) += susfs.o" >> fs/Makefile
-        echo "✅ susfs.o ajouté"
     fi
     if [ -f "fs/sus_su.c" ]; then
         if ! grep -q "sus_su.o" fs/Makefile; then
@@ -165,7 +165,6 @@ if [ -f "fs/Makefile" ]; then
 fi
 
 # ==================== 5c. CORRECTION NAMESPACE.C ====================
-echo "=== Correction fs/namespace.c ==="
 python3 - << 'PYEOF'
 import re
 
@@ -352,10 +351,13 @@ export AR_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm
 export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot -I$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/aarch64-linux-android"
 
 rm -rf "$GITHUB_WORKSPACE/ksud-src"
+git clone --depth=1 https://github.com/backslashxx/KernelSU.git "$GITHUB_WORKSPACE/ksud-src"
+cd "$GITHUB_WORKSPACE/ksud-src"
+git fetch --depth=1 origin 45217843
+git checkout 45217843
+cd userspace/ksud
 
-cp -r /tmp/KernelSU "$GITHUB_WORKSPACE/ksud-src"
-
-cd "$GITHUB_WORKSPACE/ksud-src/userspace/ksksud-srcir -p .cargo
+mkdir -p .cargo
 cat > .cargo/config.toml <<EOF
 [target.aarch64-linux-android]
 linker = "$AARCH64_CLANG_PATH"
