@@ -379,10 +379,19 @@ export AR_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm
 export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot -I$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/aarch64-linux-android"
 
 rm -rf "$GITHUB_WORKSPACE/ksud-src"
+
+# Récupérer le SHA du tag via l'API
+TAG_SHA=$(curl -s "https://api.github.com/repos/backslashxx/KernelSU/git/refs/tags/$KSU_TAG" | python3 -c "import sys, json; obj=json.load(sys.stdin); print(obj.get('object',{}).get('sha',''))")
+if [ -z "$TAG_SHA" ]; then
+  echo "❌ Impossible de récupérer le SHA du tag $KSU_TAG"
+  exit 1
+fi
+echo "✅ SHA du tag $KSU_TAG : $TAG_SHA"
+
 git clone --depth=1 https://github.com/backslashxx/KernelSU.git "$GITHUB_WORKSPACE/ksud-src"
 cd "$GITHUB_WORKSPACE/ksud-src"
-git fetch --depth=1 origin "refs/tags/$KSU_TAG"
-git checkout "refs/tags/$KSU_TAG"
+git fetch --depth=1 origin "$TAG_SHA"
+git checkout "$TAG_SHA"
 cd userspace/ksud
 
 mkdir -p .cargo
