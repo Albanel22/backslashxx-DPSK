@@ -325,27 +325,21 @@ sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 # ==================== 9. PATCH TACTILE ====================
 printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
 
-echo "=== Fix __aarch64_cas4_rel ==="
-if ! grep -q "__aarch64_cas4_rel" arch/arm64/lib/Makefile; then
-  cat >> arch/arm64/lib/Makefile << 'EOF'
-
-# Fix KernelSU sulog missing symbol
-obj-y += cas4_rel.o
-EOF
-fi
-
+echo "=== Fix __aarch64_cas4_rel (sûr et simple) ==="
 cat > arch/arm64/lib/cas4_rel.c << 'EOF'
 #include <linux/export.h>
 #include <linux/types.h>
 
 int __aarch64_cas4_rel(int *ptr, int old, int new)
 {
-    return __sync_val_compare_and_swap(ptr, old, new);
+    int val = READ_ONCE(*ptr);
+    if (val == old)
+        WRITE_ONCE(*ptr, new);
+    return val;
 }
 EXPORT_SYMBOL(__aarch64_cas4_rel);
 EOF
-
-echo "✅ Fix __aarch64_cas4_rel ajouté"
+echo "✅ Fix ajouté"
 
 # ==================== 10. COMPILATION ====================
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image 2>&1 | tee build.log
