@@ -23,23 +23,21 @@ git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git \
 
 cd kernel_sources
 
-# ==================== 2. INTÉGRATION KERNELSU ====================
-echo "=== Intégration KernelSU (backslashxx) ==="
-rm -rf drivers/kernelsu kernelSU susfs4ksu || true
-curl -LSs "https://raw.githubusercontent.com/backslashxx/KernelSU/master/kernel/setup.sh" | bash
+echo "=== Intégration KernelSU (backslashxx UAPI 2) ==="
 
-# ===== FORCER LE DRIVER SUR MASTER (même ref que ksud) =====
-echo "=== Forçage du driver KernelSU sur master ==="
-if [ -d "KernelSU" ]; then
-  cd KernelSU
-  git checkout master 2>/dev/null || git checkout origin/master 2>/dev/null || true
-  git pull --ff-only 2>/dev/null || true
-  cd ..
-  ln -sf "$(realpath KernelSU/kernel)" drivers/kernelsu
-  echo "✅ Driver KernelSU aligné sur master"
-else
-  echo "⚠️ Dossier KernelSU introuvable, symlink actuel conservé"
-fi
+rm -rf /tmp/KernelSU
+git clone --depth=1 https://github.com/backslashxx/KernelSU.git /tmp/KernelSU
+
+cd /tmp/KernelSU
+git checkout 45217843
+
+cd "$GITHUB_WORKSPACE/kernel_sources"
+
+rm -rf drivers/kernelsu kernelSU susfs4ksu || true
+
+cp -r /tmp/KernelSU/kernel drivers/kernelsu
+
+echo "✅ KernelSU kernel intégré depuis la même source que ksud"
 
 # ==================== 3. HOOKS MANUELS KERNELSU ====================
 echo "=== Hooks manuels KernelSU ==="
@@ -354,10 +352,10 @@ export AR_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm
 export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot -I$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/aarch64-linux-android"
 
 rm -rf "$GITHUB_WORKSPACE/ksud-src"
-git clone --depth=1 https://github.com/backslashxx/KernelSU.git "$GITHUB_WORKSPACE/ksud-src"
-cd "$GITHUB_WORKSPACE/ksud-src/userspace/ksud"
 
-mkdir -p .cargo
+cp -r /tmp/KernelSU "$GITHUB_WORKSPACE/ksud-src"
+
+cd "$GITHUB_WORKSPACE/ksud-src/userspace/ksksud-srcir -p .cargo
 cat > .cargo/config.toml <<EOF
 [target.aarch64-linux-android]
 linker = "$AARCH64_CLANG_PATH"
