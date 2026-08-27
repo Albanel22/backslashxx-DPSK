@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD WINNER : KernelSU + SuSFS v2.2.0 (JackA1ltman) ==="
+echo "=== BUILD WINNER : KernelSU v1.0.5+magic (6fd56d5 non-GKI) + SuSFS ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -24,11 +24,19 @@ git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git \
 cd kernel_sources
 
 # ==================== 2. INTÉGRATION KERNELSU ====================
-echo "=== Intégration KernelSU (commit exact UAPI2) ==="
+echo "=== Intégration KernelSU (6fd56d5 non-GKI) ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu KernelSU || true
 
-KSU_COMMIT="4a92049e44cb4ad3ec50c889e3259bfa5d685b01"
+# Récupérer le SHA complet du commit 6fd56d5
+KSU_SHORT="6fd56d5"
+KSU_COMMIT=$(curl -s "https://api.github.com/repos/backslashxx/KernelSU/commits/${KSU_SHORT}" | python3 -c "import sys, json; print(json.load(sys.stdin).get('sha', ''))")
+if [ -z "$KSU_COMMIT" ]; then
+  echo "❌ Impossible de récupérer le SHA complet pour ${KSU_SHORT}"
+  exit 1
+fi
+echo "✅ SHA complet : $KSU_COMMIT"
 
+# Utiliser setup.sh avec le commit exact
 curl -LSs "https://raw.githubusercontent.com/backslashxx/KernelSU/master/kernel/setup.sh" | bash -s "$KSU_COMMIT"
 
 echo "✅ KernelSU intégré avec le commit $KSU_COMMIT"
