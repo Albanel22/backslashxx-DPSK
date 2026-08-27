@@ -24,7 +24,7 @@ git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git \
 cd kernel_sources
 
 # ==================== 2. INTÉGRATION KERNELSU ====================
-echo "=== Intégration KernelSU (6fd56d5 non-GKI) ==="
+echo "=== Intégration KernelSU (commit 6fd56d5 non-GKI) ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu KernelSU || true
 
 # Récupérer le SHA complet du commit 6fd56d5
@@ -32,6 +32,7 @@ KSU_SHORT="6fd56d5"
 KSU_COMMIT=$(curl -s "https://api.github.com/repos/backslashxx/KernelSU/commits/${KSU_SHORT}" | python3 -c "import sys, json; print(json.load(sys.stdin).get('sha', ''))")
 if [ -z "$KSU_COMMIT" ]; then
   echo "❌ Impossible de récupérer le SHA complet pour ${KSU_SHORT}"
+  echo "⚠️ Essaie d'utiliser le SHA complet directement dans le script."
   exit 1
 fi
 echo "✅ SHA complet : $KSU_COMMIT"
