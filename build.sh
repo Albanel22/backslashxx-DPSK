@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD WINNER : KernelSU + SuSFS v2.2.0 (JackA1ltman) ==="
+echo "=== BUILD WINNER : KernelSU + SuSFS v2.2.0 (commit b3c7bdf non-GKI) ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -24,31 +24,22 @@ git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git \
 cd kernel_sources
 
 # ==================== 2. INTÉGRATION KERNELSU ====================
-echo "=== Intégration KernelSU (backslashxx) ==="
-rm -rf drivers/kernelsu kernelSU susfs4ksu || true
-curl -LSs "https://raw.githubusercontent.com/backslashxx/KernelSU/master/kernel/setup.sh" | bash
+echo "=== Intégration KernelSU (commit b3c7bdf non-GKI) ==="
+rm -rf drivers/kernelsu kernelSU susfs4ksu KernelSU || true
 
-# ===== ALIGNER LE DRIVER SUR LE COMMIT 45217843 (SHA complet via API) =====
-echo "=== Alignement du driver KernelSU sur 45217843 ==="
-TARGET_SHORT="45217843"
-FULL_SHA=$(curl -s "https://api.github.com/repos/backslashxx/KernelSU/commits/${TARGET_SHORT}" | python3 -c "import sys, json; print(json.load(sys.stdin).get('sha', ''))")
-if [ -z "$FULL_SHA" ]; then
-  echo "❌ Impossible de récupérer le SHA complet pour ${TARGET_SHORT}"
+# Récupérer le SHA complet du commit b3c7bdf
+KSU_SHORT="b3c7bdf"
+KSU_COMMIT=$(curl -s "https://api.github.com/repos/backslashxx/KernelSU/commits/${KSU_SHORT}" | python3 -c "import sys, json; print(json.load(sys.stdin).get('sha', ''))")
+if [ -z "$KSU_COMMIT" ]; then
+  echo "❌ Impossible de récupérer le SHA complet pour ${KSU_SHORT}"
   exit 1
 fi
-echo "✅ SHA complet : $FULL_SHA"
+echo "✅ SHA complet : $KSU_COMMIT"
 
-if [ -d "KernelSU" ]; then
-  cd KernelSU
-  git fetch --depth=1 origin "$FULL_SHA"
-  git checkout "$FULL_SHA"
-  cd ..
-  ln -sf "$(realpath KernelSU/kernel)" drivers/kernelsu
-  echo "✅ Driver KernelSU aligné sur $FULL_SHA"
-else
-  echo "❌ Dossier KernelSU introuvable"
-  exit 1
-fi
+# Utiliser setup.sh avec le commit exact
+curl -LSs "https://raw.githubusercontent.com/backslashxx/KernelSU/master/kernel/setup.sh" | bash -s "$KSU_COMMIT"
+
+echo "✅ KernelSU intégré avec le commit $KSU_COMMIT"
 
 # ==================== 3. HOOKS MANUELS KERNELSU ====================
 echo "=== Hooks manuels KernelSU ==="
@@ -362,8 +353,8 @@ export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_RO
 rm -rf "$GITHUB_WORKSPACE/ksud-src"
 git clone --depth=1 https://github.com/backslashxx/KernelSU.git "$GITHUB_WORKSPACE/ksud-src"
 cd "$GITHUB_WORKSPACE/ksud-src"
-git fetch --depth=1 origin "$FULL_SHA"
-git checkout "$FULL_SHA"
+git fetch --depth=1 origin "$KSU_COMMIT"
+git checkout "$KSU_COMMIT"
 cd userspace/ksud
 
 mkdir -p .cargo
