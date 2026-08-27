@@ -325,12 +325,12 @@ sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 # ==================== 9. PATCH TACTILE ====================
 printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
 
-# ==================== 9b. FIX __aarch64_cas4_rel ====================
 echo "=== Fix __aarch64_cas4_rel ==="
 
 cat > arch/arm64/lib/cas4_rel.c << 'EOF'
 #include <linux/export.h>
 #include <linux/types.h>
+#include <linux/compiler.h>
 
 int __aarch64_cas4_rel(int *ptr, int old, int new)
 {
@@ -348,7 +348,6 @@ if ! grep -q "cas4_rel.o" arch/arm64/lib/Makefile; then
 fi
 
 grep -n "cas4_rel" arch/arm64/lib/Makefile
-
 # ==================== 10. COMPILATION ====================
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image 2>&1 | tee build.log
 
