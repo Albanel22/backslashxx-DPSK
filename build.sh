@@ -28,17 +28,26 @@ echo "=== Intégration KernelSU (backslashxx) ==="
 rm -rf drivers/kernelsu kernelSU susfs4ksu || true
 curl -LSs "https://raw.githubusercontent.com/backslashxx/KernelSU/master/kernel/setup.sh" | bash
 
-# ===== ALIGNER LE DRIVER SUR LE COMMIT DU KSUD (45217843) =====
+# ===== ALIGNER LE DRIVER SUR LE COMMIT 45217843 (SHA complet via API) =====
 echo "=== Alignement du driver KernelSU sur 45217843 ==="
+TARGET_SHORT="45217843"
+FULL_SHA=$(curl -s "https://api.github.com/repos/backslashxx/KernelSU/commits/${TARGET_SHORT}" | python3 -c "import sys, json; print(json.load(sys.stdin).get('sha', ''))")
+if [ -z "$FULL_SHA" ]; then
+  echo "❌ Impossible de récupérer le SHA complet pour ${TARGET_SHORT}"
+  exit 1
+fi
+echo "✅ SHA complet : $FULL_SHA"
+
 if [ -d "KernelSU" ]; then
   cd KernelSU
-  git fetch --depth=1 origin 45217843
-  git checkout 45217843
+  git fetch --depth=1 origin "$FULL_SHA"
+  git checkout "$FULL_SHA"
   cd ..
   ln -sf "$(realpath KernelSU/kernel)" drivers/kernelsu
-  echo "✅ Driver KernelSU aligné sur 45217843"
+  echo "✅ Driver KernelSU aligné sur $FULL_SHA"
 else
-  echo "⚠️ Dossier KernelSU introuvable"
+  echo "❌ Dossier KernelSU introuvable"
+  exit 1
 fi
 
 # ==================== 3. HOOKS MANUELS KERNELSU ====================
@@ -353,8 +362,8 @@ export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_RO
 rm -rf "$GITHUB_WORKSPACE/ksud-src"
 git clone --depth=1 https://github.com/backslashxx/KernelSU.git "$GITHUB_WORKSPACE/ksud-src"
 cd "$GITHUB_WORKSPACE/ksud-src"
-git fetch --depth=1 origin 45217843
-git checkout 45217843
+git fetch --depth=1 origin "$FULL_SHA"
+git checkout "$FULL_SHA"
 cd userspace/ksud
 
 mkdir -p .cargo
