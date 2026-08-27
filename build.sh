@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD WINNER : KernelSU (855ab616) + SuSFS ==="
+echo "=== BUILD WINNER : KernelSU v3.2.5+ (8c96355) + SuSFS ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -23,13 +23,36 @@ git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git \
 
 cd kernel_sources
 
-# ==================== 2. INTÉGRATION KERNELSU ====================
-echo "=== Intégration KernelSU (855ab6163ee292580219bedd037429c0f8d1a010) ==="
-rm -rf drivers/kernelsu kernelSU susfs4ksu KernelSU || true
+# ==================== 2. INTÉGRATION KERNELSU (COMMIT EXACT) ====================
+echo "=== Intégration KernelSU (commit 8c96355) ==="
+rm -rf drivers/kernelsu KernelSU susfs4ksu /tmp/KernelSU || true
 
-KSU_COMMIT="855ab6163ee292580219bedd037429c0f8d1a010"
+KSU_COMMIT="8c96355ddb1b219d18df335d6f281d2ae0975fe2"
 
-curl -LSs "https://raw.githubusercontent.com/backslashxx/KernelSU/master/kernel/setup.sh" | bash -s "$KSU_COMMIT"
+# Cloner le dépôt backslashxx et checkout le commit exact
+git clone --depth=1 -b master https://github.com/backslashxx/KernelSU.git /tmp/KernelSU
+cd /tmp/KernelSU
+git fetch --depth=1 origin "$KSU_COMMIT"
+git checkout "$KSU_COMMIT"
+cd "$GITHUB_WORKSPACE/kernel_sources"
+
+# Créer le symlink
+ln -sf /tmp/KernelSU/kernel drivers/kernelsu
+
+if [ -d "drivers/kernelsu" ]; then
+    echo "✅ Symlink OK"
+    ls drivers/kernelsu/ | head -5
+else
+    echo "❌ Symlink ÉCHOUÉ"
+    exit 1
+fi
+
+# Ajouter au Makefile et Kconfig
+printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> drivers/Makefile
+sed -i "/endmenu/i\source \"drivers/kernelsu/Kconfig\"" drivers/Kconfig
+
+grep -n "kernelsu" drivers/Makefile
+grep -n "kernelsu" drivers/Kconfig
 
 echo "✅ KernelSU intégré avec le commit $KSU_COMMIT"
 
@@ -343,7 +366,7 @@ export AR_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm
 export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot -I$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/aarch64-linux-android"
 
 rm -rf "$GITHUB_WORKSPACE/ksud-src"
-git clone --depth=1 https://github.com/backslashxx/KernelSU.git "$GITHUB_WORKSPACE/ksud-src"
+git clone --depth=1 -b master https://github.com/backslashxx/KernelSU.git "$GITHUB_WORKSPACE/ksud-src"
 cd "$GITHUB_WORKSPACE/ksud-src"
 git fetch --depth=1 origin "$KSU_COMMIT"
 git checkout "$KSU_COMMIT"
