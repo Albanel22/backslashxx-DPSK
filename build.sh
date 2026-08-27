@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD WINNER : KernelSU v3.2.5+ (8c96355) + SuSFS ==="
+echo "=== BUILD WINNER : KernelSU v3.2.5-70 (UAPI2) + SuSFS ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -23,38 +23,25 @@ git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git \
 
 cd kernel_sources
 
-# ==================== 2. INTÉGRATION KERNELSU (COMMIT EXACT) ====================
-echo "=== Intégration KernelSU (commit 8c96355) ==="
+# ==================== 2. INTÉGRATION KERNELSU (TAG v3.2.5-70) ====================
+echo "=== Intégration KernelSU v3.2.5-70 (UAPI2) ==="
 rm -rf drivers/kernelsu KernelSU susfs4ksu /tmp/KernelSU || true
 
-KSU_COMMIT="8c96355ddb1b219d18df335d6f281d2ae0975fe2"
+KSU_TAG="v3.2.5-70"
 
-# Cloner le dépôt backslashxx et checkout le commit exact
-git clone --depth=1 -b master https://github.com/backslashxx/KernelSU.git /tmp/KernelSU
-cd /tmp/KernelSU
-git fetch --depth=1 origin "$KSU_COMMIT"
-git checkout "$KSU_COMMIT"
-cd "$GITHUB_WORKSPACE/kernel_sources"
+# Récupérer setup.sh et intégrer le tag exact
+curl -LSs "https://raw.githubusercontent.com/backslashxx/KernelSU/master/kernel/setup.sh" | bash -s "$KSU_TAG"
 
-# Créer le symlink
-ln -sf /tmp/KernelSU/kernel drivers/kernelsu
+echo "✅ KernelSU intégré avec le tag $KSU_TAG"
 
-if [ -d "drivers/kernelsu" ]; then
-    echo "✅ Symlink OK"
-    ls drivers/kernelsu/ | head -5
+# Vérifier que l'UAPI 2 est bien présent dans le driver
+echo "=== Vérification UAPI2 dans le driver ==="
+if [ -d "KernelSU" ]; then
+  grep -n "uapi_version" KernelSU/kernel/supercall/dispatch.c || echo "⚠️ uapi_version introuvable dans dispatch.c"
+  grep -n "KERNEL_SU_UAPI_VERSION" KernelSU/uapi/supercall.h || echo "⚠️ KERNEL_SU_UAPI_VERSION introuvable dans supercall.h"
 else
-    echo "❌ Symlink ÉCHOUÉ"
-    exit 1
+  echo "⚠️ Dossier KernelSU introuvable"
 fi
-
-# Ajouter au Makefile et Kconfig
-printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> drivers/Makefile
-sed -i "/endmenu/i\source \"drivers/kernelsu/Kconfig\"" drivers/Kconfig
-
-grep -n "kernelsu" drivers/Makefile
-grep -n "kernelsu" drivers/Kconfig
-
-echo "✅ KernelSU intégré avec le commit $KSU_COMMIT"
 
 # ==================== 3. HOOKS MANUELS KERNELSU ====================
 echo "=== Hooks manuels KernelSU ==="
@@ -366,11 +353,8 @@ export AR_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm
 export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot -I$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/aarch64-linux-android"
 
 rm -rf "$GITHUB_WORKSPACE/ksud-src"
-git clone --depth=1 -b master https://github.com/backslashxx/KernelSU.git "$GITHUB_WORKSPACE/ksud-src"
-cd "$GITHUB_WORKSPACE/ksud-src"
-git fetch --depth=1 origin "$KSU_COMMIT"
-git checkout "$KSU_COMMIT"
-cd userspace/ksud
+git clone --depth=1 --branch "$KSU_TAG" https://github.com/backslashxx/KernelSU.git "$GITHUB_WORKSPACE/ksud-src"
+cd "$GITHUB_WORKSPACE/ksud-src/userspace/ksud"
 
 mkdir -p .cargo
 cat > .cargo/config.toml <<EOF
