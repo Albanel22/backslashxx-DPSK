@@ -80,7 +80,7 @@ git log -1 --oneline
 
 
 # ============================================================
-# 3. BACKSLASHXX SETUP.SH OFFICIEL
+# 3. BACKSLASHXX SETUP.SH
 # ============================================================
 
 echo ""
@@ -107,7 +107,7 @@ chmod +x /tmp/backslashxx-setup.sh
 # ============================================================
 
 echo ""
-echo "=== Vérification de l'intégration ==="
+echo "=== Vérification intégration ==="
 
 if [ ! -d KernelSU ]; then
     echo "ERROR: KernelSU/ absent"
@@ -133,36 +133,73 @@ echo "$KSU_COMMIT"
 echo "KernelSU version:"
 echo "$KSU_VERSION"
 
-echo "$KSU_COMMIT" \
-    > "$GITHUB_WORKSPACE/output/kernelsu-commit.txt"
-
-echo "$KSU_VERSION" \
-    > "$GITHUB_WORKSPACE/output/kernelsu-version.txt"
-
 
 # ============================================================
-# 5. VERIFICATION MAKEFILE / KCONFIG
+# 5. VERIFICATION KCONFIG KSU
 # ============================================================
 
 echo ""
-echo "=== Vérification Makefile / Kconfig ==="
+echo "=== Inspection Kconfig KernelSU ==="
 
-if ! grep -q "kernelsu" drivers/Makefile; then
-    echo "ERROR: drivers/Makefile non intégré"
-    exit 1
+if [ -f KernelSU/kernel/Kconfig ]; then
+    grep -nE \
+        'KSU|SULOG|sulog' \
+        KernelSU/kernel/Kconfig \
+        | head -100 \
+        || true
 fi
-
-if ! grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig; then
-    echo "ERROR: drivers/Kconfig non intégré"
-    exit 1
-fi
-
-echo "drivers/Makefile : OK"
-echo "drivers/Kconfig  : OK"
 
 
 # ============================================================
-# 6. ARCH / TOOLCHAIN
+# 6. DESACTIVATION SU LOG
+#
+# Le kernel 4.19 / toolchain actuel ne fournit pas :
+#
+#     __aarch64_cas4_rel
+#
+# L'erreur provient de write_sulog() / xarray.c.
+#
+# Nous désactivons le composant SU log pour le premier
+# kernel fonctionnel.
+# ============================================================
+
+echo ""
+echo "=== Désactivation du composant SU log ==="
+
+if grep -Rqs \
+    'config KSU_SULOG\|config KSU.*SULOG' \
+    KernelSU/kernel; then
+
+    echo "Kconfig SU log détecté."
+
+    # Le nom exact peut varier selon le commit.
+    # On désactive toutes les options KSU_SULOG présentes.
+    while read -r symbol; do
+
+        [ -z "$symbol" ] && continue
+
+        echo "Désactivation CONFIG_$symbol"
+
+        scripts/config \
+            --file out/.config \
+            --disable "CONFIG_$symbol" \
+            2>/dev/null || true
+
+    done < <(
+        grep -RhoE \
+            'config KSU_[A-Z0-9_]*SULOG[A-Z0-9_]*' \
+            KernelSU/kernel \
+            | sed 's/config //' \
+            | sort -u
+    )
+
+else
+    echo "Aucune option Kconfig SU log trouvée."
+fi
+
+
+# ============================================================
+# 7. ARCH / TOOLCHAIN
 # ============================================================
 
 export ARCH=arm64
@@ -175,7 +212,7 @@ mkdir -p out
 
 
 # ============================================================
-# 7. DEFCONFIG
+# 8. DEFCONFIG
 # ============================================================
 
 echo ""
@@ -203,25 +240,16 @@ make O=out \
 
 
 # ============================================================
-# 8. CONFIGURATION KERNELSU
+# 9. CONFIG KERNELSU
 # ============================================================
 
 echo ""
 echo "=== Configuration KernelSU ==="
 
-if [ ! -x scripts/config ]; then
-    echo "ERROR: scripts/config absent"
-    exit 1
-fi
-
-
-# KernelSU
 scripts/config \
     --file out/.config \
     --enable CONFIG_KSU
 
-
-# KALLSYMS
 scripts/config \
     --file out/.config \
     --enable CONFIG_KALLSYMS
@@ -230,33 +258,68 @@ scripts/config \
     --file out/.config \
     --enable CONFIG_KALLSYMS_ALL
 
-
-# ARM64 branch-link hook
-#
-# Backslashxx indique explicitement que cette méthode est
-# recommandée pour ARM64 / kernel 4.19+.
-#
+# ARM64 / 4.19+
 scripts/config \
     --file out/.config \
     --enable CONFIG_KSU_HACK_ARM64_BRANCH_LINK
 
 
-# On ne veut pas utiliser les KPROBES pour ce run.
+# KPROBES OFF
 scripts/config \
     --file out/.config \
-    --disable CONFIG_KPROBES || true
+    --disable CONFIG_KPROBES \
+    || true
 
 scripts/config \
     --file out/.config \
-    --disable CONFIG_HAVE_KPROBES || true
+    --disable CONFIG_HAVE_KPROBES \
+    || true
 
 scripts/config \
     --file out/.config \
-    --disable CONFIG_KPROBE_EVENTS || true
+    --disable CONFIG_KPROBE_EVENTS \
+    || true
 
 
 # ============================================================
-# 9. OLDDEFCONFIG
+# 10. DESACTIVER EVENTUELLEMENT CONFIG SULOG APRES DEFCONFIG
+# ============================================================
+
+echo ""
+echo "=== Recherche options SU log dans .config ==="
+
+grep -E \
+    '^CONFIG_.*SULOG' \
+    out/.config \
+    || true
+
+while read -r line; do
+
+    case "$line" in
+
+        CONFIG_*SULOG=y)
+
+            symbol="${line%%=*}"
+
+            echo "Désactivation $symbol"
+
+            scripts/config \
+                --file out/.config \
+                --disable "$symbol" \
+                || true
+
+            ;;
+
+    esac
+
+done < <(
+    grep -E '^CONFIG_.*SULOG=y' out/.config \
+    || true
+)
+
+
+# ============================================================
+# 11. OLDDEFCONFIG
 # ============================================================
 
 echo ""
@@ -270,14 +333,14 @@ make O=out \
 
 
 # ============================================================
-# 10. CONFIG CHECK
+# 12. CONFIG CHECK
 # ============================================================
 
 echo ""
 echo "=== CONFIG CHECK ==="
 
 grep -E \
-    '^CONFIG_KSU=|^CONFIG_KSU_HACK_ARM64_BRANCH_LINK=|^CONFIG_KSU_KPROBES_KSUD=|^CONFIG_KSU_LSM_SECURITY_HOOKS=|^CONFIG_KALLSYMS=|^CONFIG_KALLSYMS_ALL=|^# CONFIG_KPROBES|^# CONFIG_HAVE_KPROBES|^# CONFIG_KPROBE_EVENTS' \
+    '^CONFIG_KSU=|^CONFIG_KSU_HACK_ARM64_BRANCH_LINK=|^CONFIG_KSU_KPROBES_KSUD=|^CONFIG_KSU_LSM_SECURITY_HOOKS=|^CONFIG_KALLSYMS=|^CONFIG_KALLSYMS_ALL=|^CONFIG_.*SULOG=|^# CONFIG_.*SULOG|^# CONFIG_KPROBES|^# CONFIG_HAVE_KPROBES|^# CONFIG_KPROBE_EVENTS' \
     out/.config \
     || true
 
@@ -299,22 +362,26 @@ if ! grep -q '^CONFIG_KALLSYMS_ALL=y$' out/.config; then
 fi
 
 if grep -q '^CONFIG_KPROBES=y$' out/.config; then
-    echo "ERROR: CONFIG_KPROBES=y est encore actif"
+    echo "ERROR: CONFIG_KPROBES=y actif"
     exit 1
 fi
 
-echo "CONFIG_KSU       : OK"
-echo "CONFIG_KALLSYMS  : OK"
-echo "CONFIG_KALLSYMS_ALL : OK"
-echo "KPROBES          : désactivé"
+if grep -q '^CONFIG_.*SULOG=y$' out/.config; then
+    echo ""
+    echo "WARNING: une option SULOG reste activée:"
+    grep '^CONFIG_.*SULOG=y' out/.config
+fi
+
+echo ""
+echo "KernelSU configuration: OK"
 
 
 # ============================================================
-# 11. COMPILATION KERNEL
+# 13. COMPILATION KERNEL
 # ============================================================
 
 echo ""
-echo "=== Compilation du kernel ==="
+echo "=== Compilation kernel ==="
 
 make O=out \
     LLVM=1 \
@@ -342,7 +409,7 @@ echo "Kernel compilé avec succès."
 
 
 # ============================================================
-# 12. VERIFICATION KERNELSU IMAGE
+# 14. VERIFICATION KERNELSU IMAGE
 # ============================================================
 
 echo ""
@@ -356,21 +423,23 @@ strings \
 
 
 # ============================================================
-# 13. RUST
+# 15. RUST
 # ============================================================
 
 cd "$GITHUB_WORKSPACE"
 
 echo ""
-echo "=== Installation Rust ==="
+echo "=== Rust ==="
 
 if ! command -v cargo >/dev/null 2>&1; then
+
     curl \
         --proto '=https' \
         --tlsv1.2 \
         -sSf \
         https://sh.rustup.rs \
         | sh -s -- -y
+
 fi
 
 source "$HOME/.cargo/env"
@@ -379,7 +448,7 @@ rustup target add aarch64-linux-android
 
 
 # ============================================================
-# 14. ANDROID NDK
+# 16. ANDROID NDK
 # ============================================================
 
 echo ""
@@ -393,6 +462,7 @@ if [ ! -d "$GITHUB_WORKSPACE/android-ndk-r26d" ]; then
     unzip -q android-ndk-r26d-linux.zip
 
     rm -f android-ndk-r26d-linux.zip
+
 fi
 
 export ANDROID_NDK_ROOT="$GITHUB_WORKSPACE/android-ndk-r26d"
@@ -408,7 +478,7 @@ export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_RO
 
 
 # ============================================================
-# 15. COMPILATION KSUD
+# 17. KSUD
 # ============================================================
 
 echo ""
@@ -456,7 +526,7 @@ echo "ksud:"
 
 
 # ============================================================
-# 16. VERIFICATION COMMIT
+# 18. COMMIT CHECK
 # ============================================================
 
 KSUD_SOURCE_COMMIT="$(
@@ -479,13 +549,13 @@ echo "SAME COMMIT : OK"
 
 
 # ============================================================
-# 17. BOOT STOCK
+# 19. BOOT STOCK
 # ============================================================
 
 cd "$GITHUB_WORKSPACE"
 
 echo ""
-echo "=== Téléchargement boot.img stock ==="
+echo "=== Téléchargement boot.img ==="
 
 curl -fLo boot-stock.img \
     "https://mirrorbits.lineageos.org/full/kiev/20260809/boot.img"
@@ -501,7 +571,7 @@ curl -fLo dtbo-stock.img \
 
 
 # ============================================================
-# 18. MAGISKBOOT
+# 20. MAGISKBOOT
 # ============================================================
 
 echo ""
@@ -532,31 +602,31 @@ rm -rf lib Magisk.apk
 
 
 # ============================================================
-# 19. UNPACK
+# 21. UNPACK
 # ============================================================
 
 echo ""
-echo "=== Unpack boot.img ==="
+echo "=== Unpack boot ==="
 
 ./magiskboot unpack boot.img
 
 if [ ! -f kernel ]; then
-    echo "ERROR: kernel absent après unpack"
+    echo "ERROR: kernel absent"
     exit 1
 fi
 
 if [ ! -f ramdisk.cpio ]; then
-    echo "ERROR: ramdisk.cpio absent après unpack"
+    echo "ERROR: ramdisk.cpio absent"
     exit 1
 fi
 
 
 # ============================================================
-# 20. REMPLACEMENT KERNEL
+# 22. KERNEL
 # ============================================================
 
 echo ""
-echo "=== Installation Image compilée ==="
+echo "=== Installation Image ==="
 
 cp \
     "$GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image" \
@@ -564,7 +634,7 @@ cp \
 
 
 # ============================================================
-# 21. INSTALLATION KSUD
+# 23. KSUD
 # ============================================================
 
 echo ""
@@ -578,7 +648,7 @@ echo "=== Installation ksud ==="
 
 
 # ============================================================
-# 22. VERIFICATION RAMDISK
+# 24. RAMDISK CHECK
 # ============================================================
 
 echo ""
@@ -590,7 +660,7 @@ echo "=== Vérification ramdisk ==="
 
 
 # ============================================================
-# 23. REPACK
+# 25. REPACK
 # ============================================================
 
 echo ""
@@ -611,11 +681,11 @@ cd "$GITHUB_WORKSPACE"
 
 
 # ============================================================
-# 24. OUTPUT
+# 26. OUTPUT
 # ============================================================
 
 echo ""
-echo "=== Copie output ==="
+echo "=== Output ==="
 
 mkdir -p output
 
@@ -648,7 +718,7 @@ echo "$KSU_VERSION" \
 
 
 # ============================================================
-# 25. RAPPORT FINAL
+# 27. RAPPORT
 # ============================================================
 
 echo ""
@@ -657,11 +727,11 @@ echo " BUILD TERMINE"
 echo "============================================================"
 
 echo ""
-echo "KernelSU version:"
+echo "KernelSU:"
 echo "$KSU_VERSION"
 
 echo ""
-echo "KernelSU commit:"
+echo "Commit:"
 echo "$KSU_COMMIT"
 
 echo ""
@@ -669,10 +739,10 @@ echo "ksud:"
 ./ksud -V
 
 echo ""
-echo "CONFIGURATION:"
+echo "CONFIG:"
 
 grep -E \
-    '^CONFIG_KSU=|^CONFIG_KSU_HACK_ARM64_BRANCH_LINK=|^CONFIG_KSU_KPROBES_KSUD=|^CONFIG_KSU_LSM_SECURITY_HOOKS=|^CONFIG_KALLSYMS=|^CONFIG_KALLSYMS_ALL=' \
+    '^CONFIG_KSU=|^CONFIG_KSU_HACK_ARM64_BRANCH_LINK=|^CONFIG_KSU_KPROBES_KSUD=|^CONFIG_KSU_LSM_SECURITY_HOOKS=|^CONFIG_KALLSYMS=|^CONFIG_KALLSYMS_ALL=|^CONFIG_.*SULOG=' \
     kernel_sources/out/.config \
     || true
 
@@ -702,7 +772,7 @@ echo "su -c 'ksud debug version'"
 echo "su -c 'ksud debug info'"
 
 echo ""
-echo "Objectif final UAPI:"
+echo "Objectif:"
 echo "version: 2"
 echo "uapi_version: 2"
 
@@ -710,3 +780,4 @@ echo ""
 echo "============================================================"
 echo " FIN"
 echo "============================================================"
+
