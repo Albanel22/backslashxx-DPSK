@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD WINNER : KernelSU v3.2.5-70 (UAPI2 + fix version) + SuSFS ==="
+echo "=== BUILD WINNER : KernelSU (source unique 855ab616) + SuSFS ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -23,17 +23,35 @@ git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git \
 
 cd kernel_sources
 
-# ==================== 2. INTÉGRATION KERNELSU (TAG v3.2.5-70) ====================
-echo "=== Intégration KernelSU v3.2.5-70 (UAPI2) ==="
+# ==================== 2. CLONE UNIQUE KERNELSU ====================
+echo "=== Clone unique KernelSU ==="
 rm -rf drivers/kernelsu KernelSU susfs4ksu /tmp/KernelSU || true
 
-KSU_TAG="v3.2.5-70"
+KSU_COMMIT="855ab6163ee292580219bedd037429c0f8d1a010"
 
-curl -LSs "https://raw.githubusercontent.com/backslashxx/KernelSU/master/kernel/setup.sh" | bash -s "$KSU_TAG"
+git clone --depth=1 https://github.com/backslashxx/KernelSU.git /tmp/KernelSU
+cd /tmp/KernelSU
+git fetch --depth=1 origin "$KSU_COMMIT"
+git checkout "$KSU_COMMIT"
+cd "$GITHUB_WORKSPACE/kernel_sources"
 
-echo "✅ KernelSU intégré avec le tag $KSU_TAG"
+# ==================== 2b. SYMLINK DU DRIVER ====================
+ln -sf /tmp/KernelSU/kernel drivers/kernelsu
 
-# ==================== 2b. FIX KSU_VERSION ====================
+if [ -d "drivers/kernelsu" ]; then
+    echo "✅ Symlink OK"
+    ls drivers/kernelsu/ | head -5
+else
+    echo "❌ Symlink ÉCHOUÉ"
+    exit 1
+fi
+
+printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> drivers/Makefile
+sed -i "/endmenu/i\source \"drivers/kernelsu/Kconfig\"" drivers/Kconfig
+
+echo "✅ KernelSU intégré avec le commit $KSU_COMMIT"
+
+# ==================== 2c. FIX KSU_VERSION ====================
 echo "=== Fix KSU_VERSION ==="
 if ! grep -q "CFLAGS_ksu.o += -DKSU_VERSION=" drivers/kernelsu/Makefile; then
     echo "CFLAGS_ksu.o += -DKSU_VERSION=32595" >> drivers/kernelsu/Makefile
@@ -325,31 +343,6 @@ sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 # ==================== 9. PATCH TACTILE ====================
 printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
 
-# ==================== 9b. FIX __aarch64_cas4_rel ====================
-echo "=== Fix __aarch64_cas4_rel ==="
-
-cat > arch/arm64/lib/cas4_rel.c << 'EOF'
-#include <linux/export.h>
-#include <linux/types.h>
-#include <linux/compiler.h>
-
-int __aarch64_cas4_rel(int *ptr, int old, int new)
-{
-    int val = READ_ONCE(*ptr);
-    if (val == old)
-        WRITE_ONCE(*ptr, new);
-    return val;
-}
-EXPORT_SYMBOL(__aarch64_cas4_rel);
-EOF
-
-if ! grep -q "cas4_rel.o" arch/arm64/lib/Makefile; then
-    echo "obj-y += cas4_rel.o" >> arch/arm64/lib/Makefile
-    echo "[+] cas4_rel.o ajouté au Makefile"
-fi
-
-grep -n "cas4_rel" arch/arm64/lib/Makefile
-
 # ==================== 10. COMPILATION ====================
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image 2>&1 | tee build.log
 
@@ -361,38 +354,8 @@ fi
 
 echo "✅ Compilation réussie"
 
-# ==================== 11. COMPILATION KSUD ====================
-cd "$GITHUB_WORKSPACE"
-
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-source "$HOME/.cargo/env"
-rustup target add aarch64-linux-android
-
-wget -q https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
-unzip -q android-ndk-r26d-linux.zip
-
-export ANDROID_NDK_ROOT="$GITHUB_WORKSPACE/android-ndk-r26d"
-export ANDROID_NDK_HOME="$ANDROID_NDK_ROOT"
-export AARCH64_CLANG_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
-export AARCH64_CLANGXX_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang++"
-export AR_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
-export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot -I$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/aarch64-linux-android"
-
-rm -rf "$GITHUB_WORKSPACE/ksud-src"
-
-# Récupérer le SHA du tag via l'API
-TAG_SHA=$(curl -s "https://api.github.com/repos/backslashxx/KernelSU/git/refs/tags/$KSU_TAG" | python3 -c "import sys, json; obj=json.load(sys.stdin); print(obj.get('object',{}).get('sha',''))")
-if [ -z "$TAG_SHA" ]; then
-  echo "❌ Impossible de récupérer le SHA du tag $KSU_TAG"
-  exit 1
-fi
-echo "✅ SHA du tag $KSU_TAG : $TAG_SHA"
-
-git clone --depth=1 https://github.com/backslashxx/KernelSU.git "$GITHUB_WORKSPACE/ksud-src"
-cd "$GITHUB_WORKSPACE/ksud-src"
-git fetch --depth=1 origin "$TAG_SHA"
-git checkout "$TAG_SHA"
-cd userspace/ksud
+# ==================== 11. COMPILATION KSUD (MÊME SOURCE) ====================
+cd /tmp/KernelSU/userspace/ksud
 
 mkdir -p .cargo
 cat > .cargo/config.toml <<EOF
@@ -408,7 +371,7 @@ EOF
 
 cargo build --release --target aarch64-linux-android
 
-KSUD_BINARY="$GITHUB_WORKSPACE/ksud-src/target/aarch64-linux-android/release/ksud"
+KSUD_BINARY="/tmp/KernelSU/target/aarch64-linux-android/release/ksud"
 if [ ! -f "$KSUD_BINARY" ]; then
     echo "❌ ksud introuvable"
     exit 1
