@@ -343,6 +343,31 @@ sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 # ==================== 9. PATCH TACTILE ====================
 printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
 
+# ==================== 9b. FIX __aarch64_cas4_rel ====================
+echo "=== Fix __aarch64_cas4_rel ==="
+
+cat > arch/arm64/lib/cas4_rel.c << 'EOF'
+#include <linux/export.h>
+#include <linux/types.h>
+#include <linux/compiler.h>
+
+int __aarch64_cas4_rel(int *ptr, int old, int new)
+{
+    int val = READ_ONCE(*ptr);
+    if (val == old)
+        WRITE_ONCE(*ptr, new);
+    return val;
+}
+EXPORT_SYMBOL(__aarch64_cas4_rel);
+EOF
+
+if ! grep -q "cas4_rel.o" arch/arm64/lib/Makefile; then
+    echo "obj-y += cas4_rel.o" >> arch/arm64/lib/Makefile
+    echo "[+] cas4_rel.o ajouté au Makefile"
+fi
+
+grep -n "cas4_rel" arch/arm64/lib/Makefile
+
 # ==================== 10. COMPILATION ====================
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image 2>&1 | tee build.log
 
@@ -355,6 +380,24 @@ fi
 echo "✅ Compilation réussie"
 
 # ==================== 11. COMPILATION KSUD (MÊME SOURCE) ====================
+# Installer Rust et NDK
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source "$HOME/.cargo/env"
+export PATH="$HOME/.cargo/bin:$PATH"
+rustup target add aarch64-linux-android
+
+cd "$GITHUB_WORKSPACE"
+wget -q https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
+unzip -q android-ndk-r26d-linux.zip
+
+export ANDROID_NDK_ROOT="$GITHUB_WORKSPACE/android-ndk-r26d"
+export ANDROID_NDK_HOME="$ANDROID_NDK_ROOT"
+export AARCH64_CLANG_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
+export AARCH64_CLANGXX_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang++"
+export AR_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot -I$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/aarch64-linux-android"
+
+# Repartir sur le clone unique
 cd /tmp/KernelSU/userspace/ksud
 
 mkdir -p .cargo
@@ -369,6 +412,7 @@ AR_aarch64_linux_android = "$AR_PATH"
 BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android = "$BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android"
 EOF
 
+rustup target add aarch64-linux-android
 cargo build --release --target aarch64-linux-android
 
 KSUD_BINARY="/tmp/KernelSU/target/aarch64-linux-android/release/ksud"
