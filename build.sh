@@ -416,8 +416,8 @@ export AARCH64_CLANGXX_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x8
 export AR_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
 export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot -I$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/aarch64-linux-android"
 
-git clone --depth=1 https://github.com/backslashxx/KernelSU.git ksud-src
-cd ksud-src/userspace/ksud
+# Utiliser LE MÊME clone que le driver KernelSU
+cd /tmp/KernelSU/userspace/ksud
 
 mkdir -p .cargo
 cat > .cargo/config.toml << EOF
@@ -433,51 +433,17 @@ EOF
 
 cargo build --release --target aarch64-linux-android
 
-KSUD_BINARY="$GITHUB_WORKSPACE/ksud-src/target/aarch64-linux-android/release/ksud"
+KSUD_BINARY="/tmp/KernelSU/target/aarch64-linux-android/release/ksud"
 if [ -f "$KSUD_BINARY" ]; then
   cp "$KSUD_BINARY" "$GITHUB_WORKSPACE/ksud"
   chmod 755 "$GITHUB_WORKSPACE/ksud"
-  echo "OK: ksud compilé"
+  echo "OK: ksud compilé depuis la source unique"
 else
   echo "⚠️ ksud introuvable, recherche..."
-  find "$GITHUB_WORKSPACE/ksud-src" -name "ksud" -type f 2>/dev/null | head -5
+  find /tmp/KernelSU -name "ksud" -type f 2>/dev/null | head -5
 fi
 
 cd "$GITHUB_WORKSPACE/kernel_sources"
-
-echo "=== Téléchargement des images stock ==="
-cd $GITHUB_WORKSPACE
-curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260809/boot.img" 2>/dev/null || {
-  mkbootimg --kernel kernel_sources/out/arch/arm64/boot/Image --ramdisk /dev/null --output final_boot.img --header_version 2 --pagesize 4096 --base 0x00000000 --kernel_offset 0x00008000 --ramdisk_offset 0x01000000 --tags_offset 0x00000100 --cmdline "androidboot.hardware=kiev androidboot.selinux=permissive"
-}
-curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260809/dtbo.img" 2>/dev/null || true
-
-if [ -f "boot-stock.img" ]; then
-  mkdir -p repack
-  cp boot-stock.img repack/boot.img
-  wget -q https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk -O Magisk-v27.0.apk
-  unzip -q Magisk-v27.0.apk lib/x86_64/libmagiskboot.so
-  mv lib/x86_64/libmagiskboot.so repack/magiskboot
-  chmod +x repack/magiskboot
-  rm -rf Magisk-v27.0.apk lib/
-  cd repack
-  ./magiskboot unpack boot.img
-  cp $GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image kernel
-
-  # ksud correctement placé comme FICHIER
-  if [ -f "$GITHUB_WORKSPACE/ksud" ]; then
-    mkdir -p ramdisk/data/adb
-    cp "$GITHUB_WORKSPACE/ksud" ramdisk/data/adb/ksud
-    chmod 755 ramdisk/data/adb/ksud
-    echo "OK: ksud placé dans /data/adb/ksud (fichier)"
-  else
-    echo "ATTENTION: ksud non trouvé"
-  fi
-
-  ./magiskboot repack boot.img new-boot.img
-  mv new-boot.img ../final_boot.img
-  cd ..
-fi
 
 echo "=== Copie vers output ==="
 mkdir -p output
