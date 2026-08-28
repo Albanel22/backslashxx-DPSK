@@ -2,8 +2,8 @@
 set -e
 
 echo "============================================================"
-echo " Backslashxx KernelSU - 4.19 / LineageOS 23.2"
-echo " Motorola kiev - UAPI validation"
+echo " Backslashxx KernelSU - Kernel 4.19 / LineageOS 23.2"
+echo " Motorola kiev / ARM64"
 echo "============================================================"
 
 df -h
@@ -14,11 +14,13 @@ export DEBIAN_FRONTEND=noninteractive
 # 1. DEPENDANCES
 # ============================================================
 
-echo "=== Installation dépendances ==="
+echo "=== Installation des dépendances ==="
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc || true
 sudo apt-get clean
-sudo sed -i 's/azure.archive.ubuntu.com/archive.ubuntu.com/g' \
+
+sudo sed -i \
+    's/azure.archive.ubuntu.com/archive.ubuntu.com/g' \
     /etc/apt/sources.list 2>/dev/null || true
 
 sudo apt-get update
@@ -73,40 +75,29 @@ cd kernel_sources
 echo "Kernel commit:"
 git rev-parse HEAD
 
-echo "Kernel description:"
+echo "Kernel:"
 git log -1 --oneline
 
 
 # ============================================================
-# 3. BACKSLASHXX SETUP.SH
+# 3. BACKSLASHXX SETUP.SH OFFICIEL
 # ============================================================
 
 echo ""
-echo "=== Intégration officielle Backslashxx KernelSU ==="
+echo "=== Intégration Backslashxx KernelSU ==="
 
 rm -rf KernelSU
 rm -rf drivers/kernelsu
 
-# ------------------------------------------------------------
-# KSU_REF
-#
-# master = état actuel du dépôt
-#
-# On peut remplacer par un commit/tag précis plus tard.
-# ------------------------------------------------------------
-
 KSU_REF="${KSU_REF:-master}"
 
-echo "KernelSU ref: $KSU_REF"
+echo "KSU_REF = $KSU_REF"
 
 curl -fL \
     https://raw.githubusercontent.com/backslashxx/KernelSU/master/kernel/setup.sh \
     -o /tmp/backslashxx-setup.sh
 
 chmod +x /tmp/backslashxx-setup.sh
-
-echo ""
-echo "Exécution du setup.sh officiel..."
 
 /tmp/backslashxx-setup.sh "$KSU_REF"
 
@@ -116,7 +107,7 @@ echo "Exécution du setup.sh officiel..."
 # ============================================================
 
 echo ""
-echo "=== Vérification KernelSU ==="
+echo "=== Vérification de l'intégration ==="
 
 if [ ! -d KernelSU ]; then
     echo "ERROR: KernelSU/ absent"
@@ -129,7 +120,7 @@ if [ ! -L drivers/kernelsu ]; then
     exit 1
 fi
 
-echo "drivers/kernelsu:"
+echo "drivers/kernelsu ->"
 readlink -f drivers/kernelsu
 
 KSU_COMMIT="$(cd KernelSU && git rev-parse HEAD)"
@@ -142,37 +133,37 @@ echo "$KSU_COMMIT"
 echo "KernelSU version:"
 echo "$KSU_VERSION"
 
-echo "$KSU_COMMIT" > "$GITHUB_WORKSPACE/output/kernelsu-commit.txt"
-echo "$KSU_VERSION" > "$GITHUB_WORKSPACE/output/kernelsu-version.txt"
+echo "$KSU_COMMIT" \
+    > "$GITHUB_WORKSPACE/output/kernelsu-commit.txt"
+
+echo "$KSU_VERSION" \
+    > "$GITHUB_WORKSPACE/output/kernelsu-version.txt"
 
 
 # ============================================================
-# 5. VERIFIER MAKEFILE / KCONFIG
+# 5. VERIFICATION MAKEFILE / KCONFIG
 # ============================================================
 
 echo ""
-echo "=== Vérification Makefile/Kconfig ==="
+echo "=== Vérification Makefile / Kconfig ==="
 
 if ! grep -q "kernelsu" drivers/Makefile; then
-    echo "ERROR: drivers/Makefile ne contient pas KernelSU"
+    echo "ERROR: drivers/Makefile non intégré"
     exit 1
 fi
 
-if ! grep -q "drivers/kernelsu/Kconfig" drivers/Kconfig; then
-    echo "ERROR: drivers/Kconfig ne contient pas KernelSU"
+if ! grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig; then
+    echo "ERROR: drivers/Kconfig non intégré"
     exit 1
 fi
 
-echo "Makefile KernelSU: OK"
-echo "Kconfig KernelSU: OK"
+echo "drivers/Makefile : OK"
+echo "drivers/Kconfig  : OK"
 
 
 # ============================================================
-# 6. CONFIGURATION KERNEL
+# 6. ARCH / TOOLCHAIN
 # ============================================================
-
-echo ""
-echo "=== Configuration kernel ==="
 
 export ARCH=arm64
 export SUBARCH=arm64
@@ -182,12 +173,20 @@ export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
 mkdir -p out
 
+
+# ============================================================
+# 7. DEFCONFIG
+# ============================================================
+
+echo ""
+echo "=== Recherche du defconfig ==="
+
 CONFIG=$(find arch/arm64/configs/ \
     \( -name "*lito*" -o -name "*kiev*" -o -name "*sm8250*" \) \
     | head -1)
 
 if [ -z "$CONFIG" ]; then
-    echo "ERROR: aucun defconfig lito/kiev/sm8250 trouvé"
+    echo "ERROR: aucun defconfig trouvé"
     exit 1
 fi
 
@@ -204,25 +203,25 @@ make O=out \
 
 
 # ============================================================
-# 7. CONFIG KSU
+# 8. CONFIGURATION KERNELSU
 # ============================================================
 
 echo ""
-echo "=== Activation KernelSU ==="
+echo "=== Configuration KernelSU ==="
 
 if [ ! -x scripts/config ]; then
     echo "ERROR: scripts/config absent"
     exit 1
 fi
 
+
+# KernelSU
 scripts/config \
     --file out/.config \
     --enable CONFIG_KSU
 
-scripts/config \
-    --file out/.config \
-    --enable CONFIG_KSU_MANUAL_HOOK
 
+# KALLSYMS
 scripts/config \
     --file out/.config \
     --enable CONFIG_KALLSYMS
@@ -231,10 +230,25 @@ scripts/config \
     --file out/.config \
     --enable CONFIG_KALLSYMS_ALL
 
-# Manual Hook : pas de KPROBES nécessaire.
+
+# ARM64 branch-link hook
+#
+# Backslashxx indique explicitement que cette méthode est
+# recommandée pour ARM64 / kernel 4.19+.
+#
+scripts/config \
+    --file out/.config \
+    --enable CONFIG_KSU_HACK_ARM64_BRANCH_LINK
+
+
+# On ne veut pas utiliser les KPROBES pour ce run.
 scripts/config \
     --file out/.config \
     --disable CONFIG_KPROBES || true
+
+scripts/config \
+    --file out/.config \
+    --disable CONFIG_HAVE_KPROBES || true
 
 scripts/config \
     --file out/.config \
@@ -242,7 +256,7 @@ scripts/config \
 
 
 # ============================================================
-# 8. OLDDEFCONFIG
+# 9. OLDDEFCONFIG
 # ============================================================
 
 echo ""
@@ -256,35 +270,51 @@ make O=out \
 
 
 # ============================================================
-# 9. CONFIG CHECK
+# 10. CONFIG CHECK
 # ============================================================
 
 echo ""
 echo "=== CONFIG CHECK ==="
 
 grep -E \
-    '^CONFIG_KSU=|^CONFIG_KSU_MANUAL_HOOK=|^CONFIG_KALLSYMS=|^CONFIG_KALLSYMS_ALL=|^# CONFIG_KPROBES|^# CONFIG_KPROBE_EVENTS' \
-    out/.config || true
+    '^CONFIG_KSU=|^CONFIG_KSU_HACK_ARM64_BRANCH_LINK=|^CONFIG_KSU_KPROBES_KSUD=|^CONFIG_KSU_LSM_SECURITY_HOOKS=|^CONFIG_KALLSYMS=|^CONFIG_KALLSYMS_ALL=|^# CONFIG_KPROBES|^# CONFIG_HAVE_KPROBES|^# CONFIG_KPROBE_EVENTS' \
+    out/.config \
+    || true
+
+echo ""
 
 if ! grep -q '^CONFIG_KSU=y$' out/.config; then
     echo "ERROR: CONFIG_KSU=y absent"
     exit 1
 fi
 
-if ! grep -q '^CONFIG_KSU_MANUAL_HOOK=y$' out/.config; then
-    echo "ERROR: CONFIG_KSU_MANUAL_HOOK=y absent"
+if ! grep -q '^CONFIG_KALLSYMS=y$' out/.config; then
+    echo "ERROR: CONFIG_KALLSYMS=y absent"
     exit 1
 fi
 
-echo "KernelSU config: OK"
+if ! grep -q '^CONFIG_KALLSYMS_ALL=y$' out/.config; then
+    echo "ERROR: CONFIG_KALLSYMS_ALL=y absent"
+    exit 1
+fi
+
+if grep -q '^CONFIG_KPROBES=y$' out/.config; then
+    echo "ERROR: CONFIG_KPROBES=y est encore actif"
+    exit 1
+fi
+
+echo "CONFIG_KSU       : OK"
+echo "CONFIG_KALLSYMS  : OK"
+echo "CONFIG_KALLSYMS_ALL : OK"
+echo "KPROBES          : désactivé"
 
 
 # ============================================================
-# 10. COMPILATION KERNEL
+# 11. COMPILATION KERNEL
 # ============================================================
 
 echo ""
-echo "=== Compilation kernel ==="
+echo "=== Compilation du kernel ==="
 
 make O=out \
     LLVM=1 \
@@ -297,6 +327,7 @@ make O=out \
 BUILD_STATUS=${PIPESTATUS[0]}
 
 if [ "$BUILD_STATUS" -ne 0 ]; then
+    echo ""
     echo "ERROR: compilation kernel échouée"
     exit "$BUILD_STATUS"
 fi
@@ -306,33 +337,36 @@ if [ ! -f out/arch/arm64/boot/Image ]; then
     exit 1
 fi
 
-echo "Kernel compilé: OK"
+echo ""
+echo "Kernel compilé avec succès."
 
 
 # ============================================================
-# 11. VERIFICATION KERNELSU DANS IMAGE
+# 12. VERIFICATION KERNELSU IMAGE
 # ============================================================
 
 echo ""
-echo "=== KernelSU dans Image ==="
+echo "=== Recherche KernelSU dans Image ==="
 
 strings \
     out/arch/arm64/boot/Image \
     | grep -iE 'ksu|kernelsu' \
-    | head -100 || true
+    | head -100 \
+    || true
 
 
 # ============================================================
-# 12. RUST
+# 13. RUST
 # ============================================================
 
 cd "$GITHUB_WORKSPACE"
 
 echo ""
-echo "=== Rust ==="
+echo "=== Installation Rust ==="
 
 if ! command -v cargo >/dev/null 2>&1; then
-    curl --proto '=https' \
+    curl \
+        --proto '=https' \
         --tlsv1.2 \
         -sSf \
         https://sh.rustup.rs \
@@ -345,7 +379,7 @@ rustup target add aarch64-linux-android
 
 
 # ============================================================
-# 13. ANDROID NDK
+# 14. ANDROID NDK
 # ============================================================
 
 echo ""
@@ -374,7 +408,7 @@ export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_RO
 
 
 # ============================================================
-# 14. KSUD DU MEME COMMIT
+# 15. COMPILATION KSUD
 # ============================================================
 
 echo ""
@@ -383,7 +417,7 @@ echo "=== Compilation ksud ==="
 cd "$GITHUB_WORKSPACE/kernel_sources/KernelSU/userspace/ksud"
 
 if [ ! -f Cargo.toml ]; then
-    echo "ERROR: userspace/ksud/Cargo.toml absent"
+    echo "ERROR: Cargo.toml ksud absent"
     exit 1
 fi
 
@@ -405,7 +439,6 @@ cargo build \
     --release \
     --target aarch64-linux-android
 
-
 KSUD_BINARY="$GITHUB_WORKSPACE/kernel_sources/KernelSU/userspace/ksud/target/aarch64-linux-android/release/ksud"
 
 if [ ! -f "$KSUD_BINARY" ]; then
@@ -414,15 +447,16 @@ if [ ! -f "$KSUD_BINARY" ]; then
 fi
 
 cp "$KSUD_BINARY" "$GITHUB_WORKSPACE/ksud"
+
 chmod 755 "$GITHUB_WORKSPACE/ksud"
 
 echo ""
-echo "ksud version:"
+echo "ksud:"
 "$GITHUB_WORKSPACE/ksud" -V
 
 
 # ============================================================
-# 15. VERIFICATION COMMIT KSUD
+# 16. VERIFICATION COMMIT
 # ============================================================
 
 KSUD_SOURCE_COMMIT="$(
@@ -431,30 +465,27 @@ KSUD_SOURCE_COMMIT="$(
 )"
 
 echo ""
-echo "=== Synchronisation Kernel / Userspace ==="
+echo "=== Commit Kernel / ksud ==="
 
-echo "KernelSU commit:"
-echo "$KSU_COMMIT"
-
-echo "ksud source commit:"
-echo "$KSUD_SOURCE_COMMIT"
+echo "KernelSU commit : $KSU_COMMIT"
+echo "ksud source     : $KSUD_SOURCE_COMMIT"
 
 if [ "$KSU_COMMIT" != "$KSUD_SOURCE_COMMIT" ]; then
     echo "ERROR: MISMATCH KernelSU / ksud"
     exit 1
 fi
 
-echo "Kernel / ksud: SAME COMMIT"
+echo "SAME COMMIT : OK"
 
 
 # ============================================================
-# 16. BOOT STOCK
+# 17. BOOT STOCK
 # ============================================================
 
 cd "$GITHUB_WORKSPACE"
 
 echo ""
-echo "=== Téléchargement boot.img ==="
+echo "=== Téléchargement boot.img stock ==="
 
 curl -fLo boot-stock.img \
     "https://mirrorbits.lineageos.org/full/kiev/20260809/boot.img"
@@ -470,11 +501,11 @@ curl -fLo dtbo-stock.img \
 
 
 # ============================================================
-# 17. MAGISKBOOT
+# 18. MAGISKBOOT
 # ============================================================
 
 echo ""
-echo "=== Magiskboot ==="
+echo "=== Préparation magiskboot ==="
 
 rm -rf repack
 mkdir -p repack
@@ -501,31 +532,31 @@ rm -rf lib Magisk.apk
 
 
 # ============================================================
-# 18. UNPACK
+# 19. UNPACK
 # ============================================================
 
 echo ""
-echo "=== Unpack boot ==="
+echo "=== Unpack boot.img ==="
 
 ./magiskboot unpack boot.img
 
 if [ ! -f kernel ]; then
-    echo "ERROR: kernel absent"
+    echo "ERROR: kernel absent après unpack"
     exit 1
 fi
 
 if [ ! -f ramdisk.cpio ]; then
-    echo "ERROR: ramdisk.cpio absent"
+    echo "ERROR: ramdisk.cpio absent après unpack"
     exit 1
 fi
 
 
 # ============================================================
-# 19. INSTALLATION KERNEL
+# 20. REMPLACEMENT KERNEL
 # ============================================================
 
 echo ""
-echo "=== Installation kernel compilé ==="
+echo "=== Installation Image compilée ==="
 
 cp \
     "$GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image" \
@@ -533,7 +564,7 @@ cp \
 
 
 # ============================================================
-# 20. KSUD
+# 21. INSTALLATION KSUD
 # ============================================================
 
 echo ""
@@ -547,23 +578,7 @@ echo "=== Installation ksud ==="
 
 
 # ============================================================
-# 21. SU
-#
-# IMPORTANT:
-# On ne cherche PAS un userspace/su qui n'existe pas.
-#
-# ksud contient le mécanisme userspace nécessaire.
-# ============================================================
-
-echo ""
-echo "=== SU ==="
-
-echo "Le binaire su sera géré par le mécanisme Backslashxx."
-echo "Aucun faux ksud -> /system/bin/su ne sera créé."
-
-
-# ============================================================
-# 22. RAMDISK CHECK
+# 22. VERIFICATION RAMDISK
 # ============================================================
 
 echo ""
@@ -592,7 +607,6 @@ mv \
     new-boot.img \
     "$GITHUB_WORKSPACE/Backslashxx-KernelSU-kiev-4.19.img"
 
-
 cd "$GITHUB_WORKSPACE"
 
 
@@ -601,7 +615,7 @@ cd "$GITHUB_WORKSPACE"
 # ============================================================
 
 echo ""
-echo "=== Output ==="
+echo "=== Copie output ==="
 
 mkdir -p output
 
@@ -643,11 +657,11 @@ echo " BUILD TERMINE"
 echo "============================================================"
 
 echo ""
-echo "KernelSU:"
+echo "KernelSU version:"
 echo "$KSU_VERSION"
 
 echo ""
-echo "Commit:"
+echo "KernelSU commit:"
 echo "$KSU_COMMIT"
 
 echo ""
@@ -655,9 +669,10 @@ echo "ksud:"
 ./ksud -V
 
 echo ""
-echo "Kernel config:"
+echo "CONFIGURATION:"
+
 grep -E \
-    '^CONFIG_KSU=|^CONFIG_KSU_MANUAL_HOOK=|^CONFIG_KALLSYMS=|^CONFIG_KALLSYMS_ALL=' \
+    '^CONFIG_KSU=|^CONFIG_KSU_HACK_ARM64_BRANCH_LINK=|^CONFIG_KSU_KPROBES_KSUD=|^CONFIG_KSU_LSM_SECURITY_HOOKS=|^CONFIG_KALLSYMS=|^CONFIG_KALLSYMS_ALL=' \
     kernel_sources/out/.config \
     || true
 
@@ -682,13 +697,12 @@ echo "============================================================"
 
 echo ""
 echo "su -c 'id'"
-echo "su -c 'su -v'"
 echo "su -c 'ksud -V'"
 echo "su -c 'ksud debug version'"
 echo "su -c 'ksud debug info'"
 
 echo ""
-echo "Objectif:"
+echo "Objectif final UAPI:"
 echo "version: 2"
 echo "uapi_version: 2"
 
