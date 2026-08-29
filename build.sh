@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD WINNER : KernelSU v3.2.5-76+ (0b138d6a) + SuSFS + fix version ==="
+echo "=== BUILD WINNER : KernelSU v3.2.5-76+ (0b138d6a) + SuSFS + fix UAPI ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -83,11 +83,24 @@ if [ -f "$KSU_HEADER" ]; then
     echo "[+] KERNEL_SU_VERSION ajouté"
   fi
 else
-  echo "⚠️ $KSU_HEADER introuvable, recherche..."
-  find drivers/kernelsu -name "ksu.h" | head -5
+  echo "⚠️ $KSU_HEADER introuvable"
 fi
 
 grep -n "KERNEL_SU_VERSION" "$KSU_HEADER" 2>/dev/null || true
+
+# ==================== 2e. FIX UAPI VERSION EN DUR ====================
+echo "=== Fix uapi_version dans dispatch.c ==="
+
+DISPATCH_FILE="drivers/kernelsu/kernel/supercall/dispatch.c"
+
+if [ -f "$DISPATCH_FILE" ]; then
+  sed -i 's/cmd\.uapi_version = KERNEL_SU_UAPI_VERSION;/cmd.uapi_version = 2;/' "$DISPATCH_FILE"
+  echo "[+] cmd.uapi_version forcé à 2"
+else
+  echo "⚠️ $DISPATCH_FILE introuvable"
+fi
+
+grep -n "uapi_version" "$DISPATCH_FILE" 2>/dev/null || true
 
 # ==================== 3. HOOKS MANUELS KERNELSU ====================
 echo "=== Hooks manuels KernelSU ==="
