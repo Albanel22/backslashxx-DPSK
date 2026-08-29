@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD WINNER : KernelSU (kernel=ksud=3cd3b95e) + SuSFS ==="
+echo "=== BUILD WINNER : KernelSU + SuSFS + fix KSU_VERSION global ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -29,24 +29,9 @@ rm -rf drivers/kernelsu KernelSU susfs4ksu || true
 
 curl -LSs "https://raw.githubusercontent.com/backslashxx/KernelSU/master/kernel/setup.sh" | bash
 
-# ==================== 2b. ALIGNER LE KERNEL SUR LE COMMIT DU KSUD ====================
-echo "=== Alignement kernel sur 3cd3b95e ==="
-KSU_COMMIT="3cd3b95e"
-
-if [ -d "KernelSU" ]; then
-  cd KernelSU
-  git fetch --depth=1 origin "$KSU_COMMIT"
-  git checkout "$KSU_COMMIT"
-  cd ..
-  ln -sf "$(realpath KernelSU/kernel)" drivers/kernelsu
-  echo "✅ Kernel aligné sur $KSU_COMMIT"
-else
-  echo "❌ Dossier KernelSU introuvable"
-  exit 1
-fi
-
-# ==================== 2c. FIX KSU_VERSION GLOBAL ====================
+# ==================== 2b. FIX KSU_VERSION GLOBAL ====================
 echo "=== Fix KSU_VERSION global ==="
+
 KSU_VER=$(grep -oP '(?<=-DKSU_VERSION=)[0-9]+' drivers/kernelsu/Makefile | head -1)
 if [ -z "$KSU_VER" ]; then
     KSU_VER="32601"
@@ -56,6 +41,8 @@ echo "[+] KSU_VERSION détecté : $KSU_VER"
 if ! grep -q "ccflags-y += -DKSU_VERSION=" drivers/kernelsu/Makefile; then
     echo "ccflags-y += -DKSU_VERSION=${KSU_VER}" >> drivers/kernelsu/Makefile
     echo "[+] ccflags-y += -DKSU_VERSION=${KSU_VER} ajouté"
+else
+    echo "[+] ccflags-y déjà présent"
 fi
 
 grep -n "DKSU_VERSION" drivers/kernelsu/Makefile
@@ -371,10 +358,7 @@ export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_RO
 
 rm -rf "$GITHUB_WORKSPACE/ksud-src"
 git clone --depth=1 https://github.com/backslashxx/KernelSU.git "$GITHUB_WORKSPACE/ksud-src"
-cd "$GITHUB_WORKSPACE/ksud-src"
-git fetch --depth=1 origin "$KSU_COMMIT"
-git checkout "$KSU_COMMIT"
-cd userspace/ksud
+cd "$GITHUB_WORKSPACE/ksud-src/userspace/ksud"
 
 mkdir -p .cargo
 cat > .cargo/config.toml <<EOF
