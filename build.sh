@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD WINNER : KernelSU (3cd3b95e) + SuSFS + fix KSU_VERSION ==="
+echo "=== BUILD WINNER : KernelSU v3.2.5-76+ (a34eb2e6) + SuSFS ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -23,26 +23,33 @@ git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git \
 
 cd kernel_sources
 
-# ==================== 2. INTÉGRATION KERNELSU ====================
-echo "=== Intégration KernelSU (setup.sh) ==="
+# ==================== 2. CLONE KERNELSU (COMMIT EXACT) ====================
+echo "=== Intégration KernelSU (a34eb2e6) ==="
 rm -rf drivers/kernelsu KernelSU susfs4ksu /tmp/KernelSU || true
 
-curl -LSs "https://raw.githubusercontent.com/backslashxx/KernelSU/master/kernel/setup.sh" | bash
+KSU_COMMIT="a34eb2e619b5084021693c1372cd35e33ee98f22"
 
-# ==================== 2b. ALIGNEMENT SUR LE COMMIT EXACT ====================
-echo "=== Alignement kernel sur 3cd3b95e ==="
-KSU_COMMIT="3cd3b95e3baaeb19b73c40f46f18c4f281a3b164"
+git clone --depth=1 https://github.com/backslashxx/KernelSU.git /tmp/KernelSU
+cd /tmp/KernelSU
+git fetch --depth=1 origin "$KSU_COMMIT"
+git checkout "$KSU_COMMIT"
+cd "$GITHUB_WORKSPACE/kernel_sources"
 
-if [ -d "KernelSU" ]; then
-  cd KernelSU
-  git fetch --depth=1 origin "$KSU_COMMIT"
-  git checkout "$KSU_COMMIT"
-  cd ..
-  ln -sf "$(realpath KernelSU/kernel)" drivers/kernelsu
-  echo "✅ Kernel aligné sur $KSU_COMMIT"
+# ==================== 2b. SYMLINK DRIVER ====================
+ln -sf /tmp/KernelSU/kernel drivers/kernelsu
+
+if [ -d "drivers/kernelsu" ]; then
+    echo "✅ Symlink OK"
+    ls drivers/kernelsu/ | head -5
 else
-  echo "⚠️ Dossier KernelSU introuvable"
+    echo "❌ Symlink ÉCHOUÉ"
+    exit 1
 fi
+
+printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> drivers/Makefile
+sed -i "/endmenu/i\source \"drivers/kernelsu/Kconfig\"" drivers/Kconfig
+
+echo "✅ KernelSU intégré avec le commit $KSU_COMMIT"
 
 # ==================== 2c. FIX KSU_VERSION GLOBAL ====================
 echo "=== Fix KSU_VERSION global ==="
