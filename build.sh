@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD WINNER : KernelSU v3.2.5-76+ (a34eb2e6) + SuSFS ==="
+echo "=== BUILD WINNER : KernelSU v3.2.5-76+ (0b138d6a) + SuSFS ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -24,10 +24,10 @@ git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git \
 cd kernel_sources
 
 # ==================== 2. CLONE KERNELSU (COMMIT EXACT) ====================
-echo "=== Intégration KernelSU (a34eb2e6) ==="
+echo "=== Intégration KernelSU (0b138d6a) ==="
 rm -rf drivers/kernelsu KernelSU susfs4ksu /tmp/KernelSU || true
 
-KSU_COMMIT="a34eb2e619b5084021693c1372cd35e33ee98f22"
+KSU_COMMIT="0b138d6a9cfe4dc163aa05c21b1e6a14ff868230"
 
 git clone --depth=1 https://github.com/backslashxx/KernelSU.git /tmp/KernelSU
 cd /tmp/KernelSU
