@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD WINNER : KernelSU + SuSFS + fix KSU_VERSION global ==="
+echo "=== BUILD WINNER : KernelSU (3cd3b95e) + SuSFS + fix KSU_VERSION ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -25,11 +25,26 @@ cd kernel_sources
 
 # ==================== 2. INTÉGRATION KERNELSU ====================
 echo "=== Intégration KernelSU (setup.sh) ==="
-rm -rf drivers/kernelsu KernelSU susfs4ksu || true
+rm -rf drivers/kernelsu KernelSU susfs4ksu /tmp/KernelSU || true
 
 curl -LSs "https://raw.githubusercontent.com/backslashxx/KernelSU/master/kernel/setup.sh" | bash
 
-# ==================== 2b. FIX KSU_VERSION GLOBAL ====================
+# ==================== 2b. ALIGNEMENT SUR LE COMMIT EXACT ====================
+echo "=== Alignement kernel sur 3cd3b95e ==="
+KSU_COMMIT="3cd3b95e3baaeb19b73c40f46f18c4f281a3b164"
+
+if [ -d "KernelSU" ]; then
+  cd KernelSU
+  git fetch --depth=1 origin "$KSU_COMMIT"
+  git checkout "$KSU_COMMIT"
+  cd ..
+  ln -sf "$(realpath KernelSU/kernel)" drivers/kernelsu
+  echo "✅ Kernel aligné sur $KSU_COMMIT"
+else
+  echo "⚠️ Dossier KernelSU introuvable"
+fi
+
+# ==================== 2c. FIX KSU_VERSION GLOBAL ====================
 echo "=== Fix KSU_VERSION global ==="
 
 KSU_VER=$(grep -oP '(?<=-DKSU_VERSION=)[0-9]+' drivers/kernelsu/Makefile | head -1)
@@ -339,7 +354,7 @@ fi
 
 echo "✅ Compilation réussie"
 
-# ==================== 11. COMPILATION KSUD ====================
+# ==================== 11. COMPILATION KSUD (MÊME COMMIT) ====================
 cd "$GITHUB_WORKSPACE"
 
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -358,7 +373,10 @@ export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_RO
 
 rm -rf "$GITHUB_WORKSPACE/ksud-src"
 git clone --depth=1 https://github.com/backslashxx/KernelSU.git "$GITHUB_WORKSPACE/ksud-src"
-cd "$GITHUB_WORKSPACE/ksud-src/userspace/ksud"
+cd "$GITHUB_WORKSPACE/ksud-src"
+git fetch --depth=1 origin "$KSU_COMMIT"
+git checkout "$KSU_COMMIT"
+cd userspace/ksud
 
 mkdir -p .cargo
 cat > .cargo/config.toml <<EOF
