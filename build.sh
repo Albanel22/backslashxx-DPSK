@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD WINNER : KernelSU v3.2.5-76+ (0b138d6a) + SuSFS + fix version ==="
+echo "=== BUILD WINNER : KernelSU v3.2.5-76+ (0b138d6a) + SuSFS + fix version UAPI ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -69,50 +69,39 @@ fi
 
 grep -n "DKSU_VERSION" drivers/kernelsu/Makefile
 
-# ==================== 2d. FIX KERNEL_SU_VERSION EN DUR ====================
-echo "=== Fix KERNEL_SU_VERSION en dur ==="
+# ==================== 2d. FIX VERSION/UAPI DANS LES BONS FICHIERS ====================
+echo "=== Fix version et UAPI dans /tmp/KernelSU ==="
 
-KSU_HEADER="drivers/kernelsu/kernel/include/ksu.h"
-
-if [ -f "$KSU_HEADER" ]; then
-  if grep -q "#define KERNEL_SU_VERSION" "$KSU_HEADER"; then
-    sed -i 's/#define KERNEL_SU_VERSION KSU_VERSION/#define KERNEL_SU_VERSION 32601/' "$KSU_HEADER"
-    echo "[+] KERNEL_SU_VERSION forcé à 32601"
-  else
-    echo "#define KERNEL_SU_VERSION 32601" >> "$KSU_HEADER"
-    echo "[+] KERNEL_SU_VERSION ajouté"
-  fi
+# Fix KERNEL_SU_UAPI_VERSION dans uapi/supercall.h
+if [ -f "/tmp/KernelSU/uapi/supercall.h" ]; then
+    sed -i 's/static const __u32 KERNEL_SU_UAPI_VERSION = [0-9]*;/static const __u32 KERNEL_SU_UAPI_VERSION = 2;/' /tmp/KernelSU/uapi/supercall.h
+    sed -i 's/#define KERNEL_SU_UAPI_VERSION [0-9]*/#define KERNEL_SU_UAPI_VERSION 2/' /tmp/KernelSU/uapi/supercall.h
+    echo "[+] KERNEL_SU_UAPI_VERSION forcé à 2 dans uapi/supercall.h"
 else
-  echo "⚠️ $KSU_HEADER introuvable"
+    echo "⚠️ /tmp/KernelSU/uapi/supercall.h introuvable"
 fi
 
-grep -n "KERNEL_SU_VERSION" "$KSU_HEADER" 2>/dev/null || true
-
-# ==================== 2e. FIX UAPI VERSION EN DUR ====================
-echo "=== Fix uapi_version dans dispatch.c ==="
-
-DISPATCH_FILE="drivers/kernelsu/kernel/supercall/dispatch.c"
-
-if [ -f "$DISPATCH_FILE" ]; then
-  sed -i 's/cmd\.uapi_version = KERNEL_SU_UAPI_VERSION;/cmd.uapi_version = 2;/' "$DISPATCH_FILE"
-  echo "[+] cmd.uapi_version forcé à 2"
+# Fix KERNEL_SU_VERSION dans uapi/ksu.h
+if [ -f "/tmp/KernelSU/uapi/ksu.h" ]; then
+    sed -i 's/#define KERNEL_SU_VERSION KSU_VERSION/#define KERNEL_SU_VERSION 32601/' /tmp/KernelSU/uapi/ksu.h
+    echo "[+] KERNEL_SU_VERSION forcé à 32601 dans uapi/ksu.h"
 else
-  echo "⚠️ $DISPATCH_FILE introuvable"
+    echo "⚠️ /tmp/KernelSU/uapi/ksu.h introuvable"
+fi
+
+# Fix direct dans dispatch.c
+DISPATCH_FILE="/tmp/KernelSU/kernel/supercall/dispatch.c"
+if [ -f "$DISPATCH_FILE" ]; then
+    sed -i 's/cmd\.uapi_version = KERNEL_SU_UAPI_VERSION;/cmd.uapi_version = 2;/' "$DISPATCH_FILE"
+    sed -i 's/cmd\.version = KERNEL_SU_VERSION;/cmd.version = 32601;/' "$DISPATCH_FILE"
+    sed -i 's/struct ksu_get_info_cmd cmd = { \.version = KERNEL_SU_VERSION, \.flags = 0 };/struct ksu_get_info_cmd cmd = { .version = 32601, .flags = 0 };/' "$DISPATCH_FILE"
+    sed -i 's/struct ksu_get_info_legacy_cmd cmd = { \.version = KERNEL_SU_VERSION, \.flags = 0 };/struct ksu_get_info_legacy_cmd cmd = { .version = 32601, .flags = 0 };/' "$DISPATCH_FILE"
+    echo "[+] cmd.version et cmd.uapi_version forcés dans dispatch.c"
+else
+    echo "⚠️ $DISPATCH_FILE introuvable"
 fi
 
 grep -n "uapi_version" "$DISPATCH_FILE" 2>/dev/null || true
-
-# ==================== 2f. FIX cmd.version EN DUR ====================
-echo "=== Fix cmd.version dans dispatch.c ==="
-
-if [ -f "$DISPATCH_FILE" ]; then
-  sed -i 's/struct ksu_get_info_cmd cmd = { \.version = KERNEL_SU_VERSION, \.flags = 0 };/struct ksu_get_info_cmd cmd = { .version = 32601, .flags = 0 };/' "$DISPATCH_FILE"
-  sed -i 's/struct ksu_get_info_legacy_cmd cmd = { \.version = KERNEL_SU_VERSION, \.flags = 0 };/struct ksu_get_info_legacy_cmd cmd = { .version = 32601, .flags = 0 };/' "$DISPATCH_FILE"
-  echo "[+] cmd.version forcé à 32601"
-else
-  echo "⚠️ $DISPATCH_FILE introuvable"
-fi
-
 grep -n "cmd = { .version" "$DISPATCH_FILE" 2>/dev/null || true
 
 # ==================== 3. HOOKS MANUELS KERNELSU ====================
