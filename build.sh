@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD WINNER : KernelSU v3.2.5-76+ (0b138d6a) + SuSFS ==="
+echo "=== BUILD WINNER : KernelSU v3.2.5-76+ (0b138d6a) + SuSFS + fix version ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -68,6 +68,26 @@ else
 fi
 
 grep -n "DKSU_VERSION" drivers/kernelsu/Makefile
+
+# ==================== 2d. FIX KERNEL_SU_VERSION EN DUR ====================
+echo "=== Fix KERNEL_SU_VERSION en dur ==="
+
+KSU_HEADER="drivers/kernelsu/kernel/include/ksu.h"
+
+if [ -f "$KSU_HEADER" ]; then
+  if grep -q "#define KERNEL_SU_VERSION" "$KSU_HEADER"; then
+    sed -i 's/#define KERNEL_SU_VERSION KSU_VERSION/#define KERNEL_SU_VERSION 32601/' "$KSU_HEADER"
+    echo "[+] KERNEL_SU_VERSION forcé à 32601"
+  else
+    echo "#define KERNEL_SU_VERSION 32601" >> "$KSU_HEADER"
+    echo "[+] KERNEL_SU_VERSION ajouté"
+  fi
+else
+  echo "⚠️ $KSU_HEADER introuvable, recherche..."
+  find drivers/kernelsu -name "ksu.h" | head -5
+fi
+
+grep -n "KERNEL_SU_VERSION" "$KSU_HEADER" 2>/dev/null || true
 
 # ==================== 3. HOOKS MANUELS KERNELSU ====================
 echo "=== Hooks manuels KernelSU ==="
