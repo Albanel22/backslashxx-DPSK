@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD WINNER : KernelSU + SuSFS + fix KSU_VERSION ==="
+echo "=== BUILD WINNER : KernelSU + SuSFS + fix KSU_VERSION global ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -29,16 +29,25 @@ rm -rf drivers/kernelsu KernelSU susfs4ksu || true
 
 curl -LSs "https://raw.githubusercontent.com/backslashxx/KernelSU/master/kernel/setup.sh" | bash
 
-# ==================== 2b. FIX KSU_VERSION ====================
-echo "=== Fix KSU_VERSION ==="
-if ! grep -q "CFLAGS_ksu.o += -DKSU_VERSION=" drivers/kernelsu/Makefile; then
-    echo "CFLAGS_ksu.o += -DKSU_VERSION=32595" >> drivers/kernelsu/Makefile
-    echo "[+] KSU_VERSION=32595 ajouté"
+# ==================== 2b. FIX KSU_VERSION GLOBAL ====================
+echo "=== Fix KSU_VERSION global ==="
+
+# Récupérer la version déjà présente
+KSU_VER=$(grep -oP '(?<=-DKSU_VERSION=)[0-9]+' drivers/kernelsu/Makefile | head -1)
+if [ -z "$KSU_VER" ]; then
+    KSU_VER="32601"
+fi
+echo "[+] KSU_VERSION détecté : $KSU_VER"
+
+# Ajouter ccflags-y pour que TOUS les fichiers reçoivent la version
+if ! grep -q "ccflags-y += -DKSU_VERSION=" drivers/kernelsu/Makefile; then
+    echo "ccflags-y += -DKSU_VERSION=${KSU_VER}" >> drivers/kernelsu/Makefile
+    echo "[+] ccflags-y += -DKSU_VERSION=${KSU_VER} ajouté"
 else
-    echo "[+] KSU_VERSION déjà présent"
+    echo "[+] ccflags-y déjà présent"
 fi
 
-grep -n "KSU_VERSION" drivers/kernelsu/Makefile
+grep -n "DKSU_VERSION" drivers/kernelsu/Makefile
 
 # ==================== 3. HOOKS MANUELS KERNELSU ====================
 echo "=== Hooks manuels KernelSU ==="
