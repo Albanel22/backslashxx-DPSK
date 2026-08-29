@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD WINNER : KernelSU v3.2.5-76+ (0b138d6a) + SuSFS + fix UAPI ==="
+echo "=== BUILD WINNER : KernelSU v3.2.5-76+ (0b138d6a) + SuSFS + fix version ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -101,6 +101,19 @@ else
 fi
 
 grep -n "uapi_version" "$DISPATCH_FILE" 2>/dev/null || true
+
+# ==================== 2f. FIX cmd.version EN DUR ====================
+echo "=== Fix cmd.version dans dispatch.c ==="
+
+if [ -f "$DISPATCH_FILE" ]; then
+  sed -i 's/struct ksu_get_info_cmd cmd = { \.version = KERNEL_SU_VERSION, \.flags = 0 };/struct ksu_get_info_cmd cmd = { .version = 32601, .flags = 0 };/' "$DISPATCH_FILE"
+  sed -i 's/struct ksu_get_info_legacy_cmd cmd = { \.version = KERNEL_SU_VERSION, \.flags = 0 };/struct ksu_get_info_legacy_cmd cmd = { .version = 32601, .flags = 0 };/' "$DISPATCH_FILE"
+  echo "[+] cmd.version forcé à 32601"
+else
+  echo "⚠️ $DISPATCH_FILE introuvable"
+fi
+
+grep -n "cmd = { .version" "$DISPATCH_FILE" 2>/dev/null || true
 
 # ==================== 3. HOOKS MANUELS KERNELSU ====================
 echo "=== Hooks manuels KernelSU ==="
