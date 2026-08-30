@@ -20,12 +20,11 @@ cd workspace_boot
 
 # ==================== 1. CLONAGE DU NOYAU ====================
 echo "=== Clonage du kernel Motorola sm8250 (LineageOS) ==="
-git clone https://github.com \
-    -b lineage-23.2 --depth=1 kernel_sources
+git clone https://github.com/LineageOS/android_kernel_motorola_sm8250
 
 # ==================== 2. TÉLÉCHARGEMENT DU BOOT.IMG OFFICIEL ====================
 echo "=== Récupération du boot.img stock LineageOS ==="
-curl -Lo stock_boot.img "https://lineageos.org"
+curl -Lo stock_boot.img "https://mirrorbits.lineageos.org/full/kiev/20260809/boot.img"
 
 # Récupération de magiskboot pour le repack final
 mkdir -p tools
