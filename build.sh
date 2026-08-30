@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD WINNER : KernelSU v3.2.5-76+ (0b138d6a) + SuSFS + diagnostic ==="
+echo "=== BUILD WINNER : KernelSU v3.2.5-76+ (0b138d6a) + SuSFS + fix ksuver_override ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -72,31 +72,34 @@ grep -n "DKSU_VERSION" drivers/kernelsu/Makefile
 # ==================== 2d. FIX VERSION/UAPI DANS LES BONS FICHIERS ====================
 echo "=== Fix version et UAPI dans /tmp/KernelSU ==="
 
+# Fix UAPI
 if [ -f "/tmp/KernelSU/uapi/supercall.h" ]; then
     sed -i 's/static const __u32 KERNEL_SU_UAPI_VERSION = [0-9]*;/static const __u32 KERNEL_SU_UAPI_VERSION = 2;/' /tmp/KernelSU/uapi/supercall.h
     sed -i 's/#define KERNEL_SU_UAPI_VERSION [0-9]*/#define KERNEL_SU_UAPI_VERSION 2/' /tmp/KernelSU/uapi/supercall.h
     echo "[+] KERNEL_SU_UAPI_VERSION forcé à 2 dans uapi/supercall.h"
-else
-    echo "⚠️ /tmp/KernelSU/uapi/supercall.h introuvable"
 fi
 
+# Fix KERNEL_SU_VERSION
 if [ -f "/tmp/KernelSU/uapi/ksu.h" ]; then
     sed -i 's/#define KERNEL_SU_VERSION KSU_VERSION/#define KERNEL_SU_VERSION 32601/' /tmp/KernelSU/uapi/ksu.h
     echo "[+] KERNEL_SU_VERSION forcé à 32601 dans uapi/ksu.h"
-else
-    echo "⚠️ /tmp/KernelSU/uapi/ksu.h introuvable"
 fi
 
+# Fix dispatch.c
 DISPATCH_FILE="/tmp/KernelSU/kernel/supercall/dispatch.c"
 if [ -f "$DISPATCH_FILE" ]; then
+    # Forcer uapi_version
     sed -i 's/cmd\.uapi_version = KERNEL_SU_UAPI_VERSION;/cmd.uapi_version = 2;/' "$DISPATCH_FILE"
-    sed -i 's/cmd\.version = KERNEL_SU_VERSION;/cmd.version = 32601;/' "$DISPATCH_FILE"
+    # Forcer ksuver_override
+    sed -i 's/static uint32_t ksuver_override = 0;/static uint32_t ksuver_override = 32601;/' "$DISPATCH_FILE"
+    # Forcer la structure d'initialisation si possible (redondance)
     sed -i 's/struct ksu_get_info_cmd cmd = { \.version = KERNEL_SU_VERSION, \.flags = 0 };/struct ksu_get_info_cmd cmd = { .version = 32601, .flags = 0 };/' "$DISPATCH_FILE"
     sed -i 's/struct ksu_get_info_legacy_cmd cmd = { \.version = KERNEL_SU_VERSION, \.flags = 0 };/struct ksu_get_info_legacy_cmd cmd = { .version = 32601, .flags = 0 };/' "$DISPATCH_FILE"
-    echo "[+] cmd.version et cmd.uapi_version forcés dans dispatch.c"
-else
-    echo "⚠️ $DISPATCH_FILE introuvable"
+    echo "[+] cmd.uapi_version=2, ksuver_override=32601, init version=32601"
 fi
+
+# Afficher les lignes importantes pour vérifier
+grep -n "uapi_version\|ksuver_override\|cmd = { .version" "$DISPATCH_FILE"
 
 # ==================== 3. HOOKS MANUELS KERNELSU ====================
 echo "=== Hooks manuels KernelSU ==="
@@ -378,38 +381,6 @@ sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
 # ==================== 9. PATCH TACTILE ====================
 printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
-
-# ==================== 9b. DIAGNOSTIC AVANT COMPILATION ====================
-echo "=== DIAGNOSTIC AVANT COMPILATION ==="
-echo "1. Dossier drivers/kernelsu :"
-ls -la drivers/kernelsu/ | head -10
-
-echo "2. Lien symbolique :"
-readlink -f drivers/kernelsu
-
-echo "3. Fichier dispatch.c utilisé :"
-DISPATCH_SYMLINK="drivers/kernelsu/supercall/dispatch.c"
-if [ -f "$DISPATCH_SYMLINK" ]; then
-    echo "   Fichier trouvé : $DISPATCH_SYMLINK"
-    grep -n "cmd.uapi_version" "$DISPATCH_SYMLINK"
-    grep -n "cmd.version" "$DISPATCH_SYMLINK"
-else
-    echo "   Fichier INTROUVABLE via symlink"
-    find drivers/kernelsu -name "dispatch.c" | head -5
-fi
-
-echo "4. Fichier dispatch.c source modifié :"
-if [ -f "/tmp/KernelSU/kernel/supercall/dispatch.c" ]; then
-    grep -n "cmd.uapi_version" /tmp/KernelSU/kernel/supercall/dispatch.c
-    grep -n "cmd.version" /tmp/KernelSU/kernel/supercall/dispatch.c
-else
-    echo "   Source modifié introuvable"
-fi
-
-echo "5. Header uapi :"
-find /tmp/KernelSU -name "ksu.h" -o -name "supercall.h" | head -10
-
-echo "=== FIN DIAGNOSTIC ==="
 
 # ==================== 10. COMPILATION ====================
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image 2>&1 | tee build.log
