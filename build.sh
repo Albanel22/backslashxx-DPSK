@@ -93,7 +93,35 @@ hook_insert "fs/exec.c" \
     'ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);' \
     || HOOKS_FAILED=1
 
-# Hook sys_reboot (après déclarations)
+if grep -Pzo 'long do_faccessat\(int dfd, const char __user \*filename, int mode\)\s*\n\{' fs/open.c > /dev/null 2>&1; then
+    hook_insert "fs/open.c" \
+        'long do_faccessat\(int dfd, const char __user \*filename, int mode\)\s*\n\{' \
+        '#ifdef CONFIG_KSU\nextern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode,\n\t\t\t\t int *flags);\n#endif\n' \
+        'ksu_handle_faccessat(&dfd, &filename, &mode, NULL);' \
+        || HOOKS_FAILED=1
+elif grep -Pzo 'SYSCALL_DEFINE3\(faccessat, int, dfd, const char __user \*, filename, int, mode\)\s*\n\{' fs/open.c > /dev/null 2>&1; then
+    hook_insert "fs/open.c" \
+        'SYSCALL_DEFINE3\(faccessat, int, dfd, const char __user \*, filename, int, mode\)\s*\n\{' \
+        '#ifdef CONFIG_KSU\nextern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode,\n\t\t\t\t int *flags);\n#endif\n' \
+        'ksu_handle_faccessat(&dfd, &filename, &mode, NULL);' \
+        || HOOKS_FAILED=1
+fi
+
+if grep -Pzo 'int vfs_statx\(int dfd, const char __user \*filename, int flags,' fs/stat.c > /dev/null 2>&1; then
+    hook_insert "fs/stat.c" \
+        'int vfs_statx\(int dfd, const char __user \*filename, int flags,[^{]*\{' \
+        '#ifdef CONFIG_KSU\nextern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\n#endif\n' \
+        'ksu_handle_stat(&dfd, &filename, &flags);' \
+        || HOOKS_FAILED=1
+elif grep -Pzo 'int vfs_fstatat\(int dfd, const char __user \*filename, struct kstat \*stat,\s*\n\s*int flag\)\s*\n\{' fs/stat.c > /dev/null 2>&1; then
+    hook_insert "fs/stat.c" \
+        'int vfs_fstatat\(int dfd, const char __user \*filename, struct kstat \*stat,\s*\n\s*int flag\)\s*\n\{' \
+        '#ifdef CONFIG_KSU\nextern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\n#endif\n' \
+        'ksu_handle_stat(&dfd, &filename, &flag);' \
+        || HOOKS_FAILED=1
+fi
+
+# Hook sys_reboot
 if ! grep -q "ksu_handle_sys_reboot" kernel/reboot.c; then
   sed -i '/SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,/i\
 #if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD)\
@@ -119,13 +147,37 @@ fi
 
 patch -p1 < "$SUSFS_PATCH" 2>&1 | tee /tmp/susfs_patch.log || true
 
-# Vérifier que susfs.c existe et contient les fonctions de commande
 if [ -f "fs/susfs.c" ]; then
     echo "✅ fs/susfs.c présent"
     grep -n "susfs_show_version\|susfs_show_variant\|susfs_show_enabled_features\|CMD_SUSFS_ADD_SUS_PATH" fs/susfs.c || echo "⚠️ Fonctions show non trouvées"
 else
     echo "❌ fs/susfs.c INTROUVABLE"
     exit 1
+fi
+
+# ==================== AJOUT DES SYMBOLES MANQUANTS ====================
+if ! grep -q "susfs_ksu_sid = 0" fs/susfs.c; then
+    cat >> fs/susfs.c << 'SUSFS_EOF'
+
+#ifdef CONFIG_KSU_SUSFS
+bool susfs_is_current_ksu_domain(void)
+{
+    const struct cred *cred = current_cred();
+    return (cred->uid.val == 0 || cred->uid.val == 2000);
+}
+EXPORT_SYMBOL(susfs_is_current_ksu_domain);
+
+u32 susfs_ksu_sid = 0;
+EXPORT_SYMBOL(susfs_ksu_sid);
+
+u32 susfs_priv_app_sid = 0;
+EXPORT_SYMBOL(susfs_priv_app_sid);
+#endif
+SUSFS_EOF
+
+    echo "[+] Symboles SusFS manquants ajoutés"
+else
+    echo "[+] Symboles SusFS déjà présents"
 fi
 
 # Ajouter au Makefile fs
