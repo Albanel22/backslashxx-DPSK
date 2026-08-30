@@ -465,7 +465,7 @@ if [ "$SIZE" -lt 80000000 ]; then
 fi
 echo "✅ boot-stock.img téléchargé ($SIZE octets)"
 
-curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260809/dtbo.img"
+curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260816/dtbo.img"
 
 if [ -f "boot-stock.img" ]; then
   mkdir -p repack
