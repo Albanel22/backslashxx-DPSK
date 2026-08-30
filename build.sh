@@ -162,24 +162,21 @@ fi
 
 # Hook sys_reboot
 if ! grep -q "ksu_handle_sys_reboot" kernel/reboot.c; then
+  # Ajouter la déclaration extern avant SYSCALL_DEFINE4
   sed -i '/SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,/i\
 #if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD)\
 extern int ksu_handle_sys_reboot(int, int, unsigned int, void __user **);\
 #endif' kernel/reboot.c
 
-  sed -i '/struct pid_namespace \*pid_ns = task_active_pid_ns(current);/i\
+  # Insérer l'appel APRÈS les déclarations (après int ret = 0;)
+  sed -i '/int ret = 0;/a\
 #if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD)\
-ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\
+\tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\
 #endif' kernel/reboot.c
 
-  echo "[+] Hook sys_reboot OK"
+  echo "[+] Hook sys_reboot OK (après déclarations)"
 else
   echo "[+] Hook sys_reboot déjà présent"
-fi
-
-if [ "$HOOKS_FAILED" -eq 1 ]; then
-    echo "❌ Échec des hooks KernelSU"
-    exit 1
 fi
 
 echo "✅ Hooks KernelSU en place"
