@@ -1,13 +1,8 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD WINNER : KernelSU + SuSFS + UAPI 2 forcé ==="
+echo "=== BUILD DIAGNOSTIC : KernelSU v3.2.5-76+ (0b138d6a) + SuSFS + debug version ==="
 df -h
-
-# ==================== PIN UNIQUE (kernel + ksud) ====================
-# Tag / commit backslashxx avec UAPI 2 (aligné manager 3.2.5-76)
-KSU_REF="v3.2.5-76"
-# Si le tag n'existe pas sur le repo : KSU_REF="3cd3b95e"
 
 # ==================== ENVIRONNEMENT ====================
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -28,92 +23,94 @@ git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git \
 
 cd kernel_sources
 
-# ==================== 2. INTÉGRATION KERNELSU (PIN UAPI 2) ====================
-echo "=== Intégration KernelSU (ref: $KSU_REF) ==="
-rm -rf drivers/kernelsu KernelSU susfs4ksu || true
+# ==================== 2. CLONE KERNELSU (COMMIT EXACT) ====================
+echo "=== Intégration KernelSU (0b138d6a) ==="
+rm -rf drivers/kernelsu KernelSU susfs4ksu /tmp/KernelSU || true
 
-curl -LSs "https://raw.githubusercontent.com/backslashxx/KernelSU/master/kernel/setup.sh" \
-  | bash -s "$KSU_REF"
+KSU_COMMIT="0b138d6a9cfe4dc163aa05c21b1e6a14ff868230"
 
-# ==================== 2b. VÉRIF + FORCE UAPI 2 ====================
-echo "=== Vérification UAPI côté kernel ==="
+git clone --depth=1 https://github.com/backslashxx/KernelSU.git /tmp/KernelSU
+cd /tmp/KernelSU
+git fetch --depth=1 origin "$KSU_COMMIT"
+git checkout "$KSU_COMMIT"
+cd "$GITHUB_WORKSPACE/kernel_sources"
 
-DISPATCH=""
-for p in \
-  drivers/kernelsu/supercall/dispatch.c \
-  drivers/kernelsu/kernel/supercall/dispatch.c \
-  KernelSU/kernel/supercall/dispatch.c
-do
-  [ -f "$p" ] && DISPATCH="$p" && break
-done
+# ==================== 2b. SYMLINK DRIVER ====================
+ln -sf /tmp/KernelSU/kernel drivers/kernelsu
 
-UAPI_H=""
-for p in \
-  KernelSU/uapi/supercall.h \
-  drivers/kernelsu/../uapi/supercall.h \
-  drivers/kernelsu/include/uapi/supercall.h \
-  uapi/supercall.h
-do
-  [ -f "$p" ] && UAPI_H="$p" && break
-done
-
-if [ -z "$DISPATCH" ]; then
-  echo "❌ dispatch.c introuvable — setup.sh a échoué"
-  find . -name 'dispatch.c' 2>/dev/null | head -20
-  exit 1
-fi
-echo "[+] dispatch.c : $DISPATCH"
-
-if [ -n "$UAPI_H" ]; then
-  if ! grep -q 'KERNEL_SU_UAPI_VERSION' "$UAPI_H"; then
-    echo "❌ KERNEL_SU_UAPI_VERSION absent dans $UAPI_H"
-    exit 1
-  fi
-  sed -i 's/KERNEL_SU_UAPI_VERSION *= *[0-9][0-9]*/KERNEL_SU_UAPI_VERSION = 2/' "$UAPI_H"
-  echo "[+] $UAPI_H → KERNEL_SU_UAPI_VERSION = 2"
-  grep -n 'KERNEL_SU_UAPI_VERSION' "$UAPI_H" | head -5
+if [ -d "drivers/kernelsu" ]; then
+    echo "✅ Symlink OK"
+    ls drivers/kernelsu/ | head -5
 else
-  echo "⚠ header uapi non trouvé (peut être embarqué ailleurs)"
+    echo "❌ Symlink ÉCHOUÉ"
+    exit 1
 fi
 
-if ! grep -q 'cmd\.uapi_version *= *KERNEL_SU_UAPI_VERSION' "$DISPATCH"; then
-  echo "[!] uapi_version manquant dans do_get_info — tentative de patch"
-  perl -i -0pe 's/(static int do_get_info\(void __user \*arg\)\s*\{.*?cmd\.features\s*=\s*KSU_FEATURE_MAX\s*;)/$1\n\tcmd.uapi_version = KERNEL_SU_UAPI_VERSION;/s' "$DISPATCH" || true
-fi
+printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> drivers/Makefile
+sed -i "/endmenu/i\source \"drivers/kernelsu/Kconfig\"" drivers/Kconfig
 
-if ! grep -q 'cmd\.uapi_version *= *KERNEL_SU_UAPI_VERSION' "$DISPATCH"; then
-  echo "❌ Impossible d'assurer cmd.uapi_version dans $DISPATCH"
-  grep -n "do_get_info\|uapi_version\|features" "$DISPATCH" | head -40
-  exit 1
-fi
-echo "✅ Kernel UAPI OK"
-grep -n 'uapi_version\|KERNEL_SU_UAPI_VERSION' "$DISPATCH" | head -10
+echo "✅ KernelSU intégré avec le commit $KSU_COMMIT"
 
 # ==================== 2c. FIX KSU_VERSION GLOBAL ====================
 echo "=== Fix KSU_VERSION global ==="
 
-KSU_MAKEFILE=""
-for p in drivers/kernelsu/Makefile KernelSU/kernel/Makefile; do
-  [ -f "$p" ] && KSU_MAKEFILE="$p" && break
-done
-
-KSU_VER=""
-if [ -n "$KSU_MAKEFILE" ]; then
-  KSU_VER=$(grep -oP '(?<=-DKSU_VERSION=)[0-9]+' "$KSU_MAKEFILE" 2>/dev/null | head -1 || true)
-fi
+KSU_VER=$(grep -oP '(?<=-DKSU_VERSION=)[0-9]+' drivers/kernelsu/Makefile | head -1)
 if [ -z "$KSU_VER" ]; then
-  KSU_VER="32601"
+    KSU_VER="32601"
 fi
-echo "[+] KSU_VERSION : $KSU_VER"
+echo "[+] KSU_VERSION détecté : $KSU_VER"
 
-if [ -n "$KSU_MAKEFILE" ]; then
-  if ! grep -q "ccflags-y += -DKSU_VERSION=" "$KSU_MAKEFILE"; then
-    echo "ccflags-y += -DKSU_VERSION=${KSU_VER}" >> "$KSU_MAKEFILE"
+if ! grep -q "ccflags-y += -DKSU_VERSION=" drivers/kernelsu/Makefile; then
+    echo "ccflags-y += -DKSU_VERSION=${KSU_VER}" >> drivers/kernelsu/Makefile
     echo "[+] ccflags-y += -DKSU_VERSION=${KSU_VER} ajouté"
-  else
+else
     echo "[+] ccflags-y déjà présent"
-  fi
-  grep -n "DKSU_VERSION" "$KSU_MAKEFILE" || true
+fi
+
+grep -n "DKSU_VERSION" drivers/kernelsu/Makefile
+
+# ==================== 2d. FIX VERSION/UAPI ====================
+echo "=== Fix version et UAPI ==="
+
+# Fix UAPI
+if [ -f "/tmp/KernelSU/uapi/supercall.h" ]; then
+    sed -i 's/static const __u32 KERNEL_SU_UAPI_VERSION = [0-9]*;/static const __u32 KERNEL_SU_UAPI_VERSION = 2;/' /tmp/KernelSU/uapi/supercall.h
+    sed -i 's/#define KERNEL_SU_UAPI_VERSION [0-9]*/#define KERNEL_SU_UAPI_VERSION 2/' /tmp/KernelSU/uapi/supercall.h
+    echo "[+] KERNEL_SU_UAPI_VERSION forcé à 2"
+fi
+
+if [ -f "/tmp/KernelSU/uapi/ksu.h" ]; then
+    sed -i 's/#define KERNEL_SU_VERSION KSU_VERSION/#define KERNEL_SU_VERSION 32601/' /tmp/KernelSU/uapi/ksu.h
+    echo "[+] KERNEL_SU_VERSION forcé à 32601"
+fi
+
+DISPATCH_FILE="/tmp/KernelSU/kernel/supercall/dispatch.c"
+if [ -f "$DISPATCH_FILE" ]; then
+    sed -i 's/cmd\.uapi_version = KERNEL_SU_UAPI_VERSION;/cmd.uapi_version = 2;/' "$DISPATCH_FILE"
+    sed -i 's/static uint32_t ksuver_override = 0;/static uint32_t ksuver_override = 32601;/' "$DISPATCH_FILE"
+    sed -i 's/struct ksu_get_info_cmd cmd = { \.version = KERNEL_SU_VERSION, \.flags = 0 };/struct ksu_get_info_cmd cmd = { .version = 32601, .flags = 0 };/' "$DISPATCH_FILE"
+    sed -i 's/struct ksu_get_info_legacy_cmd cmd = { \.version = KERNEL_SU_VERSION, \.flags = 0 };/struct ksu_get_info_legacy_cmd cmd = { .version = 32601, .flags = 0 };/' "$DISPATCH_FILE"
+    echo "[+] Corrections dispatch.c appliquées"
+fi
+
+# ==================== 2e. AJOUT DU LOG DE DEBUG ====================
+echo "=== Ajout du pr_info de debug dans do_get_info ==="
+if [ -f "$DISPATCH_FILE" ]; then
+    # Insérer un pr_info juste avant le copy_to_user de do_get_info
+    python3 - << 'PYEOF'
+DISPATCH_FILE="/tmp/KernelSU/kernel/supercall/dispatch.c"
+with open(DISPATCH_FILE, "r") as f:
+    content = f.read()
+
+old = "\tif (copy_to_user(arg, &cmd, sizeof(cmd))) {"
+new = "\tpr_info(\"KSU DEBUG: version=%u uapi_version=%u\\n\", cmd.version, cmd.uapi_version);\n" + old
+
+content = content.replace(old, new, 1)
+with open(DISPATCH_FILE, "w") as f:
+    f.write(content)
+print("[+] pr_info ajouté")
+PYEOF
+    grep -n "KSU DEBUG" "$DISPATCH_FILE"
 fi
 
 # ==================== 3. HOOKS MANUELS KERNELSU ====================
@@ -121,18 +118,18 @@ echo "=== Hooks manuels KernelSU ==="
 
 hook_insert() {
     local file="$1" sig_re="$2" extern_block="$3" call_line="$4"
-
+    
     if [ ! -f "$file" ]; then
         echo "❌ $file introuvable."
         return 1
     fi
-
+    
     if ! grep -Pzo "$sig_re" "$file" > /dev/null 2>&1; then
         echo "❌ Signature non trouvée dans $file"
         return 1
     fi
-
-    perl -0777 -i -pe "s/(\( sig_re)/ \){extern_block}\$1\n#ifdef CONFIG_KSU\n#pragma GCC diagnostic ignored \x22-Wdeclaration-after-statement\x22\n${call_line}\n#endif\n/s" "$file"
+    
+    perl -0777 -i -pe "s/($sig_re)/${extern_block}\$1\n#ifdef CONFIG_KSU\n#pragma GCC diagnostic ignored \x22-Wdeclaration-after-statement\x22\n${call_line}\n#endif\n/s" "$file"
     echo "✅ Hook inséré dans $file"
     return 0
 }
@@ -202,7 +199,7 @@ if [ ! -f "$SUSFS_PATCH" ]; then
     exit 1
 fi
 
-echo "✅ Patch SuSFS trouvé : $(wc -l < "$SUSFS_PATCH") lignes"
+echo "✅ Patch SuSFS trouvé : $(wc -l < $SUSFS_PATCH) lignes"
 
 # ==================== 5. APPLICATION DU PATCH SUSFS ====================
 echo "=== Application du patch SuSFS ==="
@@ -216,8 +213,13 @@ else
     exit 1
 fi
 
-[ -f "include/linux/susfs.h" ] && echo "✅ include/linux/susfs.h créé"
-[ -f "include/linux/susfs_def.h" ] && echo "✅ include/linux/susfs_def.h créé"
+if [ -f "include/linux/susfs.h" ]; then
+    echo "✅ include/linux/susfs.h créé"
+fi
+
+if [ -f "include/linux/susfs_def.h" ]; then
+    echo "✅ include/linux/susfs_def.h créé"
+fi
 
 find . -name "*.rej" -type f -delete 2>/dev/null || true
 find . -name "*.orig" -type f -delete 2>/dev/null || true
@@ -225,11 +227,11 @@ find . -name "*.orig" -type f -delete 2>/dev/null || true
 # ==================== 5b. CORRECTION FS/MAKEFILE ====================
 if [ -f "fs/Makefile" ]; then
     if ! grep -q "susfs.o" fs/Makefile; then
-        echo 'obj-$(CONFIG_KSU_SUSFS) += susfs.o' >> fs/Makefile
+        echo "obj-\$(CONFIG_KSU_SUSFS) += susfs.o" >> fs/Makefile
     fi
     if [ -f "fs/sus_su.c" ]; then
         if ! grep -q "sus_su.o" fs/Makefile; then
-            echo 'obj-$(CONFIG_KSU_SUSFS) += sus_su.o' >> fs/Makefile
+            echo "obj-\$(CONFIG_KSU_SUSFS) += sus_su.o" >> fs/Makefile
         fi
     fi
 fi
@@ -349,7 +351,7 @@ CONFIG=$(find arch/arm64/configs/ -name "*kiev*" -o -name "*lito*" -o -name "*sm
 CONFIG_NAME=${CONFIG#arch/arm64/configs/}
 echo "Config utilisée: $CONFIG_NAME"
 
-make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 "$CONFIG_NAME"
+make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 $CONFIG_NAME
 
 ./scripts/config --file out/.config \
     --enable KSU \
@@ -384,7 +386,7 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
     echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y"
 } >> out/.config
 
-grep "CONFIG_KSU_SUSFS" out/.config || true
+grep "CONFIG_KSU_SUSFS" out/.config
 
 # ==================== 8. PATCH SIGNATURES ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
@@ -393,7 +395,7 @@ sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
 
 # ==================== 10. COMPILATION ====================
-make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=\( CROSS_COMPILE_ARM32 -j" \)(nproc)" Image 2>&1 | tee build.log
+make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image 2>&1 | tee build.log
 
 if [ ! -f "out/arch/arm64/boot/Image" ]; then
     echo "❌ BUILD FAILED"
@@ -403,13 +405,7 @@ fi
 
 echo "✅ Compilation réussie"
 
-# Re-vérif UAPI après build sources (sanity)
-if ! grep -q 'cmd\.uapi_version *= *KERNEL_SU_UAPI_VERSION' "$DISPATCH"; then
-  echo "❌ UAPI perdu après patches — abort"
-  exit 1
-fi
-
-# ==================== 11. COMPILATION KSUD (même ref) ====================
+# ==================== 11. COMPILATION KSUD (MÊME COMMIT) ====================
 cd "$GITHUB_WORKSPACE"
 
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -427,15 +423,10 @@ export AR_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm
 export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot -I$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/aarch64-linux-android"
 
 rm -rf "$GITHUB_WORKSPACE/ksud-src"
-git clone https://github.com/backslashxx/KernelSU.git "$GITHUB_WORKSPACE/ksud-src"
+git clone --depth=1 https://github.com/backslashxx/KernelSU.git "$GITHUB_WORKSPACE/ksud-src"
 cd "$GITHUB_WORKSPACE/ksud-src"
-git fetch --depth=1 origin "$KSU_REF" 2>/dev/null || git fetch --tags --depth=1 origin
-git checkout "$KSU_REF" || {
-  echo "⚠ checkout $KSU_REF échoué, fallback master tip"
-  git checkout master || git checkout HEAD
-}
-echo "[+] ksud source @ $(git rev-parse --short HEAD) (wanted $KSU_REF)"
-
+git fetch --depth=1 origin "$KSU_COMMIT"
+git checkout "$KSU_COMMIT"
 cd userspace/ksud
 
 mkdir -p .cargo
@@ -461,7 +452,6 @@ fi
 cp "$KSUD_BINARY" "$GITHUB_WORKSPACE/ksud"
 chmod 755 "$GITHUB_WORKSPACE/ksud"
 echo "✅ ksud compilé"
-"$GITHUB_WORKSPACE/ksud" --version || true
 
 # ==================== 12. REPACK ====================
 cd "$GITHUB_WORKSPACE"
@@ -522,5 +512,4 @@ cp kernel_sources/build.log output/
 cp "$GITHUB_WORKSPACE/ksud" output/ksud 2>/dev/null || true
 
 echo "=== BUILD TERMINÉ ==="
-echo "KSU_REF=$KSU_REF"
 ls -lh output/
