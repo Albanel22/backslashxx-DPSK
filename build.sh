@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD WINNER : KernelSU v3.2.5-76+ (0b138d6a) + SuSFS + fix ksuver_override ==="
+echo "=== BUILD WINNER : KernelSU v3.2.5-76+ (0b138d6a) + SuSFS + fix UAPI + sys_reboot ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -72,34 +72,27 @@ grep -n "DKSU_VERSION" drivers/kernelsu/Makefile
 # ==================== 2d. FIX VERSION/UAPI DANS LES BONS FICHIERS ====================
 echo "=== Fix version et UAPI dans /tmp/KernelSU ==="
 
-# Fix UAPI
 if [ -f "/tmp/KernelSU/uapi/supercall.h" ]; then
     sed -i 's/static const __u32 KERNEL_SU_UAPI_VERSION = [0-9]*;/static const __u32 KERNEL_SU_UAPI_VERSION = 2;/' /tmp/KernelSU/uapi/supercall.h
     sed -i 's/#define KERNEL_SU_UAPI_VERSION [0-9]*/#define KERNEL_SU_UAPI_VERSION 2/' /tmp/KernelSU/uapi/supercall.h
-    echo "[+] KERNEL_SU_UAPI_VERSION forcé à 2 dans uapi/supercall.h"
+    echo "[+] KERNEL_SU_UAPI_VERSION forcé à 2"
 fi
 
-# Fix KERNEL_SU_VERSION
 if [ -f "/tmp/KernelSU/uapi/ksu.h" ]; then
     sed -i 's/#define KERNEL_SU_VERSION KSU_VERSION/#define KERNEL_SU_VERSION 32601/' /tmp/KernelSU/uapi/ksu.h
-    echo "[+] KERNEL_SU_VERSION forcé à 32601 dans uapi/ksu.h"
+    echo "[+] KERNEL_SU_VERSION forcé à 32601"
 fi
 
-# Fix dispatch.c
 DISPATCH_FILE="/tmp/KernelSU/kernel/supercall/dispatch.c"
 if [ -f "$DISPATCH_FILE" ]; then
-    # Forcer uapi_version
     sed -i 's/cmd\.uapi_version = KERNEL_SU_UAPI_VERSION;/cmd.uapi_version = 2;/' "$DISPATCH_FILE"
-    # Forcer ksuver_override
     sed -i 's/static uint32_t ksuver_override = 0;/static uint32_t ksuver_override = 32601;/' "$DISPATCH_FILE"
-    # Forcer la structure d'initialisation si possible (redondance)
     sed -i 's/struct ksu_get_info_cmd cmd = { \.version = KERNEL_SU_VERSION, \.flags = 0 };/struct ksu_get_info_cmd cmd = { .version = 32601, .flags = 0 };/' "$DISPATCH_FILE"
     sed -i 's/struct ksu_get_info_legacy_cmd cmd = { \.version = KERNEL_SU_VERSION, \.flags = 0 };/struct ksu_get_info_legacy_cmd cmd = { .version = 32601, .flags = 0 };/' "$DISPATCH_FILE"
-    echo "[+] cmd.uapi_version=2, ksuver_override=32601, init version=32601"
+    echo "[+] Corrections dispatch.c appliquées"
 fi
 
-# Afficher les lignes importantes pour vérifier
-grep -n "uapi_version\|ksuver_override\|cmd = { .version" "$DISPATCH_FILE"
+grep -n "uapi_version\|ksuver_override\|cmd = { .version" "$DISPATCH_FILE" 2>/dev/null || true
 
 # ==================== 3. HOOKS MANUELS KERNELSU ====================
 echo "=== Hooks manuels KernelSU ==="
@@ -165,6 +158,23 @@ elif grep -Pzo 'int vfs_fstatat\(int dfd, const char __user \*filename, struct k
 else
     echo "❌ Hook stat non trouvé"
     HOOKS_FAILED=1
+fi
+
+# Hook sys_reboot
+if ! grep -q "ksu_handle_sys_reboot" kernel/reboot.c; then
+  sed -i '/SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,/i\
+#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD)\
+extern int ksu_handle_sys_reboot(int, int, unsigned int, void __user **);\
+#endif' kernel/reboot.c
+
+  sed -i '/struct pid_namespace \*pid_ns = task_active_pid_ns(current);/i\
+#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD)\
+ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\
+#endif' kernel/reboot.c
+
+  echo "[+] Hook sys_reboot OK"
+else
+  echo "[+] Hook sys_reboot déjà présent"
 fi
 
 if [ "$HOOKS_FAILED" -eq 1 ]; then
