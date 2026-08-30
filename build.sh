@@ -10,9 +10,10 @@ sudo apt-get clean
 sudo sed -i 's/://ubuntu.com' /etc/apt/sources.list 2>/dev/null || true
 
 sudo apt-get update
+# AJOUT DE ABOOTIMG ICI
 sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf-dev \
     libssl-dev libncurses-dev gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
-    clang llvm lld device-tree-compiler zip unzip curl git python3 perl
+    clang llvm lld device-tree-compiler zip unzip curl git python3 perl abootimg
 
 cd "$GITHUB_WORKSPACE"
 mkdir -p workspace_boot
@@ -136,20 +137,19 @@ export SUBARCH=arm64
 make O=out $(basename "$DEFCONFIG_FILE")
 make -j$(nproc --all) O=out CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LD=ld.lld
 
-# ==================== 8. REMPAQUETAGE EN BOOT.IMG VIA MAGISKBOOT ====================
+# ==================== 8. REMPAQUETAGE EN BOOT.IMG VIA ABOOTIMG ====================
 echo "=== Création du boot.img final ==="
 cd "$GITHUB_WORKSPACE/workspace_boot"
 
-cp tools/magiskboot .
-./magiskboot unpack stock_boot.img
-
 if [ -f "kernel_sources/out/arch/arm64/boot/Image.gz" ]; then
-    cp kernel_sources/out/arch/arm64/boot/Image.gz kernel
+    NEW_KERNEL="kernel_sources/out/arch/arm64/boot/Image.gz"
 else
-    cp kernel_sources/out/arch/arm64/boot/Image kernel
+    NEW_KERNEL="kernel_sources/out/arch/arm64/boot/Image"
 fi
 
-./magiskboot repack stock_boot.img new-boot.img
+# Remplacement de magiskboot par l'outil natif abootimg
+cp stock_boot.img new-boot.img
+abootimg -u new-boot.img -k "$NEW_KERNEL"
 
 # Alignement avec votre étape "Upload results" (dossier output/)
 mkdir -p "$GITHUB_WORKSPACE/output"
