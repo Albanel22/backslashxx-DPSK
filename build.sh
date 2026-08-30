@@ -455,7 +455,7 @@ echo "✅ ksud compilé"
 cd "$GITHUB_WORKSPACE"
 
 echo "=== Téléchargement du boot.img stock ==="
-curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260809/boot.img"
+curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260816/boot.img"
 
 # Vérifier la taille minimale (le boot stock fait environ 96 Mo)
 SIZE=$(stat -c%s boot-stock.img)
