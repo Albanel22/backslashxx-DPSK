@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD WINNER : KernelSU v3.2.5-76+ (0b138d6a) + SuSFS + fix UAPI + sys_reboot ==="
+echo "=== BUILD WINNER : KernelSU v3.2.5-76+ (0b138d6a) + SuSFS 2.2.0 + UAPI2 + sys_reboot ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -23,7 +23,7 @@ git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git \
 
 cd kernel_sources
 
-# ==================== 2. CLONE KERNELSU (COMMIT EXACT) ====================
+# ==================== 2. CLONE KERNELSU ====================
 echo "=== Intégration KernelSU (0b138d6a) ==="
 rm -rf drivers/kernelsu KernelSU susfs4ksu /tmp/KernelSU || true
 
@@ -40,7 +40,6 @@ ln -sf /tmp/KernelSU/kernel drivers/kernelsu
 
 if [ -d "drivers/kernelsu" ]; then
     echo "✅ Symlink OK"
-    ls drivers/kernelsu/ | head -5
 else
     echo "❌ Symlink ÉCHOUÉ"
     exit 1
@@ -49,196 +48,97 @@ fi
 printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> drivers/Makefile
 sed -i "/endmenu/i\source \"drivers/kernelsu/Kconfig\"" drivers/Kconfig
 
-echo "✅ KernelSU intégré avec le commit $KSU_COMMIT"
-
-# ==================== 2c. FIX KSU_VERSION GLOBAL ====================
-echo "=== Fix KSU_VERSION global ==="
+# ==================== 2c. FIX VERSION/UAPI ====================
+echo "=== Fix KSU_VERSION / UAPI ==="
 
 KSU_VER=$(grep -oP '(?<=-DKSU_VERSION=)[0-9]+' drivers/kernelsu/Makefile | head -1)
 if [ -z "$KSU_VER" ]; then
     KSU_VER="32601"
 fi
-echo "[+] KSU_VERSION détecté : $KSU_VER"
 
 if ! grep -q "ccflags-y += -DKSU_VERSION=" drivers/kernelsu/Makefile; then
     echo "ccflags-y += -DKSU_VERSION=${KSU_VER}" >> drivers/kernelsu/Makefile
-    echo "[+] ccflags-y += -DKSU_VERSION=${KSU_VER} ajouté"
-else
-    echo "[+] ccflags-y déjà présent"
-fi
-
-grep -n "DKSU_VERSION" drivers/kernelsu/Makefile
-
-# ==================== 2d. FIX VERSION/UAPI DANS LES BONS FICHIERS ====================
-echo "=== Fix version et UAPI dans /tmp/KernelSU ==="
-
-if [ -f "/tmp/KernelSU/uapi/supercall.h" ]; then
-    sed -i 's/static const __u32 KERNEL_SU_UAPI_VERSION = [0-9]*;/static const __u32 KERNEL_SU_UAPI_VERSION = 2;/' /tmp/KernelSU/uapi/supercall.h
-    sed -i 's/#define KERNEL_SU_UAPI_VERSION [0-9]*/#define KERNEL_SU_UAPI_VERSION 2/' /tmp/KernelSU/uapi/supercall.h
-    echo "[+] KERNEL_SU_UAPI_VERSION forcé à 2"
-fi
-
-if [ -f "/tmp/KernelSU/uapi/ksu.h" ]; then
-    sed -i 's/#define KERNEL_SU_VERSION KSU_VERSION/#define KERNEL_SU_VERSION 32601/' /tmp/KernelSU/uapi/ksu.h
-    echo "[+] KERNEL_SU_VERSION forcé à 32601"
 fi
 
 DISPATCH_FILE="/tmp/KernelSU/kernel/supercall/dispatch.c"
 if [ -f "$DISPATCH_FILE" ]; then
-    sed -i 's/cmd\.uapi_version = KERNEL_SU_UAPI_VERSION;/cmd.uapi_version = 2;/' "$DISPATCH_FILE"
     sed -i 's/static uint32_t ksuver_override = 0;/static uint32_t ksuver_override = 32601;/' "$DISPATCH_FILE"
+    sed -i 's/cmd\.uapi_version = KERNEL_SU_UAPI_VERSION;/cmd.uapi_version = 2;/' "$DISPATCH_FILE"
     sed -i 's/struct ksu_get_info_cmd cmd = { \.version = KERNEL_SU_VERSION, \.flags = 0 };/struct ksu_get_info_cmd cmd = { .version = 32601, .flags = 0 };/' "$DISPATCH_FILE"
     sed -i 's/struct ksu_get_info_legacy_cmd cmd = { \.version = KERNEL_SU_VERSION, \.flags = 0 };/struct ksu_get_info_legacy_cmd cmd = { .version = 32601, .flags = 0 };/' "$DISPATCH_FILE"
-    echo "[+] Corrections dispatch.c appliquées"
 fi
 
-grep -n "uapi_version\|ksuver_override\|cmd = { .version" "$DISPATCH_FILE" 2>/dev/null || true
-
-# ==================== 3. HOOKS MANUELS KERNELSU ====================
-echo "=== Hooks manuels KernelSU ==="
+# ==================== 3. HOOKS MANUELS ====================
+echo "=== Hooks manuels ==="
 
 hook_insert() {
     local file="$1" sig_re="$2" extern_block="$3" call_line="$4"
-    
     if [ ! -f "$file" ]; then
         echo "❌ $file introuvable."
         return 1
     fi
-    
     if ! grep -Pzo "$sig_re" "$file" > /dev/null 2>&1; then
         echo "❌ Signature non trouvée dans $file"
         return 1
     fi
-    
     perl -0777 -i -pe "s/($sig_re)/${extern_block}\$1\n#ifdef CONFIG_KSU\n#pragma GCC diagnostic ignored \x22-Wdeclaration-after-statement\x22\n${call_line}\n#endif\n/s" "$file"
-    echo "✅ Hook inséré dans $file"
     return 0
 }
 
 HOOKS_FAILED=0
 
-# fs/exec.c
 hook_insert "fs/exec.c" \
     '(?s)static int do_execveat_common\(.*?int flags\)\s*\n\{' \
     '#ifdef CONFIG_KSU\nextern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,\n\t\t\t\t\t void *envp, int *flags);\n#endif\n' \
     'ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);' \
     || HOOKS_FAILED=1
 
-# fs/open.c
-if grep -Pzo 'long do_faccessat\(int dfd, const char __user \*filename, int mode\)\s*\n\{' fs/open.c > /dev/null 2>&1; then
-    hook_insert "fs/open.c" \
-        'long do_faccessat\(int dfd, const char __user \*filename, int mode\)\s*\n\{' \
-        '#ifdef CONFIG_KSU\nextern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode,\n\t\t\t\t int *flags);\n#endif\n' \
-        'ksu_handle_faccessat(&dfd, &filename, &mode, NULL);' \
-        || HOOKS_FAILED=1
-elif grep -Pzo 'SYSCALL_DEFINE3\(faccessat, int, dfd, const char __user \*, filename, int, mode\)\s*\n\{' fs/open.c > /dev/null 2>&1; then
-    hook_insert "fs/open.c" \
-        'SYSCALL_DEFINE3\(faccessat, int, dfd, const char __user \*, filename, int, mode\)\s*\n\{' \
-        '#ifdef CONFIG_KSU\nextern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode,\n\t\t\t\t int *flags);\n#endif\n' \
-        'ksu_handle_faccessat(&dfd, &filename, &mode, NULL);' \
-        || HOOKS_FAILED=1
-else
-    echo "❌ Hook faccessat non trouvé"
-    HOOKS_FAILED=1
-fi
-
-# fs/stat.c
-if grep -Pzo 'int vfs_statx\(int dfd, const char __user \*filename, int flags,' fs/stat.c > /dev/null 2>&1; then
-    hook_insert "fs/stat.c" \
-        'int vfs_statx\(int dfd, const char __user \*filename, int flags,[^{]*\{' \
-        '#ifdef CONFIG_KSU\nextern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\n#endif\n' \
-        'ksu_handle_stat(&dfd, &filename, &flags);' \
-        || HOOKS_FAILED=1
-elif grep -Pzo 'int vfs_fstatat\(int dfd, const char __user \*filename, struct kstat \*stat,\s*\n\s*int flag\)\s*\n\{' fs/stat.c > /dev/null 2>&1; then
-    hook_insert "fs/stat.c" \
-        'int vfs_fstatat\(int dfd, const char __user \*filename, struct kstat \*stat,\s*\n\s*int flag\)\s*\n\{' \
-        '#ifdef CONFIG_KSU\nextern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\n#endif\n' \
-        'ksu_handle_stat(&dfd, &filename, &flag);' \
-        || HOOKS_FAILED=1
-else
-    echo "❌ Hook stat non trouvé"
-    HOOKS_FAILED=1
-fi
-
-# Hook sys_reboot
+# Hook sys_reboot (après déclarations)
 if ! grep -q "ksu_handle_sys_reboot" kernel/reboot.c; then
-  # Ajouter la déclaration extern avant SYSCALL_DEFINE4
   sed -i '/SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,/i\
 #if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD)\
 extern int ksu_handle_sys_reboot(int, int, unsigned int, void __user **);\
 #endif' kernel/reboot.c
 
-  # Insérer l'appel APRÈS les déclarations (après int ret = 0;)
   sed -i '/int ret = 0;/a\
 #if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD)\
 \tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\
 #endif' kernel/reboot.c
-
-  echo "[+] Hook sys_reboot OK (après déclarations)"
-else
-  echo "[+] Hook sys_reboot déjà présent"
 fi
 
-echo "✅ Hooks KernelSU en place"
-
-# ==================== 4. TÉLÉCHARGEMENT DU VRAI SUSFS ====================
-echo "=== Téléchargement du VRAI SuSFS (JackA1ltman) ==="
+# ==================== 4. SUSFS 2.2.0 ====================
+echo "=== Application du patch SuSFS 2.2.0 ==="
 
 git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git /tmp/jack_repo
 
 SUSFS_PATCH="/tmp/jack_repo/Patches/Patch/susfs_patch_to_4.19.patch"
-
 if [ ! -f "$SUSFS_PATCH" ]; then
-    echo "❌ Patch SuSFS 4.19 non trouvé !"
-    find /tmp/jack_repo/Patches -name "*.patch" | sort
+    echo "❌ Patch SuSFS introuvable"
     exit 1
 fi
-
-echo "✅ Patch SuSFS trouvé : $(wc -l < $SUSFS_PATCH) lignes"
-
-# ==================== 5. APPLICATION DU PATCH SUSFS ====================
-echo "=== Application du patch SuSFS ==="
 
 patch -p1 < "$SUSFS_PATCH" 2>&1 | tee /tmp/susfs_patch.log || true
 
+# Vérifier que susfs.c existe et contient les fonctions de commande
 if [ -f "fs/susfs.c" ]; then
-    echo "✅ fs/susfs.c créé ($(wc -l < fs/susfs.c) lignes)"
+    echo "✅ fs/susfs.c présent"
+    grep -n "susfs_show_version\|susfs_show_variant\|susfs_show_enabled_features\|CMD_SUSFS_ADD_SUS_PATH" fs/susfs.c || echo "⚠️ Fonctions show non trouvées"
 else
-    echo "❌ fs/susfs.c non créé !"
+    echo "❌ fs/susfs.c INTROUVABLE"
     exit 1
 fi
 
-if [ -f "include/linux/susfs.h" ]; then
-    echo "✅ include/linux/susfs.h créé"
+# Ajouter au Makefile fs
+if ! grep -q "susfs.o" fs/Makefile; then
+    echo "obj-\$(CONFIG_KSU_SUSFS) += susfs.o" >> fs/Makefile
 fi
 
-if [ -f "include/linux/susfs_def.h" ]; then
-    echo "✅ include/linux/susfs_def.h créé"
-fi
-
-find . -name "*.rej" -type f -delete 2>/dev/null || true
-find . -name "*.orig" -type f -delete 2>/dev/null || true
-
-# ==================== 5b. CORRECTION FS/MAKEFILE ====================
-if [ -f "fs/Makefile" ]; then
-    if ! grep -q "susfs.o" fs/Makefile; then
-        echo "obj-\$(CONFIG_KSU_SUSFS) += susfs.o" >> fs/Makefile
-    fi
-    if [ -f "fs/sus_su.c" ]; then
-        if ! grep -q "sus_su.o" fs/Makefile; then
-            echo "obj-\$(CONFIG_KSU_SUSFS) += sus_su.o" >> fs/Makefile
-        fi
-    fi
-fi
-
-# ==================== 5c. CORRECTION NAMESPACE.C ====================
+# ==================== 5. CORRECTIONS NAMESPACE / TASK_MMU ====================
 python3 - << 'PYEOF'
 import re
 
 with open('fs/namespace.c', 'r') as f:
     content = f.read()
-
-content = re.sub(r'^\s*n(?=#ifdef|#endif|#include|#define|extern)', '', content, flags=re.MULTILINE)
 
 if '#include <linux/susfs_def.h>' not in content:
     content = content.replace(
@@ -256,30 +156,8 @@ with open('fs/namespace.c', 'w') as f:
     f.write(content)
 PYEOF
 
-# ==================== 5d. CORRECTION TASK_MMU.C ====================
 if [ -f "fs/proc/task_mmu.c" ]; then
     sed -i 's/struct vm_area_struct \*vma;/struct vm_area_struct *vma __maybe_unused;/g' fs/proc/task_mmu.c
-fi
-
-# ==================== 5e. AJOUT DES SYMBOLES MANQUANTS ====================
-if ! grep -q "susfs_ksu_sid = 0" fs/susfs.c; then
-    cat >> fs/susfs.c << 'SUSFS_EOF'
-
-#ifdef CONFIG_KSU_SUSFS
-bool susfs_is_current_ksu_domain(void)
-{
-    const struct cred *cred = current_cred();
-    return (cred->uid.val == 0 || cred->uid.val == 2000);
-}
-EXPORT_SYMBOL(susfs_is_current_ksu_domain);
-
-u32 susfs_ksu_sid = 0;
-EXPORT_SYMBOL(susfs_ksu_sid);
-
-u32 susfs_priv_app_sid = 0;
-EXPORT_SYMBOL(susfs_priv_app_sid);
-#endif
-SUSFS_EOF
 fi
 
 # ==================== 6. KCONFIG SUSFS ====================
@@ -383,13 +261,7 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 grep "CONFIG_KSU_SUSFS" out/.config
 
-# ==================== 8. PATCH SIGNATURES ====================
-sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
-
-# ==================== 9. PATCH TACTILE ====================
-printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
-
-# ==================== 10. COMPILATION ====================
+# ==================== 8. COMPILATION ====================
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image 2>&1 | tee build.log
 
 if [ ! -f "out/arch/arm64/boot/Image" ]; then
@@ -400,7 +272,7 @@ fi
 
 echo "✅ Compilation réussie"
 
-# ==================== 11. COMPILATION KSUD (MÊME COMMIT) ====================
+# ==================== 9. KSUD ====================
 cd "$GITHUB_WORKSPACE"
 
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -448,7 +320,7 @@ cp "$KSUD_BINARY" "$GITHUB_WORKSPACE/ksud"
 chmod 755 "$GITHUB_WORKSPACE/ksud"
 echo "✅ ksud compilé"
 
-# ==================== 12. REPACK ====================
+# ==================== 10. REPACK ====================
 cd "$GITHUB_WORKSPACE"
 
 curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260809/boot.img" 2>/dev/null || {
