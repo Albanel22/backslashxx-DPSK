@@ -456,7 +456,7 @@ echo "✅ ksud compilé"
 # ==================== 12. REPACK ====================
 cd "$GITHUB_WORKSPACE"
 
-curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260809/boot.img" 2>/dev/null || {
+curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/boot.img" 2>/dev/null || {
     mkbootimg \
       --kernel kernel_sources/out/arch/arm64/boot/Image \
       --ramdisk /dev/null \
@@ -469,7 +469,7 @@ curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260809/bo
       --tags_offset 0x00000100 \
       --cmdline "androidboot.hardware=kiev androidboot.selinux=permissive"
 }
-curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260809/dtbo.img" 2>/dev/null || true
+curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/dtbo.img" 2>/dev/null || true
 
 if [ -f "boot-stock.img" ]; then
   mkdir -p repack
