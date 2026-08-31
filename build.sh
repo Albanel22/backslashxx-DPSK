@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD WINNER : KernelSU v3.2.5-76+ (0b138d6a) + SuSFS 2.2.0 + UAPI2 + sys_reboot ==="
+echo "=== BUILD DIAGNOSTIC : KernelSU + SuSFS + UAPI2 + sys_reboot (sans masquage symboles) ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -12,7 +12,8 @@ sudo sed -i 's/azure.archive.ubuntu.com/archive.ubuntu.com/g' /etc/apt/sources.l
 sudo apt-get update
 sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf-dev \
     libssl-dev libncurses-dev gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
-    clang llvm lld device-tree-compiler zip unzip curl git python3 mkbootimg perl
+    clang llvm lld device-tree-compiler zip unzip curl git python3 mkbootimg perl \
+    python3-pip
 
 cd "$GITHUB_WORKSPACE"
 
@@ -162,13 +163,11 @@ fi
 
 # Hook sys_reboot
 if ! grep -q "ksu_handle_sys_reboot" kernel/reboot.c; then
-  # Ajouter la déclaration extern avant SYSCALL_DEFINE4
   sed -i '/SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,/i\
 #if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD)\
 extern int ksu_handle_sys_reboot(int, int, unsigned int, void __user **);\
 #endif' kernel/reboot.c
 
-  # Insérer l'appel APRÈS les déclarations (après int ret = 0;)
   sed -i '/int ret = 0;/a\
 #if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD)\
 \tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\
@@ -215,6 +214,10 @@ fi
 if [ -f "include/linux/susfs_def.h" ]; then
     echo "✅ include/linux/susfs_def.h créé"
 fi
+
+# ==================== 5a. DIAGNOSTIC VERSION SUSFS ====================
+echo "=== DIAGNOSTIC VERSION SUSFS ==="
+grep -n "SUSFS_VERSION\|SUSFS_MAGIC\|susfs_ioctl\|SUSFS_IOCTL" fs/susfs.c include/linux/susfs.h 2>/dev/null | head -80 || true
 
 find . -name "*.rej" -type f -delete 2>/dev/null || true
 find . -name "*.orig" -type f -delete 2>/dev/null || true
@@ -323,7 +326,7 @@ config KSU_SUSFS_ENABLE_LOG
 
 config KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
 	bool "hide_ksu_susfs_symbols"
-	default y
+	default n
 
 config KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
 	bool "spoof_cmdline_or_bootconfig"
@@ -364,7 +367,7 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
     --enable KSU_SUSFS_SUS_MAP \
     --enable KSU_SUSFS_SPOOF_UNAME \
     --enable KSU_SUSFS_ENABLE_LOG \
-    --enable KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+    --disable KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
     --enable KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
     --enable KSU_SUSFS_OPEN_REDIRECT \
     --enable THREAD_INFO_IN_TASK
@@ -379,7 +382,7 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
     echo "CONFIG_KSU_SUSFS_SUS_MAP=y"
     echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y"
     echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y"
-    echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y"
+    echo "# CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS is not set"
     echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y"
     echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y"
 } >> out/.config
@@ -451,13 +454,17 @@ cp "$KSUD_BINARY" "$GITHUB_WORKSPACE/ksud"
 chmod 755 "$GITHUB_WORKSPACE/ksud"
 echo "✅ ksud compilé"
 
-# ==================== 12. REPACK (TÉLÉCHARGEMENT FORCÉ DU BOOT STOCK) ====================
+# ==================== 12. REPACK (Google Drive) ====================
 cd "$GITHUB_WORKSPACE"
 
-echo "=== Téléchargement du boot.img stock ==="
-curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260816/boot.img"
+echo "=== Téléchargement du boot.img stock depuis Google Drive ==="
+pip install gdown
 
-# Vérifier la taille minimale (le boot stock fait environ 96 Mo)
+BOOT_DRIVE_ID="1mB2VvFaxD1iAOzdW-Bq1igdcZdFAsSEl"
+DTBO_DRIVE_ID="10T-3NcfbZ4awKU7fIBx565CKknOCz_pi"
+
+gdown "https://drive.google.com/uc?id=$BOOT_DRIVE_ID" -O boot-stock.img
+
 SIZE=$(stat -c%s boot-stock.img)
 if [ "$SIZE" -lt 80000000 ]; then
     echo "❌ boot-stock.img trop petit ($SIZE octets). Téléchargement probablement incomplet."
@@ -465,7 +472,7 @@ if [ "$SIZE" -lt 80000000 ]; then
 fi
 echo "✅ boot-stock.img téléchargé ($SIZE octets)"
 
-curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260816/dtbo.img"
+gdown "https://drive.google.com/uc?id=$DTBO_DRIVE_ID" -O dtbo-stock.img
 
 if [ -f "boot-stock.img" ]; then
   mkdir -p repack
