@@ -1,25 +1,19 @@
-name: Build Kernel Moto One 5G Ace
+name: Build Backslashxx KernelSU
 
 on:
-  workflow_dispatch: # Permet de lancer le build manuellement depuis l'onglet Actions
+  workflow_dispatch:
 
 jobs:
-  build-kernel:
-    runs-on: ubuntu-latest
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
     steps:
-      - name: Récupération du dépôt
+      - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Exécution du script de build du Kernel
-        run: |
-          chmod +x build.sh
-          ./build.sh
-        env:
-          GITHUB_WORKSPACE: ${{ github.workspace }}
-
-      - name: Téléverser le boot.img final
+      - name: Run build script
+        run: bash build.sh
+      - name: Upload results
         uses: actions/upload-artifact@v4
         with:
-          name: Boot-KernelSU-SuSFS-Kiev
-          path: ${{ github.workspace }}/boot-ksu-susfs.img
-          if-no-files-found: error
+          name: Backslashxx-SusFS-kiev
+          path: output/*
