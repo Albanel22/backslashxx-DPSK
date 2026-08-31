@@ -472,7 +472,7 @@ if [ -f "boot-stock.img" ]; then
   wget -q https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk -O Magisk-v27.0.apk
   unzip -q Magisk-v27.0.apk lib/x86_64/libmagiskboot.so
   mv lib/x86_64/libmagiskboot.so repack/magiskboot
-  chmod +x repack/magiskboot9
+  chmod +x repack/magiskboot
   rm -rf Magisk-v27.0.apk lib/
   cd repack
   set +e
