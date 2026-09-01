@@ -349,9 +349,9 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 ./scripts/config --file out/.config \
     --enable KSU \
     --enable KSU_MANUAL_HOOK \
-    --enable KPROBES \
-    --enable HAVE_KPROBES \
-    --enable KPROBE_EVENTS \
+    --disable KPROBES \
+    --disable HAVE_KPROBES \
+    --disable KPROBE_EVENTS \
     --enable KSU_SUSFS \
     --enable KSU_SUSFS_SUS_PATH \
     --enable KSU_SUSFS_SUS_MOUNT \
@@ -386,8 +386,9 @@ grep "CONFIG_KSU_SUSFS" out/.config
 # ==================== 8. PATCH SIGNATURES ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
-# ==================== 9. PATCH TACTILE FOCALTECH CORRIGÉ ====================
-printf "\n/* --- Début Patch Tactile FocalTech Corrigé --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nstatic int saved_touch_state = 1;\nvoid touch_set_state(int state) {\n    saved_touch_state = state;\n    blocking_notifier_call_chain(&motorola_panel_notifier_list, state, NULL);\n}\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
+# ==================== 9. PATCH TACTILE FOCALTECH STUB ====================
+echo "=== Application du patch tactile dummy ==="
+printf "\n/* --- Dummy Panel Notifier pour LineageOS --- */\n#include <linux/module.h>\nint panel_register_notifier(void *nb) { return 0; }\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(void *nb) { return 0; }\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) {}\nEXPORT_SYMBOL(touch_set_state);\n" >> techpack/display/msm/msm_drv.c
 
 # ==================== 10. COMPILATION ====================
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image 2>&1 | tee build.log
