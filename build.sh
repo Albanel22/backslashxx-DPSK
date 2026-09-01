@@ -348,6 +348,7 @@ echo "Config utilisée: $CONFIG_NAME"
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 $CONFIG_NAME
 
+# --- Configuration des options, masquage désactivé ---
 ./scripts/config --file out/.config \
     --enable KSU \
     --enable KSU_MANUAL_HOOK \
@@ -361,13 +362,18 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
     --enable KSU_SUSFS_SUS_MAP \
     --enable KSU_SUSFS_SPOOF_UNAME \
     --enable KSU_SUSFS_ENABLE_LOG \
-    --enable KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+    --disable KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
     --enable KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
     --enable KSU_SUSFS_OPEN_REDIRECT \
     --enable THREAD_INFO_IN_TASK
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
+# Forcer la désactivation du masquage une seconde fois
+./scripts/config --file out/.config --disable KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
+make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
+
+# Ajout manuel des options pour être certain
 {
     echo "CONFIG_KSU_SUSFS=y"
     echo "CONFIG_KSU_SUSFS_SUS_PATH=y"
@@ -376,7 +382,7 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
     echo "CONFIG_KSU_SUSFS_SUS_MAP=y"
     echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y"
     echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y"
-    echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y"
+    echo "# CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS is not set"
     echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y"
     echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y"
 } >> out/.config
@@ -386,7 +392,34 @@ grep "CONFIG_KSU_SUSFS" out/.config
 # ==================== 8. PATCH SIGNATURES ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
-# ==================== 9. COMPILATION ====================
+# ==================== 9. PATCH TACTILE (STUBS) ====================
+echo "=== Application du patch tactile ==="
+
+if ! grep -q "Début Patch Tactile" techpack/display/msm/msm_drv.c; then
+    cat >> techpack/display/msm/msm_drv.c << 'EOF'
+
+/* --- Début Patch Tactile --- */
+#include <linux/notifier.h>
+#include <linux/module.h>
+static BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);
+int panel_register_notifier(struct notifier_block *nb) {
+    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);
+}
+EXPORT_SYMBOL(panel_register_notifier);
+int panel_unregister_notifier(struct notifier_block *nb) {
+    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);
+}
+EXPORT_SYMBOL(panel_unregister_notifier);
+void touch_set_state(int state) { return; }
+EXPORT_SYMBOL(touch_set_state);
+/* --- Fin Patch Tactile --- */
+EOF
+    echo "✅ Patch tactile ajouté"
+else
+    echo "✅ Patch tactile déjà présent"
+fi
+
+# ==================== 10. COMPILATION ====================
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image 2>&1 | tee build.log
 
 if [ ! -f "out/arch/arm64/boot/Image" ]; then
@@ -397,7 +430,7 @@ fi
 
 echo "✅ Compilation réussie"
 
-# ==================== 10. COMPILATION KSUD (MÊME COMMIT) ====================
+# ==================== 11. COMPILATION KSUD (MÊME COMMIT) ====================
 cd "$GITHUB_WORKSPACE"
 
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -445,7 +478,7 @@ cp "$KSUD_BINARY" "$GITHUB_WORKSPACE/ksud"
 chmod 755 "$GITHUB_WORKSPACE/ksud"
 echo "✅ ksud compilé"
 
-# ==================== 11. REPACK (SÉCURISÉ) ====================
+# ==================== 12. REPACK (SÉCURISÉ) ====================
 cd "$GITHUB_WORKSPACE"
 
 echo "=== Téléchargement du boot.img stock (30 août 2026) ==="
