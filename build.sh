@@ -2,7 +2,7 @@
 set -e
 
 # ==================== MODE DRY-RUN ====================
-DRY_RUN=1  # ← Changez à 0 pour exécuter réellement
+DRY_RUN=0  # ← Changez à 0 pour exécuter réellement
 
 run() {
     if [ "$DRY_RUN" -eq 1 ]; then
