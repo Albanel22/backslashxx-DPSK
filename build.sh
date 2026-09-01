@@ -361,15 +361,11 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
     --enable KSU_SUSFS_SUS_MAP \
     --enable KSU_SUSFS_SPOOF_UNAME \
     --enable KSU_SUSFS_ENABLE_LOG \
-    --disable KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+    --enable KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
     --enable KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
     --enable KSU_SUSFS_OPEN_REDIRECT \
     --enable THREAD_INFO_IN_TASK
 
-make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
-
-# Forcer la désactivation du masquage des symboles SuSFS
-./scripts/config --file out/.config --disable KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
 {
@@ -380,7 +376,7 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
     echo "CONFIG_KSU_SUSFS_SUS_MAP=y"
     echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y"
     echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y"
-    echo "# CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS is not set"
+    echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y"
     echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y"
     echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y"
 } >> out/.config
@@ -390,36 +386,7 @@ grep "CONFIG_KSU_SUSFS" out/.config
 # ==================== 8. PATCH SIGNATURES ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
-# ==================== 9. PATCH TACTILE ====================
-printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
-
-# ==================== 9b. LOGS DE DIAGNOSTIC TACTILE ====================
-echo "=== Ajout de logs de diagnostic tactile ==="
-
-if [ -f "techpack/display/msm/msm_drv.c" ]; then
-    # Ajouter un message au début de l'initialisation
-    if ! grep -q "MSM_DRM: msm_drm_init called" techpack/display/msm/msm_drv.c; then
-        sed -i '/static int msm_drm_init(struct platform_device \*pdev)/i\
-pr_err("MSM_DRM: msm_drm_init called\\n");' techpack/display/msm/msm_drv.c
-    fi
-    # Ajouter un message lors de l'enregistrement du panneau
-    if ! grep -q "MSM_DRM: panel_register_notifier called" techpack/display/msm/msm_drv.c; then
-        sed -i '/int panel_register_notifier(struct notifier_block \*nb)/i\
-pr_err("MSM_DRM: panel_register_notifier called\\n");' techpack/display/msm/msm_drv.c
-    fi
-else
-    echo "⚠️ Fichier techpack/display/msm/msm_drv.c introuvable, impossible d'ajouter les logs"
-fi
-
-# Chercher les pilotes tactiles et ajouter un log au début de leur probe
-for f in $(grep -rl "touch" drivers/input/touchscreen/ 2>/dev/null | head -5); do
-    echo "Ajout de log dans $f"
-    # Ajouter une ligne avant la fonction probe si elle existe
-    sed -i '/static int.*_probe(struct i2c_client \*client, const struct i2c_device_id \*id)/i\
-pr_err("TOUCHSCREEN: probe called in %s\\n", __func__);' "$f"
-done
-
-# ==================== 10. COMPILATION ====================
+# ==================== 9. COMPILATION ====================
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image 2>&1 | tee build.log
 
 if [ ! -f "out/arch/arm64/boot/Image" ]; then
@@ -430,7 +397,7 @@ fi
 
 echo "✅ Compilation réussie"
 
-# ==================== 11. COMPILATION KSUD (MÊME COMMIT) ====================
+# ==================== 10. COMPILATION KSUD (MÊME COMMIT) ====================
 cd "$GITHUB_WORKSPACE"
 
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -478,7 +445,7 @@ cp "$KSUD_BINARY" "$GITHUB_WORKSPACE/ksud"
 chmod 755 "$GITHUB_WORKSPACE/ksud"
 echo "✅ ksud compilé"
 
-# ==================== 12. REPACK (SÉCURISÉ) ====================
+# ==================== 11. REPACK (SÉCURISÉ) ====================
 cd "$GITHUB_WORKSPACE"
 
 echo "=== Téléchargement du boot.img stock (30 août 2026) ==="
