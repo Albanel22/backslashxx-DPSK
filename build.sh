@@ -448,55 +448,69 @@ cp "$KSUD_BINARY" "$GITHUB_WORKSPACE/ksud"
 chmod 755 "$GITHUB_WORKSPACE/ksud"
 echo "✅ ksud compilé"
 
-# ==================== 12. REPACK ====================
+# ==================== 12. REPACK (SÉCURISÉ) ====================
 cd "$GITHUB_WORKSPACE"
 
-curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/boot.img" 2>/dev/null || {
-    mkbootimg \
-      --kernel kernel_sources/out/arch/arm64/boot/Image \
-      --ramdisk /dev/null \
-      --output final_boot.img \
-      --header_version 2 \
-      --pagesize 4096 \
-      --base 0x00000000 \
-      --kernel_offset 0x00008000 \
-      --ramdisk_offset 0x01000000 \
-      --tags_offset 0x00000100 \
-      --cmdline "androidboot.hardware=kiev androidboot.selinux=permissive"
-}
-curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/dtbo.img" 2>/dev/null || true
+echo "=== Téléchargement du boot.img stock (30 août 2026) ==="
+curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/boot.img"
+
+# Vérifier la taille minimale (le boot stock complet fait ~96 Mo)
+SIZE=$(stat -c%s boot-stock.img)
+if [ "$SIZE" -lt 80000000 ]; then
+    echo "❌ boot-stock.img trop petit ($SIZE octets). Téléchargement probablement incomplet."
+    exit 1
+fi
+echo "✅ boot-stock.img téléchargé ($SIZE octets)"
+
+# Télécharger le DTBO stock
+curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/dtbo.img"
 
 if [ -f "boot-stock.img" ]; then
   mkdir -p repack
   cp boot-stock.img repack/boot.img
+
+  # Télécharger et extraire magiskboot
   wget -q https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk -O Magisk-v27.0.apk
   unzip -q Magisk-v27.0.apk lib/x86_64/libmagiskboot.so
   mv lib/x86_64/libmagiskboot.so repack/magiskboot
   chmod +x repack/magiskboot
   rm -rf Magisk-v27.0.apk lib/
+
   cd repack
+
   set +e
   ./magiskboot unpack boot.img
   set -e
+
   if [ ! -f "kernel" ] || [ ! -f "ramdisk.cpio" ]; then
     echo "❌ Échec du unpack"
     exit 1
   fi
+
+  # Remplacer le kernel
   cp "$GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image" kernel
+
+  # Ajouter ksud et su dans le ramdisk
   ./magiskboot cpio ramdisk.cpio \
     "mkdir 0755 data" \
     "mkdir 0755 data/adb" \
     "mkdir 0755 data/adb/ksud" \
     "add 0755 data/adb/ksud/ksud $GITHUB_WORKSPACE/ksud"
+
   cp "$GITHUB_WORKSPACE/ksud" local_su_binary
   chmod 755 local_su_binary
+
   ./magiskboot cpio ramdisk.cpio \
     "mkdir 0755 system" \
     "mkdir 0755 system/bin" \
     "add 06755 system/bin/su ./local_su_binary"
+
   rm -f local_su_binary
+
+  # Repacker
   ./magiskboot repack boot.img new-boot.img || { echo "❌ Échec du repack"; exit 1; }
   mv new-boot.img ../final_boot.img
+
   cd ..
 fi
 
