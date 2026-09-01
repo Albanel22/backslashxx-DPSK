@@ -424,7 +424,11 @@ export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
 mkdir -p out
 CONFIG=$(find arch/arm64/configs/ -name "*kiev*" -o -name "*lito*" -o -name "*sm8250*" | head -1)
-CONFIG_NAME=$(basename "$CONFIG")
+if [ -z "$CONFIG" ]; then
+  echo "❌ Aucun fichier de configuration trouvé"
+  exit 1
+fi
+CONFIG_NAME=${CONFIG#arch/arm64/configs/}
 echo "Config: $CONFIG_NAME"
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 $CONFIG_NAME
