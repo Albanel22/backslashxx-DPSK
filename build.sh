@@ -2,7 +2,7 @@
 set -e
 
 # ==================== MODE DRY-RUN ====================
-DRY_RUN=0  # ← Changez à 0 pour exécuter réellement
+DRY_RUN=1  # ← Changez à 0 pour exécuter réellement
 
 run() {
     if [ "$DRY_RUN" -eq 1 ]; then
@@ -52,22 +52,25 @@ else
     echo "[DRY-RUN] git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git -b lineage-23.2 --depth=1 kernel_sources"
     mkdir -p kernel_sources
     cd kernel_sources
-    # Créer une arborescence minimale pour les touches
     mkdir -p fs include/linux drivers techpack/display/msm kernel arch/arm64/boot out/arch/arm64/boot
     touch fs/susfs.c include/linux/susfs.h include/linux/susfs_def.h
     touch fs/exec.c fs/open.c fs/stat.c fs/namespace.c kernel/reboot.c
     touch fs/Makefile drivers/Makefile drivers/Kconfig
     touch techpack/display/msm/msm_drv.c
-    touch out/arch/arm64/boot/Image  # pour simuler la compilation
+    touch out/arch/arm64/boot/Image
     cd ..
 fi
 
 cd kernel_sources || exit 1
 
-# ==================== 2. INTÉGRATION SUSFS (manuel) ====================
-echo "=== Téléchargement de SuSFS (JackA1ltman) ==="
+# ==================== 2. INTÉGRATION SUSFS (manuel avec sous-modules) ====================
+echo "=== Téléchargement et initialisation de SuSFS (JackA1ltman) ==="
 if [ "$DRY_RUN" -eq 0 ]; then
     git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git /tmp/jack_repo
+    cd /tmp/jack_repo
+    echo "Initialisation des sous-modules..."
+    git submodule update --init --recursive
+    cd -
 else
     echo "[DRY-RUN] git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git /tmp/jack_repo"
     mkdir -p /tmp/jack_repo
@@ -76,10 +79,60 @@ fi
 
 echo "=== Copie manuelle des fichiers sources SUSFS ==="
 if [ "$DRY_RUN" -eq 0 ]; then
-    find /tmp/jack_repo -type f -name "susfs.c" -exec cp {} fs/susfs.c \; 2>/dev/null || echo "⚠️ pas de susfs.c"
-    find /tmp/jack_repo -type f -name "susfs.h" -exec cp {} include/linux/susfs.h \; 2>/dev/null || echo "⚠️ pas de susfs.h"
-    find /tmp/jack_repo -type f -name "susfs_def.h" -exec cp {} include/linux/susfs_def.h \; 2>/dev/null || echo "⚠️ pas de susfs_def.h"
-    find /tmp/jack_repo -type f -name "sus_su.c" -exec cp {} fs/sus_su.c \; 2>/dev/null || echo "⚠️ pas de sus_su.c"
+    # Afficher la structure pour déboguer
+    echo "Contenu de /tmp/jack_repo (premier niveau) :"
+    ls -la /tmp/jack_repo
+    echo "Recherche de susfs.c dans tout le dépôt..."
+    find /tmp/jack_repo -name "susfs.c" -type f 2>/dev/null
+
+    # Copie avec find (priorité)
+    SOURCE_SUSFS=$(find /tmp/jack_repo -name "susfs.c" -type f | head -1)
+    if [ -n "$SOURCE_SUSFS" ]; then
+        cp "$SOURCE_SUSFS" fs/susfs.c
+        echo "✅ susfs.c copié depuis $SOURCE_SUSFS"
+    else
+        # Fallback : essayer des chemins connus (avec sous-modules)
+        if [ -f "/tmp/jack_repo/KernelSU/susfs/fs/susfs.c" ]; then
+            cp /tmp/jack_repo/KernelSU/susfs/fs/susfs.c fs/susfs.c
+            echo "✅ susfs.c copié depuis /tmp/jack_repo/KernelSU/susfs/fs/susfs.c"
+        elif [ -f "/tmp/jack_repo/susfs/fs/susfs.c" ]; then
+            cp /tmp/jack_repo/susfs/fs/susfs.c fs/susfs.c
+            echo "✅ susfs.c copié depuis /tmp/jack_repo/susfs/fs/susfs.c"
+        else
+            echo "❌ Aucun susfs.c trouvé. Arborescence complète de /tmp/jack_repo :"
+            find /tmp/jack_repo -type f | head -50
+            exit 1
+        fi
+    fi
+
+    # Même chose pour les en-têtes
+    for h in susfs.h susfs_def.h; do
+        SRC=$(find /tmp/jack_repo -name "$h" -type f | head -1)
+        if [ -n "$SRC" ]; then
+            cp "$SRC" include/linux/
+            echo "✅ $h copié depuis $SRC"
+        else
+            if [ -f "/tmp/jack_repo/KernelSU/susfs/include/linux/$h" ]; then
+                cp "/tmp/jack_repo/KernelSU/susfs/include/linux/$h" include/linux/
+                echo "✅ $h copié depuis /tmp/jack_repo/KernelSU/susfs/include/linux/$h"
+            elif [ -f "/tmp/jack_repo/susfs/include/linux/$h" ]; then
+                cp "/tmp/jack_repo/susfs/include/linux/$h" include/linux/
+                echo "✅ $h copié depuis /tmp/jack_repo/susfs/include/linux/$h"
+            else
+                echo "⚠️ $h non trouvé"
+            fi
+        fi
+    done
+
+    # Optionnel : sus_su.c
+    SRC_SU=$(find /tmp/jack_repo -name "sus_su.c" -type f | head -1)
+    if [ -n "$SRC_SU" ]; then
+        cp "$SRC_SU" fs/sus_su.c
+        echo "✅ sus_su.c copié depuis $SRC_SU"
+    elif [ -f "/tmp/jack_repo/KernelSU/susfs/fs/sus_su.c" ]; then
+        cp /tmp/jack_repo/KernelSU/susfs/fs/sus_su.c fs/sus_su.c
+        echo "✅ sus_su.c copié depuis /tmp/jack_repo/KernelSU/susfs/fs/sus_su.c"
+    fi
 else
     echo "[DRY-RUN] Copie des fichiers SUSFS simulée"
 fi
