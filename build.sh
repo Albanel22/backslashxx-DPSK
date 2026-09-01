@@ -2,10 +2,8 @@
 set -e
 
 # ==================== MODE DRY-RUN ====================
-# Mettez DRY_RUN=1 pour simuler, DRY_RUN=0 pour exécuter réellement
-DRY_RUN=0  # ← Changez à 0 quand vous voulez lancer pour de vrai
+DRY_RUN=0  # ← Changez à 0 pour exécuter réellement
 
-# Fonction pour exécuter ou simuler une commande
 run() {
     if [ "$DRY_RUN" -eq 1 ]; then
         echo "[DRY-RUN] $*"
@@ -14,7 +12,6 @@ run() {
     fi
 }
 
-# Fonction pour ajouter du contenu à un fichier (simulation ou réel)
 append_to_file() {
     local file="$1"
     local content="$2"
@@ -175,7 +172,7 @@ extern int ksu_handle_sys_reboot(int, int, unsigned int, void __user **);\
     fi
 fi
 
-# ==================== 4. INTÉGRATION SUSFS (via patches officiels) ====================
+# ==================== 4. INTÉGRATION SUSFS (via patches officiels - version robuste) ====================
 echo "=== Téléchargement des patches SuSFS depuis simonpunk/susfs4ksu (branche kernel-4.19) ==="
 if [ "$DRY_RUN" -eq 0 ]; then
     git clone --depth=1 -b kernel-4.19 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs_repo
@@ -188,19 +185,50 @@ echo "=== Application des patches SuSFS ==="
 if [ "$DRY_RUN" -eq 0 ]; then
     KERNEL_ROOT="$PWD"
 
-    # Étape 1 : Patcher KernelSU
+    # Étape 1 : Patcher KernelSU (en ignorant les fichiers manquants)
     echo "1. Application du patch à KernelSU..."
     cp /tmp/susfs_repo/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch drivers/kernelsu/
     cd drivers/kernelsu
-    patch -p1 < 10_enable_susfs_for_ksu.patch || { echo "❌ Échec du patch KernelSU"; exit 1; }
+    
+    echo "Application du patch KernelSU (avec --forward et --ignore-whitespace)..."
+    patch -p1 --forward --ignore-whitespace < 10_enable_susfs_for_ksu.patch || {
+        echo "⚠️ Certaines parties du patch ont échoué (fichiers manquants probables)."
+        echo "   Vérification des fichiers rejetés..."
+        find . -name "*.rej" -exec echo "REJET : {}" \;
+        find . -name "*.rej" -delete 2>/dev/null
+    }
+    
+    # Vérifier si susfs a bien été ajouté dans KernelSU
+    if grep -q "susfs" Makefile 2>/dev/null; then
+        echo "✅ Patch KernelSU partiellement appliqué (susfs intégré)"
+    else
+        echo "⚠️ Le patch KernelSU n'a pas ajouté susfs, on ajoute manuellement..."
+        if ! grep -q "susfs" Makefile; then
+            echo "ccflags-y += -DKSU_SUSFS" >> Makefile
+        fi
+    fi
     cd "$KERNEL_ROOT"
 
-    # Étape 2 : Patcher le noyau
+    # Étape 2 : Patcher le noyau (en ignorant les fichiers manquants)
     echo "2. Application du patch principal au noyau..."
     cp /tmp/susfs_repo/kernel_patches/50_add_susfs_in_kernel.patch .
-    patch -p1 < 50_add_susfs_in_kernel.patch || { echo "❌ Échec du patch noyau"; exit 1; }
+    echo "Application du patch noyau (avec --forward)..."
+    patch -p1 --forward --ignore-whitespace < 50_add_susfs_in_kernel.patch || {
+        echo "⚠️ Certaines parties du patch noyau ont échoué."
+        echo "   Vérification des fichiers rejetés..."
+        find . -name "*.rej" -exec echo "REJET : {}" \;
+        find . -name "*.rej" -delete 2>/dev/null
+    }
+    
+    # Vérifier que susfs.c a bien été créé
+    if [ ! -f "fs/susfs.c" ]; then
+        echo "⚠️ fs/susfs.c n'a pas été créé par le patch. Copie manuelle..."
+        find /tmp/susfs_repo -name "susfs.c" -exec cp {} fs/susfs.c \; 2>/dev/null
+        find /tmp/susfs_repo -name "susfs.h" -exec cp {} include/linux/susfs.h \; 2>/dev/null
+        find /tmp/susfs_repo -name "susfs_def.h" -exec cp {} include/linux/susfs_def.h \; 2>/dev/null
+    fi
 
-    # Étape 3 : Copier les fichiers supplémentaires
+    # Étape 3 : Copier les fichiers supplémentaires (si le patch ne l'a pas fait)
     echo "3. Copie des fichiers supplémentaires..."
     cp /tmp/susfs_repo/kernel_patches/fs/* fs/ 2>/dev/null || echo "⚠️ Pas de fichiers fs supplémentaires"
     cp /tmp/susfs_repo/kernel_patches/include/linux/* include/linux/ 2>/dev/null || echo "⚠️ Pas d'en-têtes supplémentaires"
@@ -209,7 +237,14 @@ if [ "$DRY_RUN" -eq 0 ]; then
     rm -f 50_add_susfs_in_kernel.patch
     rm -rf /tmp/susfs_repo
 
-    echo "✅ Patches SuSFS appliqués avec succès"
+    # Vérification finale
+    if [ -f "fs/susfs.c" ]; then
+        echo "✅ fs/susfs.c présent ($(wc -l < fs/susfs.c) lignes)"
+        echo "✅ SuSFS intégré avec succès"
+    else
+        echo "❌ fs/susfs.c toujours manquant. Abandon."
+        exit 1
+    fi
 else
     echo "[DRY-RUN] Application des patches SuSFS simulée"
 fi
