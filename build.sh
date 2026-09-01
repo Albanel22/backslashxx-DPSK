@@ -2,7 +2,7 @@
 set -e
 
 # ==================== MODE DRY-RUN ====================
-DRY_RUN=0  # ← Changez à 0 pour exécuter réellement
+DRY_RUN=1  # ← Changez à 0 pour exécuter réellement
 
 # ==================== FONCTIONS ====================
 run() {
@@ -24,7 +24,7 @@ append_to_file() {
     fi
 }
 
-echo "=== BUILD DIAGNOSTIC : KernelSU + SuSFS (patchs 10 + 50) + UAPI2 + sys_reboot ==="
+echo "=== BUILD DIAGNOSTIC : KernelSU + SuSFS (1.3.7) + UAPI2 + sys_reboot ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -103,7 +103,7 @@ else
     echo "[DRY-RUN] Intégration KernelSU (commit 0b138d6a) simulée"
 fi
 
-# ==================== 3. HOOKS KERNELSU (ajout conditionnel) ====================
+# ==================== 3. HOOKS KERNELSU ====================
 echo "=== Vérification des hooks KernelSU ==="
 hook_insert_if_absent() {
     local file="$1" sig_re="$2" extern_block="$3" call_line="$4" search="$5"
@@ -174,10 +174,10 @@ extern int ksu_handle_sys_reboot(int, int, unsigned int, void __user **);\
     fi
 fi
 
-# ==================== 4. INTÉGRATION SUSFS (patchs 10 + 50) ====================
-echo "=== Téléchargement des patches SuSFS (10 + 50) ==="
-PATCH10_URL="https://gitlab.com/simonpunk/susfs4ksu/-/raw/kernel-4.19/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
-PATCH50_URL="https://gitlab.com/simonpunk/susfs4ksu/-/raw/kernel-4.19/kernel_patches/50_add_susfs_in_kernel-4.19.patch"
+# ==================== 4. INTÉGRATION SUSFS (version 1.3.7) ====================
+echo "=== Téléchargement des patches SuSFS (version 1.3.7) ==="
+PATCH10_URL="https://gitlab.com/simonpunk/susfs4ksu/-/raw/1.3.7/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+PATCH50_URL="https://gitlab.com/simonpunk/susfs4ksu/-/raw/1.3.7/kernel_patches/50_add_susfs_in_kernel-4.19.patch"
 
 if [ "$DRY_RUN" -eq 0 ]; then
     wget -q "$PATCH10_URL" -O /tmp/10_enable_susfs_for_ksu.patch || { echo "❌ Échec du téléchargement du patch 10"; exit 1; }
@@ -237,7 +237,7 @@ EOF
     fi
     cd "$KERNEL_ROOT"
 
-    echo "=== Application du patch 50 sur le noyau ==="
+    echo "=== Application du patch 50 sur le noyau (version 1.3.7) ==="
     cp /tmp/50_add_susfs_in_kernel-4.19.patch .
     patch -p1 --forward --ignore-whitespace < 50_add_susfs_in_kernel-4.19.patch 2>&1 | tee /tmp/patch50.log || {
         echo "⚠️ Certains hunks du patch 50 ont échoué."
@@ -246,18 +246,28 @@ EOF
     }
     rm -f 50_add_susfs_in_kernel-4.19.patch
 
-    echo "=== Vérification et téléchargement des sources ==="
+    echo "=== Vérification des rejets ==="
+    REJECT_FILES=$(find . -name "*.rej")
+    if [ -n "$REJECT_FILES" ]; then
+        echo "⚠️ Des fichiers .rej ont été générés :"
+        echo "$REJECT_FILES"
+        echo "Le script continue mais la compilation pourrait échouer."
+    else
+        echo "✅ Aucun fichier .rej généré."
+    fi
+
+    echo "=== Téléchargement des sources ==="
     if [ ! -f "fs/susfs.c" ]; then
-        wget -q "https://gitlab.com/simonpunk/susfs4ksu/-/raw/kernel-4.19/fs/susfs.c" -O fs/susfs.c
+        wget -q "https://gitlab.com/simonpunk/susfs4ksu/-/raw/1.3.7/fs/susfs.c" -O fs/susfs.c || { echo "❌ Échec du téléchargement de fs/susfs.c"; exit 1; }
     fi
     if [ ! -f "include/linux/susfs.h" ]; then
-        wget -q "https://gitlab.com/simonpunk/susfs4ksu/-/raw/kernel-4.19/include/linux/susfs.h" -O include/linux/susfs.h
+        wget -q "https://gitlab.com/simonpunk/susfs4ksu/-/raw/1.3.7/include/linux/susfs.h" -O include/linux/susfs.h || echo "⚠️ susfs.h non trouvé"
     fi
     if [ ! -f "include/linux/susfs_def.h" ]; then
-        wget -q "https://gitlab.com/simonpunk/susfs4ksu/-/raw/kernel-4.19/include/linux/susfs_def.h" -O include/linux/susfs_def.h
+        wget -q "https://gitlab.com/simonpunk/susfs4ksu/-/raw/1.3.7/include/linux/susfs_def.h" -O include/linux/susfs_def.h || echo "⚠️ susfs_def.h non trouvé"
     fi
     if [ ! -f "fs/sus_su.c" ]; then
-        wget -q "https://gitlab.com/simonpunk/susfs4ksu/-/raw/kernel-4.19/fs/sus_su.c" -O fs/sus_su.c 2>/dev/null || echo "⚠️ sus_su.c non trouvé (facultatif)"
+        wget -q "https://gitlab.com/simonpunk/susfs4ksu/-/raw/1.3.7/fs/sus_su.c" -O fs/sus_su.c 2>/dev/null || echo "⚠️ sus_su.c non trouvé (facultatif)"
     fi
 
     if ! grep -q "susfs.o" fs/Makefile; then
@@ -267,18 +277,15 @@ EOF
         echo "obj-\$(CONFIG_KSU_SUSFS) += sus_su.o" >> fs/Makefile
     fi
 
-    # Supprimer les .rej restants
-    find . -name "*.rej" -delete 2>/dev/null
-
     if [ -f "fs/susfs.c" ]; then
         echo "✅ fs/susfs.c présent ($(wc -l < fs/susfs.c) lignes)"
-        echo "✅ SuSFS intégré avec succès"
+        echo "✅ SuSFS intégré (version 1.3.7)"
     else
         echo "❌ fs/susfs.c manquant. Abandon."
         exit 1
     fi
 else
-    echo "[DRY-RUN] Téléchargement et application des patches 10+50 simulés"
+    echo "[DRY-RUN] Téléchargement et application des patches 1.3.7 simulés"
 fi
 
 # ==================== 5. CONFIGURATION DU NOYAU ====================
