@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD KernelSU backslashxx + SuSFS (basé sur ReSukiSU fonctionnel) ==="
+echo "=== BUILD KernelSU backslashxx + SuSFS (hooks compatibles) ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -76,8 +76,8 @@ if [ -f "$DISPATCH_FILE" ]; then
     sed -i 's/struct ksu_get_info_legacy_cmd cmd = { \.version = KERNEL_SU_VERSION, \.flags = 0 };/struct ksu_get_info_legacy_cmd cmd = { .version = 32601, .flags = 0 };/' "$DISPATCH_FILE"
 fi
 
-# ==================== 3. HOOKS MANUELS (DOUBLE GARDE) ====================
-echo "=== Hooks ReSukiSU (double garde SUSFS || MANUAL_HOOK) ==="
+# ==================== 3. HOOKS MANUELS (SUPPORTÉS PAR BACKSLASHXX) ====================
+echo "=== Hooks manuels (execveat, faccessat, stat, sys_reboot) ==="
 
 # execveat
 if ! grep -q "ksu_handle_execveat" fs/exec.c; then
@@ -271,98 +271,7 @@ print("Hook sys_reboot OK")
 PYEOF
 fi
 
-# input_handle_event (CRUCIAL pour le tactile)
-if ! grep -q "ksu_handle_input_handle_event" drivers/input/input.c; then
-  python3 - << 'PYEOF'
-import re
-with open('drivers/input/input.c', 'r') as f:
-    content = f.read()
-extern_decl = '''
-#ifdef CONFIG_KSU
-extern struct static_key_true ksu_is_input_hook_enabled;
-extern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value);
-#endif
-'''
-pattern = r'(static void input_handle_event\(struct input_dev \*dev,)'
-content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
-old = '''	if (is_event_supported(type, dev->evbit, EV_MAX)) {'''
-new = '''#ifdef CONFIG_KSU
-	if (static_branch_unlikely(&ksu_is_input_hook_enabled))
-		ksu_handle_input_handle_event(&type, &code, &value);
-#endif
-	if (is_event_supported(type, dev->evbit, EV_MAX)) {'''
-if old in content:
-    content = content.replace(old, new, 1)
-else:
-    old2 = '''	input_get_disposition(dev, type, code, &value);'''
-    new2 = '''#ifdef CONFIG_KSU
-	if (static_branch_unlikely(&ksu_is_input_hook_enabled))
-		ksu_handle_input_handle_event(&type, &code, &value);
-#endif
-	input_get_disposition(dev, type, code, &value);'''
-    if old2 in content:
-        content = content.replace(old2, new2, 1)
-with open('drivers/input/input.c', 'w') as f:
-    f.write(content)
-print("Hook input_handle_event OK")
-PYEOF
-fi
-
-# setresuid
-if ! grep -q "ksu_handle_setresuid" kernel/sys.c; then
-  python3 - << 'PYEOF'
-import re
-with open('kernel/sys.c', 'r') as f:
-    content = f.read()
-extern_decl = '''
-#ifdef CONFIG_KSU_SUSFS
-extern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);
-#endif
-'''
-pattern = r'(long __sys_setresuid)'
-content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
-old = '''	bool ruid_new, euid_new, suid_new;'''
-new = '''	bool ruid_new, euid_new, suid_new;
-#ifdef CONFIG_KSU_SUSFS
-	(void)ksu_handle_setresuid(ruid, euid, suid);
-#endif'''
-if old in content:
-    content = content.replace(old, new, 1)
-with open('kernel/sys.c', 'w') as f:
-    f.write(content)
-print("Hook setresuid OK")
-PYEOF
-fi
-
-# sys_read
-if ! grep -q "ksu_handle_sys_read" fs/read_write.c; then
-  python3 - << 'PYEOF'
-import re
-with open('fs/read_write.c', 'r') as f:
-    content = f.read()
-extern_decl = '''
-#ifdef CONFIG_KSU
-extern struct static_key_true ksu_is_init_rc_hook_enabled;
-extern __attribute__((cold)) int ksu_handle_sys_read(unsigned int fd);
-#endif
-'''
-pattern = r'(SYSCALL_DEFINE3\(read)'
-content = re.sub(pattern, extern_decl + '\n' + r'\1', content, count=1)
-old = '''	return ksys_read(fd, buf, count);'''
-new = '''#ifdef CONFIG_KSU
-	if (static_branch_unlikely(&ksu_is_init_rc_hook_enabled))
-		ksu_handle_sys_read(fd);
-#endif
-	return ksys_read(fd, buf, count);'''
-if old in content:
-    content = content.replace(old, new, 1)
-with open('fs/read_write.c', 'w') as f:
-    f.write(content)
-print("Hook sys_read OK")
-PYEOF
-fi
-
-echo "✅ Tous les hooks sont en place"
+echo "✅ Hooks de base en place"
 
 # ==================== 4. APPLICATION DU PATCH SUSFS ====================
 echo "=== Téléchargement et application du patch SusFS 4.19 ==="
@@ -433,13 +342,10 @@ echo "Config: $CONFIG_NAME"
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 $CONFIG_NAME
 
-# Configuration inspirée du ReSukiSU fonctionnel
+# Configuration (masquage des symboles activé)
 ./scripts/config --file out/.config \
     --enable KSU \
     --enable KSU_MANUAL_HOOK \
-    --enable KSU_MANUAL_HOOK_AUTO_SETUID_HOOK \
-    --enable KSU_MANUAL_HOOK_AUTO_INITRC_HOOK \
-    --enable KSU_MANUAL_HOOK_AUTO_INPUT_HOOK \
     --enable KPROBES \
     --enable HAVE_KPROBES \
     --enable KRETPROBES \
@@ -461,9 +367,6 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 {
   echo "CONFIG_KSU=y"
   echo "CONFIG_KSU_MANUAL_HOOK=y"
-  echo "CONFIG_KSU_MANUAL_HOOK_AUTO_SETUID_HOOK=y"
-  echo "CONFIG_KSU_MANUAL_HOOK_AUTO_INITRC_HOOK=y"
-  echo "CONFIG_KSU_MANUAL_HOOK_AUTO_INPUT_HOOK=y"
   echo "CONFIG_KPROBES=y"
   echo "CONFIG_HAVE_KPROBES=y"
   echo "CONFIG_KRETPROBES=y"
