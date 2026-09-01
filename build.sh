@@ -2,7 +2,7 @@
 set -e
 
 # ==================== MODE DRY-RUN ====================
-DRY_RUN=0  # ← Changez à 0 pour exécuter réellement
+DRY_RUN=0  # ← Mettez 0 pour lancer la compilation réelle
 
 # ==================== FONCTIONS ====================
 run() {
@@ -10,17 +10,6 @@ run() {
         echo "[DRY-RUN] $*"
     else
         eval "$@"
-    fi
-}
-
-append_to_file() {
-    local file="$1"
-    local content="$2"
-    if [ "$DRY_RUN" -eq 1 ]; then
-        echo "[DRY-RUN] Ajout dans $file :"
-        echo "$content" | sed 's/^/  /'
-    else
-        echo "$content" >> "$file"
     fi
 }
 
@@ -50,7 +39,7 @@ if [ "$DRY_RUN" -eq 0 ]; then
     git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git \
         -b lineage-23.2 --depth=1 kernel_sources
 else
-    echo "[DRY-RUN] git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git -b lineage-23.2 --depth=1 kernel_sources"
+    echo "[DRY-RUN] git clone ..."
     mkdir -p kernel_sources
     cd kernel_sources
     mkdir -p fs include/linux drivers techpack/display/msm kernel arch/arm64/boot out/arch/arm64/boot fs/overlayfs fs/proc
@@ -103,7 +92,7 @@ else
     echo "[DRY-RUN] Intégration KernelSU (commit 0b138d6a) simulée"
 fi
 
-# ==================== 3. HOOKS KERNELSU ====================
+# ==================== 3. HOOKS KERNELSU (ajout conditionnel) ====================
 echo "=== Vérification des hooks KernelSU ==="
 hook_insert_if_absent() {
     local file="$1" sig_re="$2" extern_block="$3" call_line="$4" search="$5"
@@ -174,14 +163,29 @@ extern int ksu_handle_sys_reboot(int, int, unsigned int, void __user **);\
     fi
 fi
 
-# ==================== 4. INTÉGRATION SUSFS (version 1.3.7) ====================
+# ==================== 4. INTÉGRATION SUSFS (version 1.3.7 avec corrections automatiques) ====================
 echo "=== Téléchargement des patches SuSFS (version 1.3.7) ==="
 PATCH10_URL="https://gitlab.com/simonpunk/susfs4ksu/-/raw/1.3.7/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
 PATCH50_URL="https://gitlab.com/simonpunk/susfs4ksu/-/raw/1.3.7/kernel_patches/50_add_susfs_in_kernel-4.19.patch"
 
 if [ "$DRY_RUN" -eq 0 ]; then
+    # Télécharger les patches
     wget -q "$PATCH10_URL" -O /tmp/10_enable_susfs_for_ksu.patch || { echo "❌ Échec du téléchargement du patch 10"; exit 1; }
     wget -q "$PATCH50_URL" -O /tmp/50_add_susfs_in_kernel-4.19.patch || { echo "❌ Échec du téléchargement du patch 50"; exit 1; }
+
+    # === CLONER LE TAG 1.3.7 POUR LES SOURCES ===
+    echo "=== Clonage du tag 1.3.7 pour les sources ==="
+    git clone --depth=1 --branch 1.3.7 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs_src || {
+        echo "❌ Échec du clone du tag 1.3.7"
+        exit 1
+    }
+
+    # === COPIER TOUS LES FICHIERS SOURCES ===
+    echo "=== Copie des fichiers sources ==="
+    cp /tmp/susfs_src/kernel_patches/fs/susfs.c fs/ || { echo "❌ fs/susfs.c manquant"; exit 1; }
+    cp /tmp/susfs_src/kernel_patches/fs/sus_su.c fs/ 2>/dev/null || echo "⚠️ sus_su.c optionnel"
+    cp /tmp/susfs_src/kernel_patches/include/linux/susfs.h include/linux/ || echo "⚠️ susfs.h"
+    cp /tmp/susfs_src/kernel_patches/include/linux/susfs_def.h include/linux/ || echo "⚠️ susfs_def.h"
 
     echo "=== Application du patch 10 sur KernelSU ==="
     cp /tmp/10_enable_susfs_for_ksu.patch drivers/kernelsu/
@@ -192,7 +196,7 @@ if [ "$DRY_RUN" -eq 0 ]; then
         find . -name "*.rej" -delete 2>/dev/null
     }
     if ! grep -q "KSU_SUSFS" Kconfig 2>/dev/null; then
-        echo "⚠️ Patch 10 n'a pas modifié Kconfig. Ajout manuel..."
+        echo "⚠️ Ajout manuel de Kconfig..."
         cat >> Kconfig << 'EOF'
 menuconfig KSU_SUSFS
     bool "KernelSU SuSFS support"
@@ -237,39 +241,74 @@ EOF
     fi
     cd "$KERNEL_ROOT"
 
-    echo "=== Application du patch 50 sur le noyau (version 1.3.7) ==="
+    echo "=== Application du patch 50 sur le noyau ==="
     cp /tmp/50_add_susfs_in_kernel-4.19.patch .
     patch -p1 --forward --ignore-whitespace < 50_add_susfs_in_kernel-4.19.patch 2>&1 | tee /tmp/patch50.log || {
         echo "⚠️ Certains hunks du patch 50 ont échoué."
         grep -E "FAILED|reject" /tmp/patch50.log
-        find . -name "*.rej" -delete 2>/dev/null
     }
     rm -f 50_add_susfs_in_kernel-4.19.patch
 
-    echo "=== Vérification des rejets ==="
-    REJECT_FILES=$(find . -name "*.rej")
-    if [ -n "$REJECT_FILES" ]; then
-        echo "⚠️ Des fichiers .rej ont été générés :"
-        echo "$REJECT_FILES"
-        echo "Le script continue mais la compilation pourrait échouer."
-    else
-        echo "✅ Aucun fichier .rej généré."
+    # === CORRECTION MANUELLE DES REJETS ===
+    echo "=== Correction manuelle des rejets ==="
+
+    # 1. Corriger fs/open.c
+    if [ -f "fs/open.c.rej" ]; then
+        echo "Ajout du hook SUS_PATH dans fs/open.c..."
+        sed -i '/ksu_handle_faccessat/a\
+#ifdef CONFIG_KSU_SUSFS_SUS_PATH\
+    struct filename* fname;\
+    int status;\
+    int error;\
+\
+    fname = getname_safe(filename);\
+    status = susfs_sus_path_by_filename(fname, &error, SYSCALL_FAMILY_ALL_ENOENT);\
+    putname_safe(fname);\
+\
+    if (status) {\
+        return error;\
+    }\
+#endif' fs/open.c
+        rm -f fs/open.c.rej
     fi
 
-    echo "=== Téléchargement des sources ==="
+    # 2. Corriger fs/proc/task_mmu.c
+    if [ -f "fs/proc/task_mmu.c.rej" ]; then
+        echo "Ajout du hook SUS_MAPS dans fs/proc/task_mmu.c..."
+        sed -i '/show_vma_header_prefix/i\
+#ifdef CONFIG_KSU_SUSFS_SUS_MAPS\
+    char *out_name;\
+    int ret = 0;\
+\
+    out_name = kmalloc(SUSFS_MAX_LEN_PATHNAME, GFP_KERNEL);\
+    if (!out_name)\
+        goto orig_flow;\
+    ret = susfs_sus_maps(ino, end - start, &ino, &dev, &flags, &pgoff, vma, out_name);\
+    if (ret == 2) {\
+        seq_pad(m, '\'' '\'');\
+        seq_puts(m, out_name);\
+        seq_putc(m, '\''\\n'\'');\
+        kfree(out_name);\
+        return;\
+    }\
+    kfree(out_name);\
+orig_flow:\
+#endif' fs/proc/task_mmu.c
+        rm -f fs/proc/task_mmu.c.rej
+    fi
+
+    # 3. Supprimer les autres .rej
+    find . -name "*.rej" -delete 2>/dev/null
+
+    # === VÉRIFICATION FINALE ===
+    echo "=== Vérification des sources ==="
     if [ ! -f "fs/susfs.c" ]; then
-        wget -q "https://gitlab.com/simonpunk/susfs4ksu/-/raw/1.3.7/fs/susfs.c" -O fs/susfs.c || { echo "❌ Échec du téléchargement de fs/susfs.c"; exit 1; }
+        echo "❌ fs/susfs.c manquant. Abandon."
+        exit 1
     fi
-    if [ ! -f "include/linux/susfs.h" ]; then
-        wget -q "https://gitlab.com/simonpunk/susfs4ksu/-/raw/1.3.7/include/linux/susfs.h" -O include/linux/susfs.h || echo "⚠️ susfs.h non trouvé"
-    fi
-    if [ ! -f "include/linux/susfs_def.h" ]; then
-        wget -q "https://gitlab.com/simonpunk/susfs4ksu/-/raw/1.3.7/include/linux/susfs_def.h" -O include/linux/susfs_def.h || echo "⚠️ susfs_def.h non trouvé"
-    fi
-    if [ ! -f "fs/sus_su.c" ]; then
-        wget -q "https://gitlab.com/simonpunk/susfs4ksu/-/raw/1.3.7/fs/sus_su.c" -O fs/sus_su.c 2>/dev/null || echo "⚠️ sus_su.c non trouvé (facultatif)"
-    fi
+    echo "✅ fs/susfs.c présent ($(wc -l < fs/susfs.c) lignes)"
 
+    # Mise à jour de fs/Makefile
     if ! grep -q "susfs.o" fs/Makefile; then
         echo "obj-\$(CONFIG_KSU_SUSFS) += susfs.o" >> fs/Makefile
     fi
@@ -277,13 +316,10 @@ EOF
         echo "obj-\$(CONFIG_KSU_SUSFS) += sus_su.o" >> fs/Makefile
     fi
 
-    if [ -f "fs/susfs.c" ]; then
-        echo "✅ fs/susfs.c présent ($(wc -l < fs/susfs.c) lignes)"
-        echo "✅ SuSFS intégré (version 1.3.7)"
-    else
-        echo "❌ fs/susfs.c manquant. Abandon."
-        exit 1
-    fi
+    # Nettoyer
+    rm -rf /tmp/susfs_src /tmp/jack_hooks 2>/dev/null
+
+    echo "✅ SuSFS intégré (version 1.3.7)"
 else
     echo "[DRY-RUN] Téléchargement et application des patches 1.3.7 simulés"
 fi
