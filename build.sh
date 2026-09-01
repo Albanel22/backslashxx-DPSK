@@ -28,34 +28,43 @@ cd kernel_sources
 echo "=== Téléchargement de SuSFS (JackA1ltman) ==="
 git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git /tmp/jack_repo
 
-# 2a. Copie des sources SUSFS
-echo "=== Copie des fichiers sources SUSFS ==="
-mkdir -p fs include/linux
-cp /tmp/jack_repo/KernelSU/susfs/fs/susfs.c fs/ 2>/dev/null || echo "⚠️ fs/susfs.c non trouvé, vérification..."
-cp /tmp/jack_repo/KernelSU/susfs/include/linux/susfs.h include/linux/ 2>/dev/null || echo "⚠️ susfs.h non trouvé"
-cp /tmp/jack_repo/KernelSU/susfs/include/linux/susfs_def.h include/linux/ 2>/dev/null || echo "⚠️ susfs_def.h non trouvé"
-cp /tmp/jack_repo/KernelSU/susfs/fs/sus_su.c fs/ 2>/dev/null || echo "⚠️ sus_su.c non trouvé (facultatif)"
-
-if [ ! -f "fs/susfs.c" ]; then
-    echo "❌ fs/susfs.c manquant !"
-    exit 1
-fi
-echo "✅ Sources SUSFS copiées"
-
-# 2b. Exécution du script d'inline hooks
-echo "=== Application des inline hooks SUSFS ==="
+echo "=== Exécution des inline hooks SUSFS ==="
 chmod +x /tmp/jack_repo/Patches/susfs_inline_hook_patches.sh
 /tmp/jack_repo/Patches/susfs_inline_hook_patches.sh 2>&1 | tee /tmp/susfs_inline.log
 
-# Vérifier si des échecs majeurs
 if grep -q "ERROR" /tmp/susfs_inline.log; then
-    echo "❌ Des erreurs sont survenues lors des inline hooks."
+    echo "❌ Erreurs lors des inline hooks :"
+    tail -30 /tmp/susfs_inline.log
     exit 1
 fi
 echo "✅ Inline hooks exécutés"
 
-# 2c. Mise à jour des Makefiles
-echo "=== Mise à jour de fs/Makefile ==="
+echo "=== Vérification des fichiers SUSFS ==="
+if [ ! -f "fs/susfs.c" ]; then
+    echo "⚠️ fs/susfs.c non créé par les hooks. Recherche dans le dépôt..."
+    SOURCE=$(find /tmp/jack_repo -name "susfs.c" | head -1)
+    if [ -n "$SOURCE" ]; then
+        cp "$SOURCE" fs/susfs.c
+        echo "✅ fs/susfs.c copié depuis $SOURCE"
+    else
+        echo "❌ Aucun susfs.c trouvé. Abandon."
+        exit 1
+    fi
+fi
+
+# En-têtes
+if [ ! -f "include/linux/susfs.h" ] || [ ! -f "include/linux/susfs_def.h" ]; then
+    echo "⚠️ En-têtes manquants, on les cherche..."
+    for h in susfs.h susfs_def.h; do
+        SRC=$(find /tmp/jack_repo -name "$h" | head -1)
+        if [ -n "$SRC" ]; then
+            cp "$SRC" include/linux/
+            echo "✅ $h copié"
+        fi
+    done
+fi
+
+# Mise à jour fs/Makefile
 if ! grep -q "susfs.o" fs/Makefile; then
     echo "obj-\$(CONFIG_KSU_SUSFS) += susfs.o" >> fs/Makefile
 fi
@@ -63,7 +72,7 @@ if [ -f "fs/sus_su.c" ] && ! grep -q "sus_su.o" fs/Makefile; then
     echo "obj-\$(CONFIG_KSU_SUSFS) += sus_su.o" >> fs/Makefile
 fi
 
-# 2d. Ajout des symboles si absents (au cas où)
+# Ajout des symboles si absents
 if ! grep -q "susfs_is_current_ksu_domain" fs/susfs.c; then
     cat >> fs/susfs.c << 'SUSFS_EOF'
 
@@ -84,6 +93,8 @@ EXPORT_SYMBOL(susfs_priv_app_sid);
 SUSFS_EOF
     echo "[+] Symboles SusFS ajoutés"
 fi
+
+echo "✅ SUSFS intégré avec succès"
 
 # ==================== 3. KERNELSU (COMMIT FIXE 0b138d6a) ====================
 echo "=== Intégration KernelSU (commit 0b138d6a) ==="
@@ -125,7 +136,7 @@ if [ -f "$DISPATCH_FILE" ]; then
 fi
 echo "✅ KernelSU intégré"
 
-# ==================== 4. HOOKS KERNELSU (complément si non présents) ====================
+# ==================== 4. HOOKS KERNELSU (vérification) ====================
 echo "=== Vérification des hooks KernelSU ==="
 hook_insert_if_absent() {
     local file="$1" sig_re="$2" extern_block="$3" call_line="$4" search="$5"
@@ -146,7 +157,6 @@ hook_insert_if_absent "fs/exec.c" \
     'ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);' \
     'ksu_handle_execveat'
 
-# faccessat
 if grep -Pzo 'long do_faccessat\(int dfd, const char __user \*filename, int mode\)\s*\n\{' fs/open.c >/dev/null 2>&1; then
     hook_insert_if_absent "fs/open.c" \
         'long do_faccessat\(int dfd, const char __user \*filename, int mode\)\s*\n\{' \
@@ -161,7 +171,6 @@ elif grep -Pzo 'SYSCALL_DEFINE3\(faccessat, int, dfd, const char __user \*, file
         'ksu_handle_faccessat'
 fi
 
-# stat
 if grep -Pzo 'int vfs_statx\(int dfd, const char __user \*filename, int flags,[^{]*\{' fs/stat.c >/dev/null 2>&1; then
     hook_insert_if_absent "fs/stat.c" \
         'int vfs_statx\(int dfd, const char __user \*filename, int flags,[^{]*\{' \
@@ -176,7 +185,6 @@ elif grep -Pzo 'int vfs_fstatat\(int dfd, const char __user \*filename, struct k
         'ksu_handle_stat'
 fi
 
-# sys_reboot
 if ! grep -q "ksu_handle_sys_reboot" kernel/reboot.c; then
     sed -i '/SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,/i\
 #if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD)\
@@ -189,7 +197,7 @@ extern int ksu_handle_sys_reboot(int, int, unsigned int, void __user **);\
     echo "[+] Hook sys_reboot ajouté"
 fi
 
-# ==================== 5. CONFIGURATION DU NOYAU ====================
+# ==================== 5. CONFIGURATION ====================
 export ARCH=arm64
 export SUBARCH=arm64
 export CROSS_COMPILE=aarch64-linux-gnu-
@@ -220,7 +228,6 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-# Ajout explicite
 cat >> out/.config <<EOF
 CONFIG_KSU_SUSFS=y
 CONFIG_KSU_SUSFS_SUS_PATH=y
