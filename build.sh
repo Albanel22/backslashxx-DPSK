@@ -2,10 +2,8 @@
 set -e
 
 # ==================== MODE DRY-RUN ====================
-# Mettez DRY_RUN=1 pour simuler, DRY_RUN=0 pour exécuter réellement
-DRY_RUN=1  # ← Changez à 0 quand vous voulez lancer pour de vrai
+DRY_RUN=1  # ← Changez à 0 pour exécuter réellement
 
-# Fonction pour exécuter ou simuler une commande
 run() {
     if [ "$DRY_RUN" -eq 1 ]; then
         echo "[DRY-RUN] $*"
@@ -14,7 +12,6 @@ run() {
     fi
 }
 
-# Fonction pour ajouter du contenu à un fichier (simulation ou réel)
 append_to_file() {
     local file="$1"
     local content="$2"
@@ -56,11 +53,12 @@ else
     mkdir -p kernel_sources
     cd kernel_sources
     # Créer une arborescence minimale pour les touches
-    mkdir -p fs include/linux drivers techpack/display/msm
+    mkdir -p fs include/linux drivers techpack/display/msm kernel arch/arm64/boot out/arch/arm64/boot
     touch fs/susfs.c include/linux/susfs.h include/linux/susfs_def.h
     touch fs/exec.c fs/open.c fs/stat.c fs/namespace.c kernel/reboot.c
     touch fs/Makefile drivers/Makefile drivers/Kconfig
     touch techpack/display/msm/msm_drv.c
+    touch out/arch/arm64/boot/Image  # pour simuler la compilation
     cd ..
 fi
 
