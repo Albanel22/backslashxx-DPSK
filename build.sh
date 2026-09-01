@@ -2,8 +2,10 @@
 set -e
 
 # ==================== MODE DRY-RUN ====================
-DRY_RUN=0  # ← Changez à 0 pour exécuter réellement
+# Mettez DRY_RUN=1 pour simuler, DRY_RUN=0 pour exécuter réellement
+DRY_RUN=1  # ← Changez à 0 quand vous voulez lancer pour de vrai
 
+# Fonction pour exécuter ou simuler une commande
 run() {
     if [ "$DRY_RUN" -eq 1 ]; then
         echo "[DRY-RUN] $*"
@@ -12,6 +14,7 @@ run() {
     fi
 }
 
+# Fonction pour ajouter du contenu à un fichier (simulation ou réel)
 append_to_file() {
     local file="$1"
     local content="$2"
@@ -23,7 +26,7 @@ append_to_file() {
     fi
 }
 
-echo "=== BUILD DIAGNOSTIC : KernelSU + SuSFS (manuel) + UAPI2 + sys_reboot ==="
+echo "=== BUILD DIAGNOSTIC : KernelSU + SuSFS (patches officiels) + UAPI2 + sys_reboot ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -63,160 +66,7 @@ fi
 
 cd kernel_sources || exit 1
 
-# ==================== 2. INTÉGRATION SUSFS (manuel avec sous-modules) ====================
-echo "=== Téléchargement et initialisation de SuSFS (JackA1ltman) ==="
-if [ "$DRY_RUN" -eq 0 ]; then
-    git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git /tmp/jack_repo
-    cd /tmp/jack_repo
-    echo "Initialisation des sous-modules..."
-    git submodule update --init --recursive
-    cd -
-else
-    echo "[DRY-RUN] git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git /tmp/jack_repo"
-    mkdir -p /tmp/jack_repo
-    touch /tmp/jack_repo/susfs.c /tmp/jack_repo/susfs.h /tmp/jack_repo/susfs_def.h /tmp/jack_repo/sus_su.c
-fi
-
-echo "=== Copie manuelle des fichiers sources SUSFS ==="
-if [ "$DRY_RUN" -eq 0 ]; then
-    # Afficher la structure pour déboguer
-    echo "Contenu de /tmp/jack_repo (premier niveau) :"
-    ls -la /tmp/jack_repo
-    echo "Recherche de susfs.c dans tout le dépôt..."
-    find /tmp/jack_repo -name "susfs.c" -type f 2>/dev/null
-
-    # Copie avec find (priorité)
-    SOURCE_SUSFS=$(find /tmp/jack_repo -name "susfs.c" -type f | head -1)
-    if [ -n "$SOURCE_SUSFS" ]; then
-        cp "$SOURCE_SUSFS" fs/susfs.c
-        echo "✅ susfs.c copié depuis $SOURCE_SUSFS"
-    else
-        # Fallback : essayer des chemins connus (avec sous-modules)
-        if [ -f "/tmp/jack_repo/KernelSU/susfs/fs/susfs.c" ]; then
-            cp /tmp/jack_repo/KernelSU/susfs/fs/susfs.c fs/susfs.c
-            echo "✅ susfs.c copié depuis /tmp/jack_repo/KernelSU/susfs/fs/susfs.c"
-        elif [ -f "/tmp/jack_repo/susfs/fs/susfs.c" ]; then
-            cp /tmp/jack_repo/susfs/fs/susfs.c fs/susfs.c
-            echo "✅ susfs.c copié depuis /tmp/jack_repo/susfs/fs/susfs.c"
-        else
-            echo "❌ Aucun susfs.c trouvé. Arborescence complète de /tmp/jack_repo :"
-            find /tmp/jack_repo -type f | head -50
-            exit 1
-        fi
-    fi
-
-    # Même chose pour les en-têtes
-    for h in susfs.h susfs_def.h; do
-        SRC=$(find /tmp/jack_repo -name "$h" -type f | head -1)
-        if [ -n "$SRC" ]; then
-            cp "$SRC" include/linux/
-            echo "✅ $h copié depuis $SRC"
-        else
-            if [ -f "/tmp/jack_repo/KernelSU/susfs/include/linux/$h" ]; then
-                cp "/tmp/jack_repo/KernelSU/susfs/include/linux/$h" include/linux/
-                echo "✅ $h copié depuis /tmp/jack_repo/KernelSU/susfs/include/linux/$h"
-            elif [ -f "/tmp/jack_repo/susfs/include/linux/$h" ]; then
-                cp "/tmp/jack_repo/susfs/include/linux/$h" include/linux/
-                echo "✅ $h copié depuis /tmp/jack_repo/susfs/include/linux/$h"
-            else
-                echo "⚠️ $h non trouvé"
-            fi
-        fi
-    done
-
-    # Optionnel : sus_su.c
-    SRC_SU=$(find /tmp/jack_repo -name "sus_su.c" -type f | head -1)
-    if [ -n "$SRC_SU" ]; then
-        cp "$SRC_SU" fs/sus_su.c
-        echo "✅ sus_su.c copié depuis $SRC_SU"
-    elif [ -f "/tmp/jack_repo/KernelSU/susfs/fs/sus_su.c" ]; then
-        cp /tmp/jack_repo/KernelSU/susfs/fs/sus_su.c fs/sus_su.c
-        echo "✅ sus_su.c copié depuis /tmp/jack_repo/KernelSU/susfs/fs/sus_su.c"
-    fi
-else
-    echo "[DRY-RUN] Copie des fichiers SUSFS simulée"
-fi
-
-if [ ! -f "fs/susfs.c" ]; then
-    echo "❌ fs/susfs.c manquant. Abandon."
-    exit 1
-fi
-echo "✅ fs/susfs.c présent ($(wc -l < fs/susfs.c) lignes)"
-
-# Mise à jour fs/Makefile
-if ! grep -q "susfs.o" fs/Makefile 2>/dev/null; then
-    append_to_file "fs/Makefile" "obj-\$(CONFIG_KSU_SUSFS) += susfs.o"
-fi
-if [ -f "fs/sus_su.c" ] && ! grep -q "sus_su.o" fs/Makefile 2>/dev/null; then
-    append_to_file "fs/Makefile" "obj-\$(CONFIG_KSU_SUSFS) += sus_su.o"
-fi
-
-# Ajout des symboles SUSFS si absents
-if ! grep -q "susfs_is_current_ksu_domain" fs/susfs.c 2>/dev/null; then
-    SYMBOLS='
-#ifdef CONFIG_KSU_SUSFS
-bool susfs_is_current_ksu_domain(void)
-{
-    const struct cred *cred = current_cred();
-    return (cred->uid.val == 0 || cred->uid.val == 2000);
-}
-EXPORT_SYMBOL(susfs_is_current_ksu_domain);
-
-u32 susfs_ksu_sid = 0;
-EXPORT_SYMBOL(susfs_ksu_sid);
-
-u32 susfs_priv_app_sid = 0;
-EXPORT_SYMBOL(susfs_priv_app_sid);
-#endif
-'
-    if [ "$DRY_RUN" -eq 0 ]; then
-        echo "$SYMBOLS" >> fs/susfs.c
-    else
-        echo "[DRY-RUN] Ajout des symboles SUSFS dans fs/susfs.c"
-    fi
-fi
-
-# 2d. Hooks SUSFS manuels
-echo "=== Application des hooks SUSFS manuels ==="
-# exec.c
-if ! grep -q "susfs_handle_execve" fs/exec.c 2>/dev/null; then
-    if [ "$DRY_RUN" -eq 0 ]; then
-        sed -i '/#include <linux\/sched\/task.h>/a #ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs.h>\n#endif' fs/exec.c
-        perl -0777 -i -pe 's/(static int do_execveat_common\(.*?\)\s*\{)/$1\n#ifdef CONFIG_KSU_SUSFS\n\tif (unlikely(susfs_handle_execveat(fd, filename, argv, envp, flags))) return -EPERM;\n#endif/' fs/exec.c
-    else
-        echo "[DRY-RUN] Hook execve dans fs/exec.c"
-    fi
-fi
-# open.c
-if ! grep -q "susfs_handle_faccessat" fs/open.c 2>/dev/null; then
-    if [ "$DRY_RUN" -eq 0 ]; then
-        sed -i '/#include <linux\/fs\.h>/a #ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs.h>\n#endif' fs/open.c
-        perl -0777 -i -pe 's/(long do_faccessat\(int dfd, const char __user \*filename, int mode\)\s*\{)/$1\n#ifdef CONFIG_KSU_SUSFS\n\tif (unlikely(susfs_handle_faccessat(dfd, filename, mode))) return -EPERM;\n#endif/' fs/open.c
-    else
-        echo "[DRY-RUN] Hook faccessat dans fs/open.c"
-    fi
-fi
-# stat.c
-if ! grep -q "susfs_handle_stat" fs/stat.c 2>/dev/null; then
-    if [ "$DRY_RUN" -eq 0 ]; then
-        sed -i '/#include <linux\/fs\.h>/a #ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs.h>\n#endif' fs/stat.c
-        perl -0777 -i -pe 's/(int vfs_statx\(int dfd, const char __user \*filename, int flags,[^{]*\{)/$1\n#ifdef CONFIG_KSU_SUSFS\n\tif (unlikely(susfs_handle_stat(dfd, filename, flags))) return -EPERM;\n#endif/' fs/stat.c
-    else
-        echo "[DRY-RUN] Hook stat dans fs/stat.c"
-    fi
-fi
-# namespace.c
-if ! grep -q "susfs_handle_mount" fs/namespace.c 2>/dev/null; then
-    if [ "$DRY_RUN" -eq 0 ]; then
-        sed -i '/#include <linux\/sched\/task\.h>/a #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n#include <linux/susfs_def.h>\n#endif' fs/namespace.c
-        perl -0777 -i -pe 's/(int do_mount\(.*?\)\s*\{)/$1\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n\textern bool susfs_is_current_ksu_domain(void);\n\tif (unlikely(susfs_handle_mount(dev_name, dir_name, type_page, flags, data_page))) return -EPERM;\n#endif/' fs/namespace.c
-    else
-        echo "[DRY-RUN] Hook mount dans fs/namespace.c"
-    fi
-fi
-echo "✅ Hooks SUSFS appliqués"
-
-# ==================== 3. KERNELSU (commit 0b138d6a) ====================
+# ==================== 2. KERNELSU (commit 0b138d6a) ====================
 echo "=== Intégration KernelSU (commit 0b138d6a) ==="
 if [ "$DRY_RUN" -eq 0 ]; then
     rm -rf drivers/kernelsu KernelSU /tmp/KernelSU || true
@@ -254,7 +104,7 @@ else
     echo "[DRY-RUN] Intégration KernelSU (commit 0b138d6a) simulée"
 fi
 
-# ==================== 4. HOOKS KERNELSU (ajout conditionnel) ====================
+# ==================== 3. HOOKS KERNELSU (ajout conditionnel) ====================
 echo "=== Vérification des hooks KernelSU ==="
 hook_insert_if_absent() {
     local file="$1" sig_re="$2" extern_block="$3" call_line="$4" search="$5"
@@ -325,6 +175,45 @@ extern int ksu_handle_sys_reboot(int, int, unsigned int, void __user **);\
     fi
 fi
 
+# ==================== 4. INTÉGRATION SUSFS (via patches officiels) ====================
+echo "=== Téléchargement des patches SuSFS depuis simonpunk/susfs4ksu (branche kernel-4.19) ==="
+if [ "$DRY_RUN" -eq 0 ]; then
+    git clone --depth=1 -b kernel-4.19 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs_repo
+else
+    echo "[DRY-RUN] git clone --depth=1 -b kernel-4.19 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs_repo"
+    mkdir -p /tmp/susfs_repo/kernel_patches
+fi
+
+echo "=== Application des patches SuSFS ==="
+if [ "$DRY_RUN" -eq 0 ]; then
+    KERNEL_ROOT="$PWD"
+
+    # Étape 1 : Patcher KernelSU
+    echo "1. Application du patch à KernelSU..."
+    cp /tmp/susfs_repo/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch drivers/kernelsu/
+    cd drivers/kernelsu
+    patch -p1 < 10_enable_susfs_for_ksu.patch || { echo "❌ Échec du patch KernelSU"; exit 1; }
+    cd "$KERNEL_ROOT"
+
+    # Étape 2 : Patcher le noyau
+    echo "2. Application du patch principal au noyau..."
+    cp /tmp/susfs_repo/kernel_patches/50_add_susfs_in_kernel.patch .
+    patch -p1 < 50_add_susfs_in_kernel.patch || { echo "❌ Échec du patch noyau"; exit 1; }
+
+    # Étape 3 : Copier les fichiers supplémentaires
+    echo "3. Copie des fichiers supplémentaires..."
+    cp /tmp/susfs_repo/kernel_patches/fs/* fs/ 2>/dev/null || echo "⚠️ Pas de fichiers fs supplémentaires"
+    cp /tmp/susfs_repo/kernel_patches/include/linux/* include/linux/ 2>/dev/null || echo "⚠️ Pas d'en-têtes supplémentaires"
+
+    # Nettoyer
+    rm -f 50_add_susfs_in_kernel.patch
+    rm -rf /tmp/susfs_repo
+
+    echo "✅ Patches SuSFS appliqués avec succès"
+else
+    echo "[DRY-RUN] Application des patches SuSFS simulée"
+fi
+
 # ==================== 5. CONFIGURATION DU NOYAU ====================
 export ARCH=arm64
 export SUBARCH=arm64
@@ -351,6 +240,7 @@ if [ "$DRY_RUN" -eq 0 ]; then
         --disable KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
         --enable KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
         --enable KSU_SUSFS_OPEN_REDIRECT \
+        --enable KSU_SUSFS_HAS_MAGIC_MOUNT \
         --enable THREAD_INFO_IN_TASK
     make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
     cat >> out/.config <<EOF
@@ -364,6 +254,7 @@ CONFIG_KSU_SUSFS_ENABLE_LOG=y
 # CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS is not set
 CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
 CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
 EOF
     grep "CONFIG_KSU_SUSFS" out/.config
     sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
