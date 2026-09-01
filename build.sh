@@ -13,7 +13,7 @@ sudo apt-get update
 sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf-dev \
     libssl-dev libncurses-dev gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
     clang llvm lld device-tree-compiler zip unzip curl git python3 mkbootimg perl \
-    python3-pip wget jq   # Ajout de jq pour parser l'API
+    python3-pip wget jq
 
 cd "$GITHUB_WORKSPACE"
 
@@ -24,19 +24,24 @@ git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git \
 
 cd kernel_sources
 
-# ==================== 2. KERNELSU (branche non-gki récente) ====================
-echo "=== Intégration KernelSU (dernière branche non-gki) ==="
+# ==================== 2. KERNELSU (COMMIT FIXE 0b138d6a) ====================
+echo "=== Intégration KernelSU (commit 0b138d6a) ==="
 rm -rf drivers/kernelsu KernelSU susfs4ksu /tmp/KernelSU || true
 
-git clone --depth=1 -b non-gki https://github.com/backslashxx/KernelSU.git /tmp/KernelSU
+KSU_COMMIT="0b138d6a9cfe4dc163aa05c21b1e6a14ff868230"
 
+git clone https://github.com/backslashxx/KernelSU.git /tmp/KernelSU
+cd /tmp/KernelSU
+git fetch --depth=1 origin "$KSU_COMMIT"
+git checkout "$KSU_COMMIT"
+cd "$GITHUB_WORKSPACE/kernel_sources"
+
+# Récupération de la version depuis le Makefile
 KSU_VER=$(grep -oP '(?<=-DKSU_VERSION=)[0-9]+' /tmp/KernelSU/kernel/Makefile | head -1)
 if [ -z "$KSU_VER" ]; then
     KSU_VER="32601"
 fi
 echo "[+] KSU_VERSION détecté : $KSU_VER"
-
-cd "$GITHUB_WORKSPACE/kernel_sources"
 
 # ==================== 2b. SYMLINK DRIVER ====================
 ln -sf /tmp/KernelSU/kernel drivers/kernelsu
@@ -75,7 +80,7 @@ if [ -f "$DISPATCH_FILE" ]; then
     sed -i "s/struct ksu_get_info_legacy_cmd cmd = { \.version = KERNEL_SU_VERSION, \.flags = 0 };/struct ksu_get_info_legacy_cmd cmd = { .version = ${KSU_VER}, .flags = 0 };/" "$DISPATCH_FILE"
 fi
 
-echo "✅ KernelSU intégré avec la branche non-gki (version ${KSU_VER})"
+echo "✅ KernelSU intégré avec le commit $KSU_COMMIT (version ${KSU_VER})"
 
 # ==================== 3. HOOKS MANUELS KERNELSU ====================
 echo "=== Hooks manuels KernelSU ==="
@@ -321,7 +326,7 @@ if [ ! -f "out/arch/arm64/boot/Image" ]; then
 fi
 echo "✅ Compilation du noyau réussie"
 
-# ==================== 10. COMPILATION KSUD ====================
+# ==================== 10. COMPILATION KSUD (MÊME COMMIT) ====================
 echo "=== Compilation de ksud (Rust) ==="
 cd "$GITHUB_WORKSPACE"
 
@@ -344,7 +349,10 @@ export AR_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm
 export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot -I$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/aarch64-linux-android"
 
 rm -rf "$GITHUB_WORKSPACE/ksud-src"
-git clone --depth=1 -b non-gki https://github.com/backslashxx/KernelSU.git "$GITHUB_WORKSPACE/ksud-src"
+git clone https://github.com/backslashxx/KernelSU.git "$GITHUB_WORKSPACE/ksud-src"
+cd "$GITHUB_WORKSPACE/ksud-src"
+git fetch --depth=1 origin "$KSU_COMMIT"
+git checkout "$KSU_COMMIT"
 cd "$GITHUB_WORKSPACE/ksud-src/userspace/ksud"
 
 mkdir -p .cargo
@@ -369,7 +377,7 @@ fi
 
 cp "$KSUD_BINARY" "$GITHUB_WORKSPACE/ksud"
 chmod 755 "$GITHUB_WORKSPACE/ksud"
-echo "✅ ksud compilé"
+echo "✅ ksud compilé avec le commit $KSU_COMMIT"
 
 # ==================== 11. TÉLÉCHARGEMENT DU BOOT.IMG VIA API LINEAGEOS ====================
 cd "$GITHUB_WORKSPACE"
@@ -405,11 +413,14 @@ mkdir -p repack
 cp boot-stock.img repack/boot.img
 cd repack
 
-wget -q https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk
-unzip -q Magisk-v27.0.apk lib/x86_64/libmagiskboot.so
-mv lib/x86_64/libmagiskboot.so magiskboot
-chmod +x magiskboot
-rm -rf Magisk-v27.0.apk lib/
+# Télécharger magiskboot si absent
+if [ ! -f "magiskboot" ]; then
+    wget -q https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk
+    unzip -q Magisk-v27.0.apk lib/x86_64/libmagiskboot.so
+    mv lib/x86_64/libmagiskboot.so magiskboot
+    chmod +x magiskboot
+    rm -rf Magisk-v27.0.apk lib/
+fi
 
 set +e
 ./magiskboot unpack boot.img
