@@ -3,7 +3,7 @@ set -e
 
 # ==================== MODE DRY-RUN ====================
 # Mettez DRY_RUN=1 pour simuler, DRY_RUN=0 pour exécuter réellement
-DRY_RUN=1  # ← Changez à 0 quand vous voulez lancer pour de vrai
+DRY_RUN=0  # ← Changez à 0 quand vous voulez lancer pour de vrai
 
 # Fonction pour exécuter ou simuler une commande
 run() {
