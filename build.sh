@@ -349,9 +349,9 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 ./scripts/config --file out/.config \
     --enable KSU \
     --enable KSU_MANUAL_HOOK \
-    --disable KPROBES \
-    --disable HAVE_KPROBES \
-    --disable KPROBE_EVENTS \
+    --enable KPROBES \
+    --enable HAVE_KPROBES \
+    --enable KPROBE_EVENTS \
     --enable KSU_SUSFS \
     --enable KSU_SUSFS_SUS_PATH \
     --enable KSU_SUSFS_SUS_MOUNT \
