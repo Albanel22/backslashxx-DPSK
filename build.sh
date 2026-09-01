@@ -2,7 +2,7 @@
 set -e
 
 # ==================== MODE DRY-RUN ====================
-DRY_RUN=0  # ← Changez à 0 pour exécuter réellement
+DRY_RUN=1  # ← Changez à 0 pour exécuter réellement
 
 run() {
     if [ "$DRY_RUN" -eq 1 ]; then
@@ -23,7 +23,7 @@ append_to_file() {
     fi
 }
 
-echo "=== BUILD DIAGNOSTIC : KernelSU + SuSFS (patches officiels) + UAPI2 + sys_reboot ==="
+echo "=== BUILD DIAGNOSTIC : KernelSU + SuSFS (patch direct) + UAPI2 + sys_reboot ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -172,72 +172,37 @@ extern int ksu_handle_sys_reboot(int, int, unsigned int, void __user **);\
     fi
 fi
 
-# ==================== 4. INTÉGRATION SUSFS (via patches officiels - version robuste) ====================
-echo "=== Téléchargement des patches SuSFS depuis simonpunk/susfs4ksu (branche kernel-4.19) ==="
-if [ "$DRY_RUN" -eq 0 ]; then
-    git clone --depth=1 -b kernel-4.19 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs_repo
-else
-    echo "[DRY-RUN] git clone --depth=1 -b kernel-4.19 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs_repo"
-    mkdir -p /tmp/susfs_repo/kernel_patches
-fi
+# ==================== 4. INTÉGRATION SUSFS (téléchargement direct du patch) ====================
+echo "=== Téléchargement du patch SuSFS pour noyau 4.19 ==="
+PATCH_URL="https://gitlab.com/simonpunk/susfs4ksu/-/raw/kernel-4.19/kernel_patches/50_add_susfs_in_kernel-4.19.patch"
+PATCH_FILE="50_add_susfs_in_kernel-4.19.patch"
 
-echo "=== Application des patches SuSFS ==="
 if [ "$DRY_RUN" -eq 0 ]; then
-    KERNEL_ROOT="$PWD"
+    echo "Téléchargement depuis $PATCH_URL..."
+    wget -q "$PATCH_URL" -O "$PATCH_FILE" || {
+        echo "❌ Échec du téléchargement du patch"
+        exit 1
+    }
+    echo "✅ Patch téléchargé ($(wc -l < $PATCH_FILE) lignes)"
 
-    # Étape 1 : Patcher KernelSU (en ignorant les fichiers manquants)
-    echo "1. Application du patch à KernelSU..."
-    cp /tmp/susfs_repo/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch drivers/kernelsu/
-    cd drivers/kernelsu
-    
-    echo "Application du patch KernelSU (avec --forward et --ignore-whitespace)..."
-    patch -p1 --forward --ignore-whitespace < 10_enable_susfs_for_ksu.patch || {
-        echo "⚠️ Certaines parties du patch ont échoué (fichiers manquants probables)."
+    echo "Application du patch noyau (avec --forward et --ignore-whitespace)..."
+    patch -p1 --forward --ignore-whitespace < "$PATCH_FILE" || {
+        echo "⚠️ Certaines parties du patch ont échoué."
         echo "   Vérification des fichiers rejetés..."
         find . -name "*.rej" -exec echo "REJET : {}" \;
         find . -name "*.rej" -delete 2>/dev/null
     }
-    
-    # Vérifier si susfs a bien été ajouté dans KernelSU
-    if grep -q "susfs" Makefile 2>/dev/null; then
-        echo "✅ Patch KernelSU partiellement appliqué (susfs intégré)"
-    else
-        echo "⚠️ Le patch KernelSU n'a pas ajouté susfs, on ajoute manuellement..."
-        if ! grep -q "susfs" Makefile; then
-            echo "ccflags-y += -DKSU_SUSFS" >> Makefile
-        fi
-    fi
-    cd "$KERNEL_ROOT"
 
-    # Étape 2 : Patcher le noyau (en ignorant les fichiers manquants)
-    echo "2. Application du patch principal au noyau..."
-    cp /tmp/susfs_repo/kernel_patches/50_add_susfs_in_kernel.patch .
-    echo "Application du patch noyau (avec --forward)..."
-    patch -p1 --forward --ignore-whitespace < 50_add_susfs_in_kernel.patch || {
-        echo "⚠️ Certaines parties du patch noyau ont échoué."
-        echo "   Vérification des fichiers rejetés..."
-        find . -name "*.rej" -exec echo "REJET : {}" \;
-        find . -name "*.rej" -delete 2>/dev/null
-    }
-    
-    # Vérifier que susfs.c a bien été créé
+    rm -f "$PATCH_FILE"
+
     if [ ! -f "fs/susfs.c" ]; then
-        echo "⚠️ fs/susfs.c n'a pas été créé par le patch. Copie manuelle..."
-        find /tmp/susfs_repo -name "susfs.c" -exec cp {} fs/susfs.c \; 2>/dev/null
-        find /tmp/susfs_repo -name "susfs.h" -exec cp {} include/linux/susfs.h \; 2>/dev/null
-        find /tmp/susfs_repo -name "susfs_def.h" -exec cp {} include/linux/susfs_def.h \; 2>/dev/null
+        echo "⚠️ fs/susfs.c non créé par le patch. Téléchargement depuis le dépôt..."
+        wget -q "https://gitlab.com/simonpunk/susfs4ksu/-/raw/kernel-4.19/fs/susfs.c" -O fs/susfs.c
+        wget -q "https://gitlab.com/simonpunk/susfs4ksu/-/raw/kernel-4.19/include/linux/susfs.h" -O include/linux/susfs.h
+        wget -q "https://gitlab.com/simonpunk/susfs4ksu/-/raw/kernel-4.19/include/linux/susfs_def.h" -O include/linux/susfs_def.h
+        echo "✅ Fichiers sources téléchargés"
     fi
 
-    # Étape 3 : Copier les fichiers supplémentaires (si le patch ne l'a pas fait)
-    echo "3. Copie des fichiers supplémentaires..."
-    cp /tmp/susfs_repo/kernel_patches/fs/* fs/ 2>/dev/null || echo "⚠️ Pas de fichiers fs supplémentaires"
-    cp /tmp/susfs_repo/kernel_patches/include/linux/* include/linux/ 2>/dev/null || echo "⚠️ Pas d'en-têtes supplémentaires"
-
-    # Nettoyer
-    rm -f 50_add_susfs_in_kernel.patch
-    rm -rf /tmp/susfs_repo
-
-    # Vérification finale
     if [ -f "fs/susfs.c" ]; then
         echo "✅ fs/susfs.c présent ($(wc -l < fs/susfs.c) lignes)"
         echo "✅ SuSFS intégré avec succès"
@@ -246,7 +211,7 @@ if [ "$DRY_RUN" -eq 0 ]; then
         exit 1
     fi
 else
-    echo "[DRY-RUN] Application des patches SuSFS simulée"
+    echo "[DRY-RUN] Téléchargement et application du patch simulés"
 fi
 
 # ==================== 5. CONFIGURATION DU NOYAU ====================
@@ -293,7 +258,6 @@ CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
 EOF
     grep "CONFIG_KSU_SUSFS" out/.config
     sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
-    # Patch tactile
     if [ -f "techpack/display/msm/msm_drv.c" ]; then
         printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
         echo "[+] Patch tactile appliqué"
