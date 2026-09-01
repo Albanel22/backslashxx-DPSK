@@ -35,14 +35,16 @@ git fetch --depth=1 origin "$KSU_COMMIT"
 git checkout "$KSU_COMMIT"
 cd "$GITHUB_WORKSPACE/kernel_sources"
 
-# ==================== 2b. SYMLINK DRIVER ====================
-ln -sf /tmp/KernelSU/kernel drivers/kernelsu
+# ==================== 2b. COPIE DU DRIVER (au lieu de symlink) ====================
+echo "=== Copie du driver KernelSU ==="
+rm -rf drivers/kernelsu
+cp -r /tmp/KernelSU/kernel drivers/kernelsu
 
 if [ -d "drivers/kernelsu" ]; then
-    echo "✅ Symlink OK"
+    echo "✅ Copie OK"
     ls drivers/kernelsu/ | head -5
 else
-    echo "❌ Symlink ÉCHOUÉ"
+    echo "❌ Copie ÉCHOUÉE"
     exit 1
 fi
 
@@ -70,20 +72,20 @@ fi
 grep -n "DKSU_VERSION" drivers/kernelsu/Makefile
 
 # ==================== 2d. FIX VERSION/UAPI DANS LES BONS FICHIERS ====================
-echo "=== Fix version et UAPI dans /tmp/KernelSU ==="
+echo "=== Fix version et UAPI dans drivers/kernelsu ==="
 
-if [ -f "/tmp/KernelSU/uapi/supercall.h" ]; then
-    sed -i 's/static const __u32 KERNEL_SU_UAPI_VERSION = [0-9]*;/static const __u32 KERNEL_SU_UAPI_VERSION = 2;/' /tmp/KernelSU/uapi/supercall.h
-    sed -i 's/#define KERNEL_SU_UAPI_VERSION [0-9]*/#define KERNEL_SU_UAPI_VERSION 2/' /tmp/KernelSU/uapi/supercall.h
+if [ -f "drivers/kernelsu/uapi/supercall.h" ]; then
+    sed -i 's/static const __u32 KERNEL_SU_UAPI_VERSION = [0-9]*;/static const __u32 KERNEL_SU_UAPI_VERSION = 2;/' drivers/kernelsu/uapi/supercall.h
+    sed -i 's/#define KERNEL_SU_UAPI_VERSION [0-9]*/#define KERNEL_SU_UAPI_VERSION 2/' drivers/kernelsu/uapi/supercall.h
     echo "[+] KERNEL_SU_UAPI_VERSION forcé à 2"
 fi
 
-if [ -f "/tmp/KernelSU/uapi/ksu.h" ]; then
-    sed -i 's/#define KERNEL_SU_VERSION KSU_VERSION/#define KERNEL_SU_VERSION 32601/' /tmp/KernelSU/uapi/ksu.h
+if [ -f "drivers/kernelsu/uapi/ksu.h" ]; then
+    sed -i 's/#define KERNEL_SU_VERSION KSU_VERSION/#define KERNEL_SU_VERSION 32601/' drivers/kernelsu/uapi/ksu.h
     echo "[+] KERNEL_SU_VERSION forcé à 32601"
 fi
 
-DISPATCH_FILE="/tmp/KernelSU/kernel/supercall/dispatch.c"
+DISPATCH_FILE="drivers/kernelsu/kernel/supercall/dispatch.c"
 if [ -f "$DISPATCH_FILE" ]; then
     sed -i 's/cmd\.uapi_version = KERNEL_SU_UAPI_VERSION;/cmd.uapi_version = 2;/' "$DISPATCH_FILE"
     sed -i 's/static uint32_t ksuver_override = 0;/static uint32_t ksuver_override = 32601;/' "$DISPATCH_FILE"
@@ -162,19 +164,17 @@ fi
 
 # Hook sys_reboot
 if ! grep -q "ksu_handle_sys_reboot" kernel/reboot.c; then
-  # Ajouter la déclaration extern avant SYSCALL_DEFINE4
   sed -i '/SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,/i\
 #if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD)\
 extern int ksu_handle_sys_reboot(int, int, unsigned int, void __user **);\
 #endif' kernel/reboot.c
 
-  # Insérer l'appel APRÈS les déclarations (après int ret = 0;)
   sed -i '/int ret = 0;/a\
 #if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD)\
 \tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\
 #endif' kernel/reboot.c
 
-  echo "[+] Hook sys_reboot OK (après déclarations)"
+  echo "[+] Hook sys_reboot OK"
 else
   echo "[+] Hook sys_reboot déjà présent"
 fi
@@ -361,11 +361,15 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
     --enable KSU_SUSFS_SUS_MAP \
     --enable KSU_SUSFS_SPOOF_UNAME \
     --enable KSU_SUSFS_ENABLE_LOG \
-    --enable KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+    --disable KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
     --enable KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
     --enable KSU_SUSFS_OPEN_REDIRECT \
     --enable THREAD_INFO_IN_TASK
 
+make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
+
+# Forcer la désactivation du masquage des symboles SuSFS
+./scripts/config --file out/.config --disable KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
 {
@@ -376,7 +380,7 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
     echo "CONFIG_KSU_SUSFS_SUS_MAP=y"
     echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y"
     echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y"
-    echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y"
+    echo "# CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS is not set"
     echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y"
     echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y"
 } >> out/.config
@@ -388,6 +392,32 @@ sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
 # ==================== 9. PATCH TACTILE ====================
 printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
+
+# ==================== 9b. LOGS DE DIAGNOSTIC TACTILE ====================
+echo "=== Ajout de logs de diagnostic tactile ==="
+
+if [ -f "techpack/display/msm/msm_drv.c" ]; then
+    # Ajouter un message au début de l'initialisation
+    if ! grep -q "MSM_DRM: msm_drm_init called" techpack/display/msm/msm_drv.c; then
+        sed -i '/static int msm_drm_init(struct platform_device \*pdev)/i\
+pr_err("MSM_DRM: msm_drm_init called\\n");' techpack/display/msm/msm_drv.c
+    fi
+    # Ajouter un message lors de l'enregistrement du panneau
+    if ! grep -q "MSM_DRM: panel_register_notifier called" techpack/display/msm/msm_drv.c; then
+        sed -i '/int panel_register_notifier(struct notifier_block \*nb)/i\
+pr_err("MSM_DRM: panel_register_notifier called\\n");' techpack/display/msm/msm_drv.c
+    fi
+else
+    echo "⚠️ Fichier techpack/display/msm/msm_drv.c introuvable, impossible d'ajouter les logs"
+fi
+
+# Chercher les pilotes tactiles et ajouter un log au début de leur probe
+for f in $(grep -rl "touch" drivers/input/touchscreen/ 2>/dev/null | head -5); do
+    echo "Ajout de log dans $f"
+    # Ajouter une ligne avant la fonction probe si elle existe
+    sed -i '/static int.*_probe(struct i2c_client \*client, const struct i2c_device_id \*id)/i\
+pr_err("TOUCHSCREEN: probe called in %s\\n", __func__);' "$f"
+done
 
 # ==================== 10. COMPILATION ====================
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image 2>&1 | tee build.log
@@ -454,7 +484,7 @@ cd "$GITHUB_WORKSPACE"
 echo "=== Téléchargement du boot.img stock (30 août 2026) ==="
 curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/boot.img"
 
-# Vérifier la taille minimale (le boot stock complet fait ~96 Mo)
+# Vérifier la taille minimale
 SIZE=$(stat -c%s boot-stock.img)
 if [ "$SIZE" -lt 80000000 ]; then
     echo "❌ boot-stock.img trop petit ($SIZE octets). Téléchargement probablement incomplet."
@@ -506,6 +536,35 @@ if [ -f "boot-stock.img" ]; then
     "add 06755 system/bin/su ./local_su_binary"
 
   rm -f local_su_binary
+
+  # ==================== SCRIPT DE CAPTURE ====================
+  echo "=== Ajout du script de capture de logs ==="
+  mkdir -p "$GITHUB_WORKSPACE/capture"
+  cat > "$GITHUB_WORKSPACE/capture/capture_logs.sh" << 'EOF'
+#!/system/bin/sh
+sleep 5
+dmesg > /data/local/tmp/dmesg.txt
+logcat -d > /data/local/tmp/logcat.txt
+cp /proc/config.gz /data/local/tmp/config.gz 2>/dev/null
+cp /proc/kallsyms /data/local/tmp/kallsyms.txt 2>/dev/null
+
+mkdir -p /sdcard/Download
+cp /data/local/tmp/dmesg.txt /sdcard/Download/dmesg.txt
+cp /data/local/tmp/logcat.txt /sdcard/Download/logcat.txt
+cp /data/local/tmp/config.gz /sdcard/Download/config.gz 2>/dev/null
+cp /data/local/tmp/kallsyms.txt /sdcard/Download/kallsyms.txt 2>/dev/null
+
+echo "Logs captured" > /data/local/tmp/capture_done
+EOF
+
+  chmod 755 "$GITHUB_WORKSPACE/capture/capture_logs.sh"
+
+  # Ajouter le script dans le ramdisk
+  ./magiskboot cpio ramdisk.cpio \
+    "mkdir 0755 data" \
+    "mkdir 0755 data/adb" \
+    "mkdir 0755 data/adb/post-fs-data.d" \
+    "add 0755 data/adb/post-fs-data.d/capture_logs.sh $GITHUB_WORKSPACE/capture/capture_logs.sh"
 
   # Repacker
   ./magiskboot repack boot.img new-boot.img || { echo "❌ Échec du repack"; exit 1; }
