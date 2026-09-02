@@ -333,16 +333,22 @@ KCONFIG_EOF
     fi
 fi
 
-# ==================== 7. CONFIGURATION ====================
+# ==================== 7. CONFIGURATION (CORRIGÉ AVEC VENDOR/LITO-PERF_DEFCONFIG ET INPUT) ====================
 export ARCH=arm64
 export SUBARCH=arm64
 export CROSS_COMPILE=aarch64-linux-gnu-
 export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
 mkdir -p out
-CONFIG=$(find arch/arm64/configs/ -name "*kiev*" -o -name "*lito*" -o -name "*sm8250*" | head -1)
-CONFIG_NAME=${CONFIG#arch/arm64/configs/}
-echo "Config utilisée: $CONFIG_NAME"
+
+# Utilisation directe du bon defconfig fournisseur pour "kiev" (sm8250)
+CONFIG_NAME="vendor/lito-perf_defconfig"
+echo "Config utilisée explicitement : $CONFIG_NAME"
+
+if [ ! -f "arch/arm64/configs/$CONFIG_NAME" ]; then
+    echo "❌ Erreur : Le defconfig $CONFIG_NAME est introuvable !"
+    exit 1
+fi
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 $CONFIG_NAME
 
@@ -363,6 +369,9 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
     --enable KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
     --enable KSU_SUSFS_OPEN_REDIRECT \
     --enable THREAD_INFO_IN_TASK \
+    --enable INPUT \
+    --enable INPUT_EVDEV \
+    --enable INPUT_TOUCHSCREEN \
     --enable TOUCHSCREEN_FOCALTECH
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
@@ -378,7 +387,6 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
     echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y"
     echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y"
     echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y"
-    echo "CONFIG_TOUCHSCREEN_FOCALTECH=y"
 } >> out/.config
 
 grep "CONFIG_KSU_SUSFS" out/.config
@@ -386,9 +394,8 @@ grep "CONFIG_KSU_SUSFS" out/.config
 # ==================== 8. PATCH SIGNATURES ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
-# ==================== 9. PATCH TACTILE FOCALTECH STUB ====================
-echo "=== Application du patch tactile dummy ==="
-printf "\n/* --- Dummy Panel Notifier pour LineageOS --- */\n#include <linux/module.h>\nint panel_register_notifier(void *nb) { return 0; }\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(void *nb) { return 0; }\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) {}\nEXPORT_SYMBOL(touch_set_state);\n" >> techpack/display/msm/msm_drv.c
+# ==================== 9. PATCH TACTILE ====================
+printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
 
 # ==================== 10. COMPILATION ====================
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image 2>&1 | tee build.log
@@ -449,12 +456,21 @@ cp "$KSUD_BINARY" "$GITHUB_WORKSPACE/ksud"
 chmod 755 "$GITHUB_WORKSPACE/ksud"
 echo "✅ ksud compilé"
 
-# ==================== 12. REPACK (Lien fixe du 30 août) ====================
+# ==================== 12. REPACK ====================
 cd "$GITHUB_WORKSPACE"
 
-curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/boot.img" || {
-    echo "❌ Échec du téléchargement du boot stock du 30 août"
-    exit 1
+curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/boot.img" 2>/dev/null || {
+    mkbootimg \
+      --kernel kernel_sources/out/arch/arm64/boot/Image \
+      --ramdisk /dev/null \
+      --output final_boot.img \
+      --header_version 2 \
+      --pagesize 4096 \
+      --base 0x00000000 \
+      --kernel_offset 0x00008000 \
+      --ramdisk_offset 0x01000000 \
+      --tags_offset 0x00000100 \
+      --cmdline "androidboot.hardware=kiev androidboot.selinux=permissive"
 }
 curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/dtbo.img" 2>/dev/null || true
 
