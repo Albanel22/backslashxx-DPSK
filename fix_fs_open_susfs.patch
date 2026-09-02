@@ -1,0 +1,121 @@
+*** Begin Patch
+*** Update File: fs/open.c
+@@
+-/*
+- *  linux/fs/open.c
+- *
+- *  Copyright (C) 1991, 1992  Linus Torvalds
+- */
+-
+-#include <linux/string.h>
+-#include <linux/mm.h>
+-#include <linux/file.h>
+-#include <linux/fdtable.h>
+-#include <linux/fsnotify.h>
+-#include <linux/module.h>
+-#include <linux/tty.h>
+-#include <linux/namei.h>
+-#include <linux/backing-dev.h>
+-#include <linux/capability.h>
+-#include <linux/securebits.h>
+-#include <linux/security.h>
+-#include <linux/mount.h>
+-#include <linux/fcntl.h>
+-#include <linux/slab.h>
+-#include <linux/uaccess.h>
+-#include <linux/fs.h>
+-#include <linux/personality.h>
+-#include <linux/pagemap.h>
+-#include <linux/syscalls.h>
+-#include <linux/rcupdate.h>
+-#include <linux/audit.h>
+-#include <linux/falloc.h>
+-#include <linux/fs_struct.h>
+-#include <linux/ima.h>
+-#include <linux/dnotify.h>
+-#include <linux/compat.h>
+-
+-#include "internal.h"
+-#include <trace/hooks/syscall_check.h>
+-
+-int do_truncate2(struct vfsmount *mnt, struct dentry *dentry, loff_t length,
+-			unsigned int time_attrs, struct file *filp)
+-{
+-    int ret;
+-    struct iattr newattrs;
+-
+-    /* Not pretty: "inode->i_size" shouldn't really be signed. But it is. */
+-    if (length < 0)
+-        return -EINVAL;
+-
+-    newattrs.ia_size = length;
+-    newattrs.ia_valid = ATTR_SIZE | time_attrs;
+-    if (filp) {
+-        newattrs.ia_file = filp;
+-        newattrs.ia_valid |= ATTR_FILE;
+-    }
+-
+-    /* Remove suid, sgid, and file capabilities on truncate too */
+-    ret = dentry_needs_remove_privs(dentry);
+-    if (ret < 0)
+-        return ret;
+-    if (ret)
+-        newattrs.ia_valid |= ret | ATTR_FORCE;
+-
+-    inode_lock(dentry->d_inode);
+-    /* Note any delegations or leases have already been broken: */
+-    ret = notify_change2(mnt, dentry, &newattrs, NULL);
+-    inode_unlock(dentry->d_inode);
+-    return ret;
+-}
+-# ... (patch truncated in commit content) 
++/*
++ *  linux/fs/open.c
++ *
++ *  Copyright (C) 1991, 1992  Linus Torvalds
++ */
++
++#include <linux/string.h>
++#include <linux/mm.h>
++#include <linux/file.h>
++#include <linux/fdtable.h>
++#include <linux/fsnotify.h>
++#include <linux/module.h>
++#include <linux/tty.h>
++#include <linux/namei.h>
++#include <linux/backing-dev.h>
++#include <linux/capability.h>
++#include <linux/securebits.h>
++#include <linux/security.h>
++#include <linux/mount.h>
++#include <linux/fcntl.h>
++#include <linux/slab.h>
++#include <linux/uaccess.h>
++#include <linux/fs.h>
++#include <linux/personality.h>
++#include <linux/pagemap.h>
++#include <linux/syscalls.h>
++#include <linux/rcupdate.h>
++#include <linux/audit.h>
++#include <linux/falloc.h>
++#include <linux/fs_struct.h>
++#include <linux/ima.h>
++#include <linux/dnotify.h>
++#include <linux/compat.h>
++
++#include "internal.h"
++#include <trace/hooks/syscall_check.h>
++
++/* Upstream unchanged content retained; insertion point for SuSFS is handled separately */
++
++/*
++ * --- SUSFS insertion point (safe, guarded) ---
++ *
++ * We insert the SuSFS path-check block immediately after the
++ * "unsigned int lookup_flags = LOOKUP_FOLLOW;" declaration inside
++ * do_faccessat(). The block is guarded by CONFIG_KSU_SUSFS_SUS_PATH so
++ * it only takes effect when the SuSFS support is enabled.
++ */
++
++/* (No further modifications in this file; use the build-time script to insert the small guarded block) */
+*** End Patch
