@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD WINNER : KernelSU v3.2.5-76+ (0b138d6a) + SuSFS + fix UAPI + sys_reboot ==="
+echo "=== BUILD DIAGNOSTIC : KernelSU + SuSFS + patch tactile conditionnel + config directe ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -69,8 +69,8 @@ fi
 
 grep -n "DKSU_VERSION" drivers/kernelsu/Makefile
 
-# ==================== 2d. FIX VERSION/UAPI DANS LES BONS FICHIERS ====================
-echo "=== Fix version et UAPI dans /tmp/KernelSU ==="
+# ==================== 2d. FIX VERSION/UAPI ====================
+echo "=== Fix version et UAPI ==="
 
 if [ -f "/tmp/KernelSU/uapi/supercall.h" ]; then
     sed -i 's/static const __u32 KERNEL_SU_UAPI_VERSION = [0-9]*;/static const __u32 KERNEL_SU_UAPI_VERSION = 2;/' /tmp/KernelSU/uapi/supercall.h
@@ -91,8 +91,6 @@ if [ -f "$DISPATCH_FILE" ]; then
     sed -i 's/struct ksu_get_info_legacy_cmd cmd = { \.version = KERNEL_SU_VERSION, \.flags = 0 };/struct ksu_get_info_legacy_cmd cmd = { .version = 32601, .flags = 0 };/' "$DISPATCH_FILE"
     echo "[+] Corrections dispatch.c appliquées"
 fi
-
-grep -n "uapi_version\|ksuver_override\|cmd = { .version" "$DISPATCH_FILE" 2>/dev/null || true
 
 # ==================== 3. HOOKS MANUELS KERNELSU ====================
 echo "=== Hooks manuels KernelSU ==="
@@ -162,21 +160,24 @@ fi
 
 # Hook sys_reboot
 if ! grep -q "ksu_handle_sys_reboot" kernel/reboot.c; then
-  # Ajouter la déclaration extern avant SYSCALL_DEFINE4
   sed -i '/SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,/i\
 #if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD)\
 extern int ksu_handle_sys_reboot(int, int, unsigned int, void __user **);\
 #endif' kernel/reboot.c
 
-  # Insérer l'appel APRÈS les déclarations (après int ret = 0;)
   sed -i '/int ret = 0;/a\
 #if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD)\
 \tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\
 #endif' kernel/reboot.c
 
-  echo "[+] Hook sys_reboot OK (après déclarations)"
+  echo "[+] Hook sys_reboot OK"
 else
   echo "[+] Hook sys_reboot déjà présent"
+fi
+
+if [ "$HOOKS_FAILED" -eq 1 ]; then
+    echo "❌ Échec des hooks KernelSU"
+    exit 1
 fi
 
 echo "✅ Hooks KernelSU en place"
@@ -335,15 +336,16 @@ KCONFIG_EOF
     fi
 fi
 
-# ==================== 7. CONFIGURATION ====================
+# ==================== 7. CONFIGURATION (CHEMIN DIRECT) ====================
 export ARCH=arm64
 export SUBARCH=arm64
 export CROSS_COMPILE=aarch64-linux-gnu-
 export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
 mkdir -p out
-CONFIG=$(find arch/arm64/configs/ -name "*kiev*" -o -name "*lito*" -o -name "*sm8250*" | head -1)
-CONFIG_NAME=${CONFIG#arch/arm64/configs/}
+# Utilisation directe de la config vendor/lito-perf_defconfig
+CONFIG="arch/arm64/configs/vendor/lito-perf_defconfig"
+CONFIG_NAME="lito-perf_defconfig"
 echo "Config utilisée: $CONFIG_NAME"
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 $CONFIG_NAME
@@ -386,6 +388,16 @@ grep "CONFIG_KSU_SUSFS" out/.config
 # ==================== 8. PATCH SIGNATURES ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
+# ==================== 9. PATCH TACTILE CONDITIONNEL ====================
+echo "=== Vérification de la présence des symboles tactiles ==="
+if grep -Rq "panel_register_notifier" techpack/display/msm/msm_drv.c drivers/input/touchscreen/ 2>/dev/null || \
+   grep -Rq "panel_unregister_notifier" techpack/display/msm/msm_drv.c drivers/input/touchscreen/ 2>/dev/null || \
+   grep -Rq "touch_set_state" techpack/display/msm/msm_drv.c drivers/input/touchscreen/ 2>/dev/null; then
+    echo "✅ Symboles déjà présents. Patch tactile NON appliqué."
+else
+    echo "⚠️ Symboles absents. Application du patch tactile (stubs)."
+    printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
+fi
 
 # ==================== 10. COMPILATION ====================
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image 2>&1 | tee build.log
@@ -446,7 +458,7 @@ cp "$KSUD_BINARY" "$GITHUB_WORKSPACE/ksud"
 chmod 755 "$GITHUB_WORKSPACE/ksud"
 echo "✅ ksud compilé"
 
-# ==================== 12. REPACK ====================
+# ==================== 12. REPACK (URLs du 30 août) ====================
 cd "$GITHUB_WORKSPACE"
 
 curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/boot.img" 2>/dev/null || {
