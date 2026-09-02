@@ -22,8 +22,8 @@ git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git -b lin
 
 cd kernel_sources
 
-# Cette ligne recule automatiquement le temps au 9 août 2026
-git checkout $(git rev-list -n 1 --before="2026-08-10" HEAD)
+# On applique le commit exact du 9 août que tu as sélectionné
+git checkout 7d6d9822797d8305cee82f1ee680cae264f4cf67
 
 # ==================== 2. CLONE KERNELSU (COMMIT EXACT) ====================
 echo "=== Intégration KernelSU (0b138d6a) ==="
