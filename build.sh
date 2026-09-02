@@ -22,8 +22,15 @@ git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git -b lin
 
 cd kernel_sources
 
-# On applique le commit exact du 9 août que tu as sélectionné
-git checkout 7d6d9822797d8305cee82f1ee680cae264f4cf67
+# ==================== CORRECTIF DISPLAY MOTOROLA ====================
+echo "=== Application du patch d'affichage Motorola ==="
+FILE="techpack/display/msm/dsi/dsi_display_mot_ext.c"
+if [ -f "$FILE" ]; then
+    echo "Correction du mot-clé duplicate static dans $FILE..."
+    sed -i 's/static static/static/g' "$FILE"
+else
+    echo "Fichier $FILE introuvable, étape ignorée."
+fi
 
 # ==================== 2. CLONE KERNELSU (COMMIT EXACT) ====================
 echo "=== Intégration KernelSU (0b138d6a) ==="
