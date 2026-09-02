@@ -18,10 +18,12 @@ cd "$GITHUB_WORKSPACE"
 
 # ==================== 1. CLONAGE DU NOYAU ====================
 echo "=== Clonage du kernel Motorola sm8250 ==="
-git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git \
-    -b lineage-23.2 --depth=1 kernel_sources
+git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git -b lineage-23.2 kernel_sources
 
 cd kernel_sources
+
+# Cette ligne recule automatiquement le temps au 9 août 2026
+git checkout $(git rev-list -n 1 --before="2026-08-10" HEAD)
 
 # ==================== 2. CLONE KERNELSU (COMMIT EXACT) ====================
 echo "=== Intégration KernelSU (0b138d6a) ==="
