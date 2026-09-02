@@ -343,9 +343,9 @@ export CROSS_COMPILE=aarch64-linux-gnu-
 export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
 mkdir -p out
+
 # Utilisation directe de la config vendor/lito-perf_defconfig
-CONFIG="arch/arm64/configs/vendor/lito-perf_defconfig"
-CONFIG_NAME="lito-perf_defconfig"
+CONFIG_NAME="vendor/lito-perf_defconfig"
 echo "Config utilisée: $CONFIG_NAME"
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 $CONFIG_NAME
