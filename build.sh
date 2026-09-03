@@ -288,19 +288,8 @@ EOF
                 if (/^\s*unsigned int lookup_flags = LOOKUP_FOLLOW;/) {
                     if (!$found_correct) {
                         $found_correct = 1;
-                        $_ .= "\n#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n    struct filename *fname_sus;\n    int status;\n    int error_sus;\n    fname_sus = getname_safe(filename);\n    status = susfs_sus_path_by_filename(fname_sus, &error_sus, SYSCALL_FAMILY_ALL_ENOENT);\n    putname_safe(fname_sus);\n    if (status) {\n        return error_sus;\n    }\n#endif\n";
-                    }
-                }
-                if (/^\s*}/ && $in_faccessat) {
-                    $in_faccessat = 0;
-                }
-            }
-            if (!$in_faccessat) {
-                if (/^\s*#ifdef CONFIG_KSU_SUSFS_SUS_PATH/ || /^\s*#endif \/\/ CONFIG_KSU_SUSFS_SUS_PATH/) {
-                    $_ = "";
-                }
-            }
-        ' fs/open.c
+                        $_ .= "\n#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n    struct filename *fname_sus;\n    int status;\n    int error_sus;\n    fname_sus = getname_safe(filename);\n    status = susf[...]'
+        fs/open.c
 
         if [ ! -s "fs/open.c" ]; then
             log "⚠️ fs/open.c est vide, restauration de la sauvegarde..."
@@ -335,9 +324,9 @@ EOF
         goto orig_flow;\
     ret = susfs_sus_maps(ino, end - start, &ino, &dev, &flags, &pgoff, vma, out_name);\
     if (ret == 2) {\
-        seq_pad(m, '\'' '\'');\
+        seq_pad(m, '\' '\'');\
         seq_puts(m, out_name);\
-        seq_putc(m, '\''\\n'\'');\
+        seq_putc(m, '\'\\n'\'');\
         kfree(out_name);\
         return;\
     }\
@@ -432,7 +421,13 @@ EOF
 
     # Patch tactile if needed
     if [ -f "techpack/display/msm/msm_drv.c" ]; then
-        printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_noti[...]
+        cat >> techpack/display/msm/msm_drv.c <<'PATCH'
+/* --- Début Patch Tactile --- */
+#include <linux/notifier.h>
+#include <linux/module.h>
+static BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);
+/* patch content placeholder */
+PATCH
         log "[+] Patch tactile appliqué"
     fi
 else
