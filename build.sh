@@ -391,8 +391,67 @@ grep "CONFIG_KSU_SUSFS" out/.config
 # ==================== 8. PATCH SIGNATURES ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
-# ==================== 9. PATCH TACTILE ====================
-printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
+# ==================== 9. PATCH TACTILE (conditionnel + fonctionnel) ====================
+echo "=== Patch Tactile (vérification préalable) ==="
+
+NEED_STUB=0
+MSM_DRV="techpack/display/msm/msm_drv.c"
+
+# Vérifie si le fichier existe
+if [ ! -f "$MSM_DRV" ]; then
+    echo "❌ Erreur : $MSM_DRV introuvable"
+    exit 1
+fi
+
+# Vérifie si les fonctions existent déjà (plus complet)
+if ! grep -rq "panel_register_notifier" techpack/display/ --include="*.c" --include="*.h" 2>/dev/null; then
+    NEED_STUB=1
+fi
+
+# Empêche d'appliquer plusieurs fois le patch
+if grep -q "motorola_panel_notifier_list" "$MSM_DRV" 2>/dev/null; then
+    echo "✅ Patch tactile déjà présent — rien à faire"
+    NEED_STUB=0
+fi
+
+if [ "$NEED_STUB" -eq 1 ]; then
+    echo "⚠️  Aucune implémentation réelle trouvée, ajout du stub fonctionnel"
+
+    # On ajoute les includes en haut du fichier (meilleure pratique)
+    if ! grep -q "#include <linux/notifier.h>" "$MSM_DRV"; then
+        sed -i '1i#include <linux/notifier.h>\n#include <linux/module.h>' "$MSM_DRV"
+    fi
+
+    # Ajoute le code à la fin du fichier
+    cat >> "$MSM_DRV" << 'TOUCH_PATCH_EOF'
+
+/* --- Début Patch Tactile (fonctionnel) --- */
+static BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);
+
+int panel_register_notifier(struct notifier_block *nb)
+{
+	return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);
+}
+EXPORT_SYMBOL(panel_register_notifier);
+
+int panel_unregister_notifier(struct notifier_block *nb)
+{
+	return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);
+}
+EXPORT_SYMBOL(panel_unregister_notifier);
+
+void touch_set_state(int state)
+{
+	blocking_notifier_call_chain(&motorola_panel_notifier_list, state, NULL);
+}
+EXPORT_SYMBOL(touch_set_state);
+/* --- Fin Patch Tactile --- */
+TOUCH_PATCH_EOF
+
+    echo "✅ Stub tactile ajouté avec succès"
+else
+    echo "✅ Implémentations réelles déjà présentes ou patch déjà appliqué — stub NON appliqué"
+fi
 
 # ==================== 10. COMPILATION ====================
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image 2>&1 | tee build.log
