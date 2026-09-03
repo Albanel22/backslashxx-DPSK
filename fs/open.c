@@ -1,7 +1,7 @@
 /*
- * linux/fs/open.c
+ *  linux/fs/open.c
  *
- * Copyright (C) 1991, 1992  Linus Torvalds
+ *  Copyright (C) 1991, 1992  Linus Torvalds
  */
 
 #include <linux/string.h>
@@ -36,8 +36,7 @@
 #include <trace/hooks/syscall_check.h>
 
 int do_truncate2(struct vfsmount *mnt, struct dentry *dentry, loff_t length,
-		u
-nsigned int time_attrs, struct file *filp)
+		unsigned int time_attrs, struct file *filp)
 {
 	int ret;
 	struct iattr newattrs;
@@ -67,7 +66,7 @@ nsigned int time_attrs, struct file *filp)
 	return ret;
 }
 int do_truncate(struct dentry *dentry, loff_t length, unsigned int time_attrs,
-		struct file *filp)
+	struct file *filp)
 {
 	return do_truncate2(NULL, dentry, length, time_attrs, filp);
 }
@@ -373,4 +372,203 @@ long do_faccessat(int dfd, const char __user *filename, int mode)
 		return -ENOMEM;
 
 	override_cred->fsuid = override_cred->uid;
-	replace truncated content...
+	override_cred->fsgid = override_cred->gid;
+
+	now adding guarded SuSFS block
+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
+	{
+		struct filename *fname_sus;
+		int status;
+		int error_sus;
+		fname_sus = getname_safe(filename);
+		if (!IS_ERR(fname_sus)) {
+			status = susfs_sus_path_by_filename(fname_sus, &error_sus, SYSCALL_FAMILY_ALL_ENOENT);
+			putname_safe(fname_sus);
+			if (status) {
+				res = error_sus;
+				goto out_path_release;
+			}
+		}
+	}
+#endif
+
+	if (!issecure(SECURE_NO_SETUID_FIXUP)) {
+		/* Clear the capabilities if we switch to a non-root user */
+		kuid_t root_uid = make_kuid(override_cred->user_ns, 0);
+		if (!uid_eq(override_cred->uid, root_uid))
+			cap_clear(override_cred->cap_effective);
+		else
+			override_cred->cap_effective =
+				override_cred->cap_permitted;
+	}
+
+	/*
+	 * The new set of credentials can *only* be used in
+	 * task-synchronous circumstances, and does not need
+	 * RCU freeing, unless somebody then takes a separate
+	 * reference to it.
+	 *
+	 * NOTE! This is _only_ true because this credential
+	 * is used purely for override_creds() that installs
+	 * it as the subjective cred. Other threads will be
+	 * accessing ->real_cred, not the subjective cred.
+	 *
+	 * If somebody _does_ make a copy of this (using the
+	 * 'get_current_cred()' function), that will clear the
+	 * non_rcu field, because now that other user may be
+	 * expecting RCU freeing. But normal thread-synchronous
+	 * cred accesses will keep things non-RCY.
+	 */
+	override_cred->non_rcu = 1;
+
+	old_cred = override_creds(override_cred);
+retry:
+	res = user_path_at(dfd, filename, lookup_flags, &path);
+	if (res)
+		goto out;
+
+	inode = d_backing_inode(path.dentry);
+	mnt = path.mnt;
+
+	if ((mode & MAY_EXEC) && S_ISREG(inode->i_mode)) {
+		/*
+		 * MAY_EXEC on regular files is denied if the fs is mounted
+		 * with the "noexec" flag.
+		 */
+		res = -EACCES;
+		if (path_noexec(&path))
+			goto out_path_release;
+	}
+
+	res = inode_permission2(mnt, inode, mode | MAY_ACCESS);
+	/* SuS v2 requires we report a read only fs too */
+	if (res || !(mode & S_IWOTH) || special_file(inode->i_mode))
+		goto out_path_release;
+	/*
+	 * This is a rare case where using __mnt_is_readonly()
+	 * is OK without a mnt_want/drop_write() pair.  Since
+	 * no actual write to the fs is performed here, we do
+	 * not need to telegraph to that to anyone.
+	 *
+	 * By doing this, we accept that this access is
+	 * inherently racy and know that the fs may change
+	 * state before we even see this result.
+	 */
+	if (__mnt_is_readonly(path.mnt))
+		res = -EROFS;
+
+out_path_release:
+	path_put(&path);
+	if (retry_estale(res, lookup_flags)) {
+		lookup_flags |= LOOKUP_REVAL;
+		goto retry;
+	}
+out:
+	revert_creds(old_cred);
+	put_cred(override_cred);
+	return res;
+}
+
+SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)
+{
+	return do_faccessat(dfd, filename, mode);
+}
+
+SYSCALL_DEFINE2(access, const char __user *, filename, int, mode)
+{
+	return do_faccessat(AT_FDCWD, filename, mode);
+}
+
+int ksys_chdir(const char __user *filename)
+{
+	struct path path;
+	int error;
+	unsigned int lookup_flags = LOOKUP_FOLLOW | LOOKUP_DIRECTORY;
+retry:
+	error = user_path_at(AT_FDCWD, filename, lookup_flags, &path);
+	if (error)
+		goto out;
+
+	error = inode_permission2(path.mnt, path.dentry->d_inode, MAY_EXEC | MAY_CHDIR);
+	if (error)
+		goto dput_and_out;
+
+	set_fs_pwd(current->fs, &path);
+
+dput_and_out:
+	path_put(&path);
+	if (retry_estale(error, lookup_flags)) {
+		lookup_flags |= LOOKUP_REVAL;
+		goto retry;
+	}
+out:
+	return error;
+}
+
+SYSCALL_DEFINE1(chdir, const char __user *, filename)
+{
+	return ksys_chdir(filename);
+}
+
+SYSCALL_DEFINE1(fchdir, unsigned int, fd)
+{
+	struct fd f = fdget_raw(fd);
+	int error;
+
+	error = -EBADF;
+	if (!f.file)
+		goto out;
+
+	error = -ENOTDIR;
+	if (!d_can_lookup(f.file->f_path.dentry))
+		goto out_putf;
+
+	error = inode_permission2(f.file->f_path.mnt, file_inode(f.file),
+			MAY_EXEC | MAY_CHDIR);
+	if (!error)
+		set_fs_pwd(current->fs, &f.file->f_path);
+out_putf:
+	fdput(f);
+out:
+	return error;
+}
+
+int ksys_chroot(const char __user *filename)
+{
+	struct path path;
+	int error;
+	unsigned int lookup_flags = LOOKUP_FOLLOW | LOOKUP_DIRECTORY;
+retry:
+	error = user_path_at(AT_FDCWD, filename, lookup_flags, &path);
+	if (error)
+		goto out;
+
+	error = inode_permission2(path.mnt, path.dentry->d_inode, MAY_EXEC | MAY_CHDIR);
+	if (error)
+		goto dput_and_out;
+
+	error = -EPERM;
+	if (!ns_capable(current_user_ns(), CAP_SYS_CHROOT))
+		goto dput_and_out;
+	error = security_path_chroot(&path);
+	if (error)
+		goto dput_and_out;
+
+	set_fs_root(current->fs, &path);
+	error = 0;
+dput_and_out:
+	path_put(&path);
+	if (retry_estale(error, lookup_flags)) {
+		lookup_flags |= LOOKUP_REVAL;
+		goto retry;
+	}
+out:
+	return error;
+}
+
+SYSCALL_DEFINE1(chroot, const char __user *, filename)
+{
+	return ksys_chroot(filename);
+}
+
+/* rest of file is upstream */
