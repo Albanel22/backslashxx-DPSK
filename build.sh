@@ -386,8 +386,44 @@ grep "CONFIG_KSU_SUSFS" out/.config
 # ==================== 8. PATCH SIGNATURES ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
-# ==================== 9. PATCH TACTILE ====================
-printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
+# ==================== 9. PATCH TACTILE (conditionnel + fonctionnel) ====================
+echo "=== Patch Tactile (vérification préalable) ==="
+
+NEED_STUB=0
+if ! grep -rq "panel_register_notifier" techpack/display/ --include="*.c" --include="*.h" 2>/dev/null; then
+    NEED_STUB=1
+fi
+
+if [ "$NEED_STUB" -eq 1 ]; then
+    echo "⚠️  Aucune implémentation réelle trouvée, ajout du stub fonctionnel"
+    cat >> techpack/display/msm/msm_drv.c << 'TOUCH_PATCH_EOF'
+
+/* --- Début Patch Tactile (fonctionnel, pas un no-op) --- */
+#include <linux/notifier.h>
+#include <linux/module.h>
+
+static BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);
+
+int panel_register_notifier(struct notifier_block *nb) {
+    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);
+}
+EXPORT_SYMBOL(panel_register_notifier);
+
+int panel_unregister_notifier(struct notifier_block *nb) {
+    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);
+}
+EXPORT_SYMBOL(panel_unregister_notifier);
+
+/* Propage réellement l'état au lieu de ne rien faire */
+void touch_set_state(int state) {
+    blocking_notifier_call_chain(&motorola_panel_notifier_list, state, NULL);
+}
+EXPORT_SYMBOL(touch_set_state);
+/* --- Fin Patch Tactile --- */
+TOUCH_PATCH_EOF
+else
+    echo "✅ Implémentations réelles déjà présentes dans techpack/display — stub NON appliqué"
+fi
 
 # ==================== 10. COMPILATION ====================
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image 2>&1 | tee build.log
