@@ -395,27 +395,35 @@ if ! grep -rq "panel_register_notifier" techpack/display/ --include="*.c" --incl
 fi
 
 if [ "$NEED_STUB" -eq 1 ]; then
-    echo "⚠️  Aucune implémentation réelle trouvée, ajout du stub fonctionnel"
+    echo "⚠️ Aucune implémentation réelle trouvée, ajout du stub fonctionnel sécurisé"
     cat >> techpack/display/msm/msm_drv.c << 'TOUCH_PATCH_EOF'
 
-/* --- Début Patch Tactile (fonctionnel, pas un no-op) --- */
+/* --- Début Patch Tactile (Sécurisé contre les panics) --- */
 #include <linux/notifier.h>
 #include <linux/module.h>
+#include <linux/kernel.h>
 
 static BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);
 
 int panel_register_notifier(struct notifier_block *nb) {
+    if (!nb)
+        return -EINVAL;
     return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);
 }
 EXPORT_SYMBOL(panel_register_notifier);
 
 int panel_unregister_notifier(struct notifier_block *nb) {
+    if (!nb)
+        return -EINVAL;
     return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);
 }
 EXPORT_SYMBOL(panel_unregister_notifier);
 
-/* Propage réellement l'état au lieu de ne rien faire */
 void touch_set_state(int state) {
+    /* Protection contre l'exécution prématurée pendant l'initialisation */
+    if (system_state != SYSTEM_RUNNING)
+        return;
+        
     blocking_notifier_call_chain(&motorola_panel_notifier_list, state, NULL);
 }
 EXPORT_SYMBOL(touch_set_state);
