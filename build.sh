@@ -386,21 +386,20 @@ grep "CONFIG_KSU_SUSFS" out/.config
 # ==================== 8. PATCH SIGNATURES ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
-# ==================== 9. PATCH TACTILE ROBUSTE (sans panic) ====================
-echo "=== Patch Tactile (version robuste) ==="
+# ==================== PATCH TACTILE COMPATIBLE 4.19 ====================
+echo "=== Patch Tactile (version compatible 4.19) ==="
 
 TARGET_FILE="techpack/display/msm/msm_drv.c"
 
 if [ ! -f "$TARGET_FILE" ]; then
     echo "⚠️  $TARGET_FILE introuvable – patch tactile sauté"
 else
-    # Vérifier si le patch est déjà présent (via un marqueur)
     if ! grep -q "MOTOROLA_PANEL_NOTIFIER_DEFINED" "$TARGET_FILE"; then
-        echo "✅ Ajout du patch tactile robuste dans $TARGET_FILE"
+        echo "✅ Ajout du patch tactile (compatible 4.19)"
 
         cat >> "$TARGET_FILE" << 'TOUCH_PATCH_EOF'
 
-/* --- Début Patch Tactile (robuste) --- */
+/* --- Début Patch Tactile (compatible 4.19) --- */
 #ifndef MOTOROLA_PANEL_NOTIFIER_DEFINED
 #define MOTOROLA_PANEL_NOTIFIER_DEFINED
 
@@ -434,12 +433,7 @@ void touch_set_state(int state)
 {
     int ret;
 
-    /* Vérifier que la chaîne n'est pas vide (évite les appels inutiles) */
-    if (blocking_notifier_chain_is_empty(&motorola_panel_notifier_list)) {
-        pr_debug("touch_set_state: no notifiers registered, ignoring\n");
-        return;
-    }
-
+    /* Version compatible 4.19 : on appelle directement la chaîne */
     ret = blocking_notifier_call_chain(&motorola_panel_notifier_list, state, NULL);
     if (ret & NOTIFY_STOP_MASK) {
         pr_warn("touch_set_state: notifier chain stopped with code %d\n", ret);
@@ -448,10 +442,10 @@ void touch_set_state(int state)
 EXPORT_SYMBOL_GPL(touch_set_state);
 
 #endif /* MOTOROLA_PANEL_NOTIFIER_DEFINED */
-/* --- Fin Patch Tactile (robuste) --- */
+/* --- Fin Patch Tactile (compatible 4.19) --- */
 TOUCH_PATCH_EOF
 
-        echo "✅ Patch tactile robuste appliqué avec succès"
+        echo "✅ Patch tactile compatible 4.19 appliqué"
     else
         echo "⏩ Patch tactile déjà présent, ignoré"
     fi
