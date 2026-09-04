@@ -386,40 +386,75 @@ grep "CONFIG_KSU_SUSFS" out/.config
 # ==================== 8. PATCH SIGNATURES ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
-# ==================== 9. PATCH TACTILE (Ultra-sécurisé / No-op) ====================
-echo "=== Patch Tactile (version de secours sécurisée) ==="
+# ==================== 9. PATCH TACTILE ROBUSTE (sans panic) ====================
+echo "=== Patch Tactile (version robuste) ==="
 
-NEED_STUB=0
-if ! grep -rq "panel_register_notifier" techpack/display/ --include="*.c" --include="*.h" 2>/dev/null; then
-    NEED_STUB=1
-fi
+TARGET_FILE="techpack/display/msm/msm_drv.c"
 
-if [ "$NEED_STUB" -eq 1 ]; then
-    echo "⚠️ Ajout du stub neutre pour neutraliser le kernel panic"
-    cat >> techpack/display/msm/msm_drv.c << 'TOUCH_PATCH_EOF'
-
-/* --- Début Patch Tactile (No-op sécurisé) --- */
-#include <linux/module.h>
-#include <linux/kernel.h>
-
-int panel_register_notifier(struct notifier_block *nb) {
-    return 0;
-}
-EXPORT_SYMBOL(panel_register_notifier);
-
-int panel_unregister_notifier(struct notifier_block *nb) {
-    return 0;
-}
-EXPORT_SYMBOL(panel_unregister_notifier);
-
-void touch_set_state(int state) {
-    /* Ne fait rien pour éviter tout crash au démarrage */
-}
-EXPORT_SYMBOL(touch_set_state);
-/* --- Fin Patch Tactile --- */
-TOUCH_PATCH_EOF
+if [ ! -f "$TARGET_FILE" ]; then
+    echo "⚠️  $TARGET_FILE introuvable – patch tactile sauté"
 else
-    echo "✅ Implémentations réelles déjà présentes dans techpack/display — stub NON appliqué"
+    # Vérifier si le patch est déjà présent (via un marqueur)
+    if ! grep -q "MOTOROLA_PANEL_NOTIFIER_DEFINED" "$TARGET_FILE"; then
+        echo "✅ Ajout du patch tactile robuste dans $TARGET_FILE"
+
+        cat >> "$TARGET_FILE" << 'TOUCH_PATCH_EOF'
+
+/* --- Début Patch Tactile (robuste) --- */
+#ifndef MOTOROLA_PANEL_NOTIFIER_DEFINED
+#define MOTOROLA_PANEL_NOTIFIER_DEFINED
+
+#include <linux/notifier.h>
+#include <linux/module.h>
+#include <linux/printk.h>
+
+static BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);
+
+int panel_register_notifier(struct notifier_block *nb)
+{
+    if (!nb) {
+        pr_err("panel_register_notifier: nb is NULL\n");
+        return -EINVAL;
+    }
+    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);
+}
+EXPORT_SYMBOL_GPL(panel_register_notifier);
+
+int panel_unregister_notifier(struct notifier_block *nb)
+{
+    if (!nb) {
+        pr_err("panel_unregister_notifier: nb is NULL\n");
+        return -EINVAL;
+    }
+    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);
+}
+EXPORT_SYMBOL_GPL(panel_unregister_notifier);
+
+void touch_set_state(int state)
+{
+    int ret;
+
+    /* Vérifier que la chaîne n'est pas vide (évite les appels inutiles) */
+    if (blocking_notifier_chain_is_empty(&motorola_panel_notifier_list)) {
+        pr_debug("touch_set_state: no notifiers registered, ignoring\n");
+        return;
+    }
+
+    ret = blocking_notifier_call_chain(&motorola_panel_notifier_list, state, NULL);
+    if (ret & NOTIFY_STOP_MASK) {
+        pr_warn("touch_set_state: notifier chain stopped with code %d\n", ret);
+    }
+}
+EXPORT_SYMBOL_GPL(touch_set_state);
+
+#endif /* MOTOROLA_PANEL_NOTIFIER_DEFINED */
+/* --- Fin Patch Tactile (robuste) --- */
+TOUCH_PATCH_EOF
+
+        echo "✅ Patch tactile robuste appliqué avec succès"
+    else
+        echo "⏩ Patch tactile déjà présent, ignoré"
+    fi
 fi
 
 # ==================== 10. COMPILATION ====================
