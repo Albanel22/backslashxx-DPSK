@@ -369,7 +369,8 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
     --enable KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
     --enable KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
     --enable KSU_SUSFS_OPEN_REDIRECT \
-    --enable THREAD_INFO_IN_TASK
+    --enable THREAD_INFO_IN_TASK \
+    --enable PANEL_NOTIFICATIONS
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
@@ -388,53 +389,38 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 grep "CONFIG_KSU_SUSFS" out/.config
 
+echo "=== Vérification CONFIG_PANEL_NOTIFICATIONS ==="
+grep "CONFIG_PANEL_NOTIFICATIONS" out/.config || echo "⚠️  CONFIG_PANEL_NOTIFICATIONS absent du .config final !"
+
 # ==================== 8. PATCH SIGNATURES ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
-# ==================== 9. PATCH TACTILE ROBUSTE ====================
-echo "=== Application du patch tactile (version robuste) ==="
-if [ -f "techpack/display/msm/msm_drv.c" ]; then
-    # Vérifier si le patch est déjà présent (via un marqueur)
-    if ! grep -q "MOTOROLA_PANEL_NOTIFIER_DEFINED" techpack/display/msm/msm_drv.c; then
-        printf "\n/* --- Début Patch Tactile (robuste) --- */\n" >> techpack/display/msm/msm_drv.c
-        printf "#ifndef MOTOROLA_PANEL_NOTIFIER_DEFINED\n" >> techpack/display/msm/msm_drv.c
-        printf "#define MOTOROLA_PANEL_NOTIFIER_DEFINED\n\n" >> techpack/display/msm/msm_drv.c
-        printf "#include <linux/notifier.h>\n" >> techpack/display/msm/msm_drv.c
-        printf "#include <linux/module.h>\n" >> techpack/display/msm/msm_drv.c
-        printf "#include <linux/printk.h>\n\n" >> techpack/display/msm/msm_drv.c
-        printf "static BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\n\n" >> techpack/display/msm/msm_drv.c
-        printf "int panel_register_notifier(struct notifier_block *nb)\n" >> techpack/display/msm/msm_drv.c
-        printf "{\n" >> techpack/display/msm/msm_drv.c
-        printf "    if (!nb) {\n" >> techpack/display/msm/msm_drv.c
-        printf "        pr_err(\"panel_register_notifier: nb is NULL\\n\");\n" >> techpack/display/msm/msm_drv.c
-        printf "        return -EINVAL;\n" >> techpack/display/msm/msm_drv.c
-        printf "    }\n" >> techpack/display/msm/msm_drv.c
-        printf "    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n" >> techpack/display/msm/msm_drv.c
-        printf "}\n" >> techpack/display/msm/msm_drv.c
-        printf "EXPORT_SYMBOL_GPL(panel_register_notifier);\n\n" >> techpack/display/msm/msm_drv.c
-        printf "int panel_unregister_notifier(struct notifier_block *nb)\n" >> techpack/display/msm/msm_drv.c
-        printf "{\n" >> techpack/display/msm/msm_drv.c
-        printf "    if (!nb) {\n" >> techpack/display/msm/msm_drv.c
-        printf "        pr_err(\"panel_unregister_notifier: nb is NULL\\n\");\n" >> techpack/display/msm/msm_drv.c
-        printf "        return -EINVAL;\n" >> techpack/display/msm/msm_drv.c
-        printf "    }\n" >> techpack/display/msm/msm_drv.c
-        printf "    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n" >> techpack/display/msm/msm_drv.c
-        printf "}\n" >> techpack/display/msm/msm_drv.c
-        printf "EXPORT_SYMBOL_GPL(panel_unregister_notifier);\n\n" >> techpack/display/msm/msm_drv.c
-        printf "void touch_set_state(int state)\n" >> techpack/display/msm/msm_drv.c
-        printf "{\n" >> techpack/display/msm/msm_drv.c
-        printf "    pr_debug(\"touch_set_state called with state = %%d\\n\", state);\n" >> techpack/display/msm/msm_drv.c
-        printf "    /* Fonction de réservation pour l'écran tactile */\n" >> techpack/display/msm/msm_drv.c
-        printf "}\n" >> techpack/display/msm/msm_drv.c
-        printf "EXPORT_SYMBOL_GPL(touch_set_state);\n\n" >> techpack/display/msm/msm_drv.c
-        printf "#endif /* MOTOROLA_PANEL_NOTIFIER_DEFINED */\n" >> techpack/display/msm/msm_drv.c
-        printf "/* --- Fin Patch Tactile (robuste) --- */\n" >> techpack/display/msm/msm_drv.c
-        echo "✅ Patch tactile robuste appliqué"
-    else
-        echo "⏩ Patch tactile déjà présent, ignoré"
-    fi
+# ==================== 9. (SUPPRIMÉ) ====================
+# L'ancien "PATCH TACTILE ROBUSTE" qui injectait des stubs
+# panel_register_notifier / panel_unregister_notifier / touch_set_state
+# dans techpack/display/msm/msm_drv.c a été retiré.
+#
+# La vraie implémentation native existe déjà dans le repo LineageOS
+# (drivers/video/panel_notifier.c), elle était juste désactivée car
+# gated par CONFIG_PANEL_NOTIFICATIONS (voir drivers/video/Makefile :
+# obj-$(CONFIG_PANEL_NOTIFICATIONS) += panel_notifier.o).
+# Ce symbole est maintenant activé dans la section 7 ci-dessus.
+#
+# L'ancien stub (même la version "robuste" avec les checks NULL)
+# gardait une signature incorrecte pour touch_set_state
+# (void touch_set_state(int state) au lieu du vrai prototype
+# int touch_set_state(int state, int panel_idx) déclaré dans
+# include/linux/panel_notifier.h), ce qui provoquait un kernel panic
+# lorsqu'un appelant réel (framework touchscreen_mmi) l'invoquait
+# avec la mauvaise signature — les checks NULL ajoutés ne
+# corrigeaient pas ce problème de fond.
+
+echo "=== Vérification que le stub n'est plus injecté dans msm_drv.c ==="
+if grep -q "MOTOROLA_PANEL_NOTIFIER_DEFINED\|Début Patch Tactile" techpack/display/msm/msm_drv.c 2>/dev/null; then
+    echo "❌ Le stub semble encore présent dans msm_drv.c — vérifier le script"
+    exit 1
 else
-    echo "⚠️ Fichier techpack/display/msm/msm_drv.c introuvable, patch tactile sauté"
+    echo "✅ Aucun stub tactile injecté, panel_notifier natif utilisé"
 fi
 
 # ==================== 10. COMPILATION ====================
@@ -447,6 +433,10 @@ if [ ! -f "out/arch/arm64/boot/Image" ]; then
 fi
 
 echo "✅ Compilation réussie"
+
+echo "=== Vérification panel_notifier.o dans le build ==="
+grep -i "panel_notifier" build.log || echo "⚠️  panel_notifier n'apparaît pas dans build.log (peut être normal si déjà en cache ccache)"
+find out -name "panel_notifier.o" 2>/dev/null && echo "✅ panel_notifier.o bien présent dans les objets compilés" || echo "⚠️  panel_notifier.o introuvable dans out/"
 
 # ==================== 11. COMPILATION KSUD (MÊME COMMIT) ====================
 cd "$GITHUB_WORKSPACE"
