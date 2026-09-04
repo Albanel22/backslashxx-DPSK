@@ -386,8 +386,8 @@ grep "CONFIG_KSU_SUSFS" out/.config
 # ==================== 8. PATCH SIGNATURES ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
-# ==================== 9. PATCH TACTILE (conditionnel + fonctionnel, atomic-safe) ====================
-echo "=== Patch Tactile (vérification préalable) ==="
+# ==================== 9. PATCH TACTILE (Ultra-sécurisé / No-op) ====================
+echo "=== Patch Tactile (version de secours sécurisée) ==="
 
 NEED_STUB=0
 if ! grep -rq "panel_register_notifier" techpack/display/ --include="*.c" --include="*.h" 2>/dev/null; then
@@ -395,28 +395,25 @@ if ! grep -rq "panel_register_notifier" techpack/display/ --include="*.c" --incl
 fi
 
 if [ "$NEED_STUB" -eq 1 ]; then
-    echo "⚠️  Aucune implémentation réelle trouvée, ajout du stub fonctionnel (atomic-safe)"
+    echo "⚠️ Ajout du stub neutre pour neutraliser le kernel panic"
     cat >> techpack/display/msm/msm_drv.c << 'TOUCH_PATCH_EOF'
 
-/* --- Début Patch Tactile (fonctionnel, atomic-safe) --- */
-#include <linux/notifier.h>
+/* --- Début Patch Tactile (No-op sécurisé) --- */
 #include <linux/module.h>
-
-static ATOMIC_NOTIFIER_HEAD(motorola_panel_notifier_list);
+#include <linux/kernel.h>
 
 int panel_register_notifier(struct notifier_block *nb) {
-    return atomic_notifier_chain_register(&motorola_panel_notifier_list, nb);
+    return 0;
 }
 EXPORT_SYMBOL(panel_register_notifier);
 
 int panel_unregister_notifier(struct notifier_block *nb) {
-    return atomic_notifier_chain_unregister(&motorola_panel_notifier_list, nb);
+    return 0;
 }
 EXPORT_SYMBOL(panel_unregister_notifier);
 
-/* atomic_notifier_call_chain ne dort jamais : safe en contexte IRQ/atomique */
 void touch_set_state(int state) {
-    atomic_notifier_call_chain(&motorola_panel_notifier_list, state, NULL);
+    /* Ne fait rien pour éviter tout crash au démarrage */
 }
 EXPORT_SYMBOL(touch_set_state);
 /* --- Fin Patch Tactile --- */
