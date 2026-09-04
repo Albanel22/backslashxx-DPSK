@@ -290,7 +290,7 @@ echo "Config utilisée: $CONFIG_NAME"
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 $CONFIG_NAME
 
-# Activation KernelSU, SuSFS ET des pilotes tactiles Motorola FocalTech (v1 / v2) en dur (=y)
+# Activation KernelSU, SuSFS ET des options tactiles réelles du kernel kiev
 ./scripts/config --file out/.config \
     --enable KSU \
     --enable KSU_MANUAL_HOOK \
@@ -311,10 +311,11 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
     --enable INPUT \
     --enable INPUT_EVDEV \
     --enable INPUT_TOUCHSCREEN \
-    --enable INPUT_FOCALTECH_0FLASH_MMI \
-    --enable INPUT_FOCALTECH_PANEL_NOTIFICATIONS \
-    --enable INPUT_FOCALTECH_0FLASH_MMI_ENABLE_DOUBLE_TAP \
-    --enable TOUCHSCREEN_FTS
+    --enable INPUT_TOUCHSCREEN_MMI \
+    --enable PANEL_NOTIFICATIONS \
+    --enable TOUCHSCREEN_FOCALTECH \
+    --enable TOUCHSCREEN_FOCALTECH_0FLASH \
+    --enable TOUCHSCREEN_FOCALTECH_0FLASH_MMI
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
