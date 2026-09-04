@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD WINNER : KernelSU v3.2.5-76+ (0b138d6a) + SuSFS + fix UAPI + sys_reboot ==="
+echo "=== BUILD DIAGNOSTIC : KernelSU v3.2.5-76+ (0b138d6a) + SuSFS + FocalTech Fix ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -16,21 +16,16 @@ sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf
 
 cd "$GITHUB_WORKSPACE"
 
-# ==================== 1. CLONAGE DU NOYAU ====================
-echo "=== Clonage du kernel Motorola sm8250 ==="
-git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git -b lineage-23.2 kernel_sources
+# ==================== 1. CLONAGE DU NOYAU (figé au 9 août 2026) ====================
+echo "=== Clonage du kernel Motorola sm8250 (historique complet) ==="
+git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git \
+    -b lineage-23.2 kernel_sources
 
 cd kernel_sources
 
-# ==================== CORRECTIF DISPLAY MOTOROLA ====================
-echo "=== Application du patch d'affichage Motorola ==="
-FILE="techpack/display/msm/dsi/dsi_display_mot_ext.c"
-if [ -f "$FILE" ]; then
-    echo "Correction du mot-clé duplicate static dans $FILE..."
-    sed -i 's/static static/static/g' "$FILE"
-else
-    echo "Fichier $FILE introuvable, étape ignorée."
-fi
+OLD_COMMIT=$(git rev-list -n 1 --before="2026-08-10 00:00:00" lineage-23.2)
+echo "Commit correspondant au 9 août 2026 : $OLD_COMMIT"
+git checkout "$OLD_COMMIT"
 
 # ==================== 2. CLONE KERNELSU (COMMIT EXACT) ====================
 echo "=== Intégration KernelSU (0b138d6a) ==="
@@ -78,8 +73,8 @@ fi
 
 grep -n "DKSU_VERSION" drivers/kernelsu/Makefile
 
-# ==================== 2d. FIX VERSION/UAPI DANS LES BONS FICHIERS ====================
-echo "=== Fix version et UAPI dans /tmp/KernelSU ==="
+# ==================== 2d. FIX VERSION/UAPI ====================
+echo "=== Fix version et UAPI ==="
 
 if [ -f "/tmp/KernelSU/uapi/supercall.h" ]; then
     sed -i 's/static const __u32 KERNEL_SU_UAPI_VERSION = [0-9]*;/static const __u32 KERNEL_SU_UAPI_VERSION = 2;/' /tmp/KernelSU/uapi/supercall.h
@@ -88,7 +83,7 @@ if [ -f "/tmp/KernelSU/uapi/supercall.h" ]; then
 fi
 
 if [ -f "/tmp/KernelSU/uapi/ksu.h" ]; then
-    sed -i 's/#define KERNEL_SU_VERSION KSU_VERSION/#define KERNEL_SU_VERSION 32601/' /tmp/KernelSU/uapi/ksu.h
+    sed -i 's/#define KERNEL_SU_VERSION KERNEL_SU_VERSION/#define KERNEL_SU_VERSION 32601/' /tmp/KernelSU/uapi/ksu.h
     echo "[+] KERNEL_SU_VERSION forcé à 32601"
 fi
 
@@ -101,7 +96,24 @@ if [ -f "$DISPATCH_FILE" ]; then
     echo "[+] Corrections dispatch.c appliquées"
 fi
 
-grep -n "uapi_version\|ksuver_override\|cmd = { .version" "$DISPATCH_FILE" 2>/dev/null || true
+# ==================== 2e. AJOUT DU LOG DE DEBUG ====================
+echo "=== Ajout du pr_info de debug dans do_get_info ==="
+if [ -f "$DISPATCH_FILE" ]; then
+    python3 - << 'PYEOF'
+DISPATCH_FILE="/tmp/KernelSU/kernel/supercall/dispatch.c"
+with open(DISPATCH_FILE, "r") as f:
+    content = f.read()
+
+old = "\tif (copy_to_user(arg, &cmd, sizeof(cmd))) {"
+new = "\tpr_info(\"KSU DEBUG: version=%u uapi_version=%u\\n\", cmd.version, cmd.uapi_version);\n" + old
+
+content = content.replace(old, new, 1)
+with open(DISPATCH_FILE, "w") as f:
+    f.write(content)
+print("[+] pr_info ajouté")
+PYEOF
+    grep -n "KSU DEBUG" "$DISPATCH_FILE"
+fi
 
 # ==================== 3. HOOKS MANUELS KERNELSU ====================
 echo "=== Hooks manuels KernelSU ==="
@@ -126,14 +138,12 @@ hook_insert() {
 
 HOOKS_FAILED=0
 
-# fs/exec.c
 hook_insert "fs/exec.c" \
     '(?s)static int do_execveat_common\(.*?int flags\)\s*\n\{' \
     '#ifdef CONFIG_KSU\nextern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,\n\t\t\t\t\t void *envp, int *flags);\n#endif\n' \
     'ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);' \
     || HOOKS_FAILED=1
 
-# fs/open.c
 if grep -Pzo 'long do_faccessat\(int dfd, const char __user \*filename, int mode\)\s*\n\{' fs/open.c > /dev/null 2>&1; then
     hook_insert "fs/open.c" \
         'long do_faccessat\(int dfd, const char __user \*filename, int mode\)\s*\n\{' \
@@ -151,7 +161,6 @@ else
     HOOKS_FAILED=1
 fi
 
-# fs/stat.c
 if grep -Pzo 'int vfs_statx\(int dfd, const char __user \*filename, int flags,' fs/stat.c > /dev/null 2>&1; then
     hook_insert "fs/stat.c" \
         'int vfs_statx\(int dfd, const char __user \*filename, int flags,[^{]*\{' \
@@ -169,21 +178,9 @@ else
     HOOKS_FAILED=1
 fi
 
-# Hook sys_reboot
-if ! grep -q "ksu_handle_sys_reboot" kernel/reboot.c; then
-  sed -i '/SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,/i\
-#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD)\
-extern int ksu_handle_sys_reboot(int, int, unsigned int, void __user **);\
-#endif' kernel/reboot.c
-
-  sed -i '/int ret = 0;/a\
-#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD)\
-\tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\
-#endif' kernel/reboot.c
-
-  echo "[+] Hook sys_reboot OK (après déclarations)"
-else
-  echo "[+] Hook sys_reboot déjà présent"
+if [ "$HOOKS_FAILED" -eq 1 ]; then
+    echo "❌ Échec des hooks KernelSU"
+    exit 1
 fi
 
 echo "✅ Hooks KernelSU en place"
@@ -192,97 +189,49 @@ echo "✅ Hooks KernelSU en place"
 echo "=== Téléchargement du VRAI SuSFS (JackA1ltman) ==="
 
 git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git /tmp/jack_repo
-
 SUSFS_PATCH="/tmp/jack_repo/Patches/Patch/susfs_patch_to_4.19.patch"
 
 if [ ! -f "$SUSFS_PATCH" ]; then
     echo "❌ Patch SuSFS 4.19 non trouvé !"
-    find /tmp/jack_repo/Patches -name "*.patch" | sort
     exit 1
 fi
 
-echo "✅ Patch SuSFS trouvé : $(wc -l < $SUSFS_PATCH) lignes"
+echo "✅ Patch SuSFS trouvé"
 
 # ==================== 5. APPLICATION DU PATCH SUSFS ====================
-echo "=== Application du patch SuSFS ==="
-
 patch -p1 < "$SUSFS_PATCH" 2>&1 | tee /tmp/susfs_patch.log || true
-
-if [ -f "fs/susfs.c" ]; then
-    echo "✅ fs/susfs.c créé ($(wc -l < fs/susfs.c) lignes)"
-else
-    echo "❌ fs/susfs.c non créé !"
-    exit 1
-fi
-
-if [ -f "include/linux/susfs.h" ]; then
-    echo "✅ include/linux/susfs.h créé"
-fi
-
-if [ -f "include/linux/susfs_def.h" ]; then
-    echo "✅ include/linux/susfs_def.h créé"
-fi
 
 find . -name "*.rej" -type f -delete 2>/dev/null || true
 find . -name "*.orig" -type f -delete 2>/dev/null || true
 
-# ==================== 5b. CORRECTION FS/MAKEFILE ====================
 if [ -f "fs/Makefile" ]; then
-    if ! grep -q "susfs.o" fs/Makefile; then
-        echo "obj-\$(CONFIG_KSU_SUSFS) += susfs.o" >> fs/Makefile
-    fi
-    if [ -f "fs/sus_su.c" ]; then
-        if ! grep -q "sus_su.o" fs/Makefile; then
-            echo "obj-\$(CONFIG_KSU_SUSFS) += sus_su.o" >> fs/Makefile
-        fi
-    fi
+    grep -q "susfs.o" fs/Makefile || echo "obj-\$(CONFIG_KSU_SUSFS) += susfs.o" >> fs/Makefile
+    [ -f "fs/sus_su.c" ] && (grep -q "sus_su.o" fs/Makefile || echo "obj-\$(CONFIG_KSU_SUSFS) += sus_su.o" >> fs/Makefile)
 fi
 
-# ==================== 5c. CORRECTION NAMESPACE.C ====================
 python3 - << 'PYEOF'
 import re
-
-with open('fs/namespace.c', 'r') as f:
-    content = f.read()
-
+with open('fs/namespace.c', 'r') as f: content = f.read()
 content = re.sub(r'^\s*n(?=#ifdef|#endif|#include|#define|extern)', '', content, flags=re.MULTILINE)
-
 if '#include <linux/susfs_def.h>' not in content:
-    content = content.replace(
-        '#include <linux/sched/task.h>',
-        '#include <linux/sched/task.h>\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n#include <linux/susfs_def.h>\n#endif'
-    )
-
+    content = content.replace('#include <linux/sched/task.h>', '#include <linux/sched/task.h>\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n#include <linux/susfs_def.h>\n#endif')
 if 'extern bool susfs_is_current_ksu_domain' not in content:
-    content = content.replace(
-        '#include "pnode.h"',
-        '#include "pnode.h"\n\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nextern bool susfs_is_current_ksu_domain(void);\nextern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n#define CL_COPY_MNT_NS BIT(25)\n#endif'
-    )
-
-with open('fs/namespace.c', 'w') as f:
-    f.write(content)
+    content = content.replace('#include "pnode.h"', '#include "pnode.h"\n\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nextern bool susfs_is_current_ksu_domain(void);\nextern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n#define CL_COPY_MNT_NS BIT(25)\n#endif')
+with open('fs/namespace.c', 'w') as f: f.write(content)
 PYEOF
 
-# ==================== 5d. CORRECTION TASK_MMU.C ====================
-if [ -f "fs/proc/task_mmu.c" ]; then
-    sed -i 's/struct vm_area_struct \*vma;/struct vm_area_struct *vma __maybe_unused;/g' fs/proc/task_mmu.c
-fi
+[ -f "fs/proc/task_mmu.c" ] && sed -i 's/struct vm_area_struct \*vma;/struct vm_area_struct *vma __maybe_unused;/g' fs/proc/task_mmu.c
 
-# ==================== 5e. AJOUT DES SYMBOLES MANQUANTS ====================
 if ! grep -q "susfs_ksu_sid = 0" fs/susfs.c; then
     cat >> fs/susfs.c << 'SUSFS_EOF'
-
 #ifdef CONFIG_KSU_SUSFS
-bool susfs_is_current_ksu_domain(void)
-{
+bool susfs_is_current_ksu_domain(void) {
     const struct cred *cred = current_cred();
     return (cred->uid.val == 0 || cred->uid.val == 2000);
 }
 EXPORT_SYMBOL(susfs_is_current_ksu_domain);
-
 u32 susfs_ksu_sid = 0;
 EXPORT_SYMBOL(susfs_ksu_sid);
-
 u32 susfs_priv_app_sid = 0;
 EXPORT_SYMBOL(susfs_priv_app_sid);
 #endif
@@ -290,77 +239,58 @@ SUSFS_EOF
 fi
 
 # ==================== 6. KCONFIG SUSFS ====================
-if [ -f "drivers/kernelsu/Kconfig" ]; then
-    if ! grep -q "KSU_SUSFS" drivers/kernelsu/Kconfig; then
-        cat >> drivers/kernelsu/Kconfig << 'KCONFIG_EOF'
-
+if [ -f "drivers/kernelsu/Kconfig" ] && ! grep -q "KSU_SUSFS" drivers/kernelsu/Kconfig; then
+    cat >> drivers/kernelsu/Kconfig << 'KCONFIG_EOF'
 menuconfig KSU_SUSFS
 	bool "KernelSU SUSFS support"
 	depends on KSU
 	default y
-
 if KSU_SUSFS
-
 config KSU_SUSFS_SUS_PATH
 	bool "sus_path"
 	default y
-
 config KSU_SUSFS_SUS_MOUNT
 	bool "sus_mount"
 	default y
-
 config KSU_SUSFS_SUS_KSTAT
 	bool "sus_kstat"
 	default y
-
 config KSU_SUSFS_SUS_MAP
 	bool "sus_map"
 	default y
-
 config KSU_SUSFS_SPOOF_UNAME
 	bool "spoof_uname"
 	default y
-
 config KSU_SUSFS_ENABLE_LOG
 	bool "enable_log"
 	default y
-
 config KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
 	bool "hide_ksu_susfs_symbols"
 	default y
-
 config KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
 	bool "spoof_cmdline_or_bootconfig"
 	default y
-
 config KSU_SUSFS_OPEN_REDIRECT
 	bool "open_redirect"
 	default y
-
 endif
 KCONFIG_EOF
-    fi
 fi
 
-# ==================== 7. CONFIGURATION (CORRIGÉ AVEC VENDOR/LITO-PERF_DEFCONFIG ET INPUT) ====================
+# ==================== 7. CONFIGURATION & PATCH TACTILE ====================
 export ARCH=arm64
 export SUBARCH=arm64
 export CROSS_COMPILE=aarch64-linux-gnu-
 export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
 mkdir -p out
-
-# Utilisation directe du bon defconfig fournisseur pour "kiev" (sm8250)
-CONFIG_NAME="vendor/lito-perf_defconfig"
-echo "Config utilisée explicitement : $CONFIG_NAME"
-
-if [ ! -f "arch/arm64/configs/$CONFIG_NAME" ]; then
-    echo "❌ Erreur : Le defconfig $CONFIG_NAME est introuvable !"
-    exit 1
-fi
+CONFIG=$(find arch/arm64/configs/ -name "*kiev*" -o -name "*lito*" -o -name "*sm8250*" | head -1)
+CONFIG_NAME=${CONFIG#arch/arm64/configs/}
+echo "Config utilisée: $CONFIG_NAME"
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 $CONFIG_NAME
 
+# Activation KernelSU, SuSFS ET des pilotes tactiles Motorola FocalTech (v1 / v2) en dur (=y)
 ./scripts/config --file out/.config \
     --enable KSU \
     --enable KSU_MANUAL_HOOK \
@@ -381,30 +311,17 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
     --enable INPUT \
     --enable INPUT_EVDEV \
     --enable INPUT_TOUCHSCREEN \
-    --enable TOUCHSCREEN_FOCALTECH
+    --enable INPUT_FOCALTECH_0FLASH_MMI \
+    --enable INPUT_FOCALTECH_PANEL_NOTIFICATIONS \
+    --enable INPUT_FOCALTECH_0FLASH_MMI_ENABLE_DOUBLE_TAP \
+    --enable TOUCHSCREEN_FTS
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-{
-    echo "CONFIG_KSU_SUSFS=y"
-    echo "CONFIG_KSU_SUSFS_SUS_PATH=y"
-    echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y"
-    echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y"
-    echo "CONFIG_KSU_SUSFS_SUS_MAP=y"
-    echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y"
-    echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y"
-    echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y"
-    echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y"
-    echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y"
-} >> out/.config
-
-grep "CONFIG_KSU_SUSFS" out/.config
-
-# ==================== 8. PATCH SIGNATURES ====================
+# ==================== 8. PATCH SIGNATURES & DISPLAY ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
-# ==================== 9. PATCH TACTILE SÉCURISÉ ====================
-printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\n#include <linux/kernel.h>\n\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\n\nint panel_register_notifier(struct notifier_block *nb) {\n    if (!nb)\n        return -EINVAL;\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\n\nint panel_unregister_notifier(struct notifier_block *nb) {\n    if (!nb)\n        return -EINVAL;\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\n\nvoid touch_set_state(int state) {\n    if (system_state != SYSTEM_RUNNING)\n        return;\n    blocking_notifier_call_chain(&motorola_panel_notifier_list, state, NULL);\n}\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
+printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
 
 # ==================== 10. COMPILATION ====================
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image 2>&1 | tee build.log
@@ -417,7 +334,7 @@ fi
 
 echo "✅ Compilation réussie"
 
-# ==================== 11. COMPILATION KSUD (MÊME COMMIT) ====================
+# ==================== 11. COMPILATION KSUD ====================
 cd "$GITHUB_WORKSPACE"
 
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -468,19 +385,7 @@ echo "✅ ksud compilé"
 # ==================== 12. REPACK ====================
 cd "$GITHUB_WORKSPACE"
 
-curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/boot.img" 2>/dev/null || {
-    mkbootimg \
-      --kernel kernel_sources/out/arch/arm64/boot/Image \
-      --ramdisk /dev/null \
-      --output final_boot.img \
-      --header_version 2 \
-      --pagesize 4096 \
-      --base 0x00000000 \
-      --kernel_offset 0x00008000 \
-      --ramdisk_offset 0x01000000 \
-      --tags_offset 0x00000100 \
-      --cmdline "androidboot.hardware=kiev androidboot.selinux=permissive"
-}
+curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/boot.img" 2>/dev/null || true
 curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/dtbo.img" 2>/dev/null || true
 
 if [ -f "boot-stock.img" ]; then
@@ -523,5 +428,5 @@ cp dtbo-stock.img output/dtbo.img 2>/dev/null || true
 cp kernel_sources/build.log output/
 cp "$GITHUB_WORKSPACE/ksud" output/ksud 2>/dev/null || true
 
-echo "=== BUILD TERMINÉ ==="
+echo "=== BUILD TERMINÉ AVEC SUCCÈS ==="
 ls -lh output/
