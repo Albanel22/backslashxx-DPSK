@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD DIAGNOSTIC : KernelSU v3.2.5-76+ (0b138d6a) + SuSFS + debug version ==="
+echo "=== BUILD DIAGNOSTIC : KernelSU v3.2.5-76+ (0b138d6a) + SuSFS (pinné 9 août) + debug version ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -16,16 +16,12 @@ sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf
 
 cd "$GITHUB_WORKSPACE"
 
-# ==================== 1. CLONAGE DU NOYAU (figé au 9 août 2026) ====================
-echo "=== Clonage du kernel Motorola sm8250 (historique complet) ==="
+# ==================== 1. CLONAGE DU NOYAU ====================
+echo "=== Clonage du kernel Motorola sm8250 ==="
 git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git \
-    -b lineage-23.2 kernel_sources
+    -b lineage-23.2 --depth=1 kernel_sources
 
 cd kernel_sources
-
-OLD_COMMIT=$(git rev-list -n 1 --before="2026-08-10 00:00:00" lineage-23.2)
-echo "Commit correspondant au 9 août 2026 : $OLD_COMMIT"
-git checkout "$OLD_COMMIT"
 
 # ==================== 2. CLONE KERNELSU (COMMIT EXACT) ====================
 echo "=== Intégration KernelSU (0b138d6a) ==="
@@ -190,10 +186,17 @@ fi
 
 echo "✅ Hooks KernelSU en place"
 
-# ==================== 4. TÉLÉCHARGEMENT DU VRAI SUSFS ====================
-echo "=== Téléchargement du VRAI SuSFS (JackA1ltman) ==="
+# ==================== 4. TÉLÉCHARGEMENT DU VRAI SUSFS (pinné au 9 août 2026) ====================
+echo "=== Téléchargement du SuSFS (JackA1ltman, commit pinné) ==="
 
-git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git /tmp/jack_repo
+JACK_COMMIT="6eae2b587750336507096469fee74a2173e14bf6"
+
+git clone https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git /tmp/jack_repo
+cd /tmp/jack_repo
+git checkout "$JACK_COMMIT"
+cd "$GITHUB_WORKSPACE/kernel_sources"
+
+echo "✅ Repo SuSFS pinné au commit $JACK_COMMIT (9 août 2026)"
 
 SUSFS_PATCH="/tmp/jack_repo/Patches/Patch/susfs_patch_to_4.19.patch"
 
