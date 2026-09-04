@@ -386,69 +386,22 @@ grep "CONFIG_KSU_SUSFS" out/.config
 # ==================== 8. PATCH SIGNATURES ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
-# ==================== PATCH TACTILE COMPATIBLE 4.19 ====================
-echo "=== Patch Tactile (version compatible 4.19) ==="
+# ==================== 9. PATCH TACTILE ====================
+echo "=== Patch Tactile ==="
 
-TARGET_FILE="techpack/display/msm/msm_drv.c"
-
-if [ ! -f "$TARGET_FILE" ]; then
-    echo "⚠️  $TARGET_FILE introuvable – patch tactile sauté"
+# On active proprement l'option si elle n'est pas déjà là
+if ! grep -q "CONFIG_PANEL_NOTIFICATIONS=y" .config 2>/dev/null; then
+    echo "⚠️  CONFIG_PANEL_NOTIFICATIONS n'est pas activé → activation..."
+    echo "CONFIG_PANEL_NOTIFICATIONS=y" >> .config
 else
-    if ! grep -q "MOTOROLA_PANEL_NOTIFIER_DEFINED" "$TARGET_FILE"; then
-        echo "✅ Ajout du patch tactile (compatible 4.19)"
+    echo "✅ CONFIG_PANEL_NOTIFICATIONS déjà activé"
+fi
 
-        cat >> "$TARGET_FILE" << 'TOUCH_PATCH_EOF'
-
-/* --- Début Patch Tactile (compatible 4.19) --- */
-#ifndef MOTOROLA_PANEL_NOTIFIER_DEFINED
-#define MOTOROLA_PANEL_NOTIFIER_DEFINED
-
-#include <linux/notifier.h>
-#include <linux/module.h>
-#include <linux/printk.h>
-
-static BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);
-
-int panel_register_notifier(struct notifier_block *nb)
-{
-    if (!nb) {
-        pr_err("panel_register_notifier: nb is NULL\n");
-        return -EINVAL;
-    }
-    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);
-}
-EXPORT_SYMBOL_GPL(panel_register_notifier);
-
-int panel_unregister_notifier(struct notifier_block *nb)
-{
-    if (!nb) {
-        pr_err("panel_unregister_notifier: nb is NULL\n");
-        return -EINVAL;
-    }
-    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);
-}
-EXPORT_SYMBOL_GPL(panel_unregister_notifier);
-
-void touch_set_state(int state)
-{
-    int ret;
-
-    /* Version compatible 4.19 : on appelle directement la chaîne */
-    ret = blocking_notifier_call_chain(&motorola_panel_notifier_list, state, NULL);
-    if (ret & NOTIFY_STOP_MASK) {
-        pr_warn("touch_set_state: notifier chain stopped with code %d\n", ret);
-    }
-}
-EXPORT_SYMBOL_GPL(touch_set_state);
-
-#endif /* MOTOROLA_PANEL_NOTIFIER_DEFINED */
-/* --- Fin Patch Tactile (compatible 4.19) --- */
-TOUCH_PATCH_EOF
-
-        echo "✅ Patch tactile compatible 4.19 appliqué"
-    else
-        echo "⏩ Patch tactile déjà présent, ignoré"
-    fi
+# Vérification que le fichier source est bien présent
+if [ -f drivers/video/panel_notifier.c ]; then
+    echo "✅ drivers/video/panel_notifier.c présent"
+else
+    echo "❌ drivers/video/panel_notifier.c manquant !"
 fi
 
 # ==================== 10. COMPILATION ====================
