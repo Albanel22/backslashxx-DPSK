@@ -391,66 +391,50 @@ grep "CONFIG_KSU_SUSFS" out/.config
 # ==================== 8. PATCH SIGNATURES ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
-# ==================== 9. PATCH TACTILE (conditionnel + fonctionnel) ====================
-echo "=== Patch Tactile (vérification préalable) ==="
-
-NEED_STUB=0
-MSM_DRV="techpack/display/msm/msm_drv.c"
-
-# Vérifie si le fichier existe
-if [ ! -f "$MSM_DRV" ]; then
-    echo "❌ Erreur : $MSM_DRV introuvable"
-    exit 1
-fi
-
-# Vérifie si les fonctions existent déjà (plus complet)
-if ! grep -rq "panel_register_notifier" techpack/display/ --include="*.c" --include="*.h" 2>/dev/null; then
-    NEED_STUB=1
-fi
-
-# Empêche d'appliquer plusieurs fois le patch
-if grep -q "motorola_panel_notifier_list" "$MSM_DRV" 2>/dev/null; then
-    echo "✅ Patch tactile déjà présent — rien à faire"
-    NEED_STUB=0
-fi
-
-if [ "$NEED_STUB" -eq 1 ]; then
-    echo "⚠️  Aucune implémentation réelle trouvée, ajout du stub fonctionnel"
-
-    # On ajoute les includes en haut du fichier (meilleure pratique)
-    if ! grep -q "#include <linux/notifier.h>" "$MSM_DRV"; then
-        sed -i '1i#include <linux/notifier.h>\n#include <linux/module.h>' "$MSM_DRV"
+# ==================== 9. PATCH TACTILE ROBUSTE ====================
+echo "=== Application du patch tactile (version robuste) ==="
+if [ -f "techpack/display/msm/msm_drv.c" ]; then
+    # Vérifier si le patch est déjà présent (via un marqueur)
+    if ! grep -q "MOTOROLA_PANEL_NOTIFIER_DEFINED" techpack/display/msm/msm_drv.c; then
+        printf "\n/* --- Début Patch Tactile (robuste) --- */\n" >> techpack/display/msm/msm_drv.c
+        printf "#ifndef MOTOROLA_PANEL_NOTIFIER_DEFINED\n" >> techpack/display/msm/msm_drv.c
+        printf "#define MOTOROLA_PANEL_NOTIFIER_DEFINED\n\n" >> techpack/display/msm/msm_drv.c
+        printf "#include <linux/notifier.h>\n" >> techpack/display/msm/msm_drv.c
+        printf "#include <linux/module.h>\n" >> techpack/display/msm/msm_drv.c
+        printf "#include <linux/printk.h>\n\n" >> techpack/display/msm/msm_drv.c
+        printf "static BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\n\n" >> techpack/display/msm/msm_drv.c
+        printf "int panel_register_notifier(struct notifier_block *nb)\n" >> techpack/display/msm/msm_drv.c
+        printf "{\n" >> techpack/display/msm/msm_drv.c
+        printf "    if (!nb) {\n" >> techpack/display/msm/msm_drv.c
+        printf "        pr_err(\"panel_register_notifier: nb is NULL\\n\");\n" >> techpack/display/msm/msm_drv.c
+        printf "        return -EINVAL;\n" >> techpack/display/msm/msm_drv.c
+        printf "    }\n" >> techpack/display/msm/msm_drv.c
+        printf "    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n" >> techpack/display/msm/msm_drv.c
+        printf "}\n" >> techpack/display/msm/msm_drv.c
+        printf "EXPORT_SYMBOL_GPL(panel_register_notifier);\n\n" >> techpack/display/msm/msm_drv.c
+        printf "int panel_unregister_notifier(struct notifier_block *nb)\n" >> techpack/display/msm/msm_drv.c
+        printf "{\n" >> techpack/display/msm/msm_drv.c
+        printf "    if (!nb) {\n" >> techpack/display/msm/msm_drv.c
+        printf "        pr_err(\"panel_unregister_notifier: nb is NULL\\n\");\n" >> techpack/display/msm/msm_drv.c
+        printf "        return -EINVAL;\n" >> techpack/display/msm/msm_drv.c
+        printf "    }\n" >> techpack/display/msm/msm_drv.c
+        printf "    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n" >> techpack/display/msm/msm_drv.c
+        printf "}\n" >> techpack/display/msm/msm_drv.c
+        printf "EXPORT_SYMBOL_GPL(panel_unregister_notifier);\n\n" >> techpack/display/msm/msm_drv.c
+        printf "void touch_set_state(int state)\n" >> techpack/display/msm/msm_drv.c
+        printf "{\n" >> techpack/display/msm/msm_drv.c
+        printf "    pr_debug(\"touch_set_state called with state = %%d\\n\", state);\n" >> techpack/display/msm/msm_drv.c
+        printf "    /* Fonction de réservation pour l'écran tactile */\n" >> techpack/display/msm/msm_drv.c
+        printf "}\n" >> techpack/display/msm/msm_drv.c
+        printf "EXPORT_SYMBOL_GPL(touch_set_state);\n\n" >> techpack/display/msm/msm_drv.c
+        printf "#endif /* MOTOROLA_PANEL_NOTIFIER_DEFINED */\n" >> techpack/display/msm/msm_drv.c
+        printf "/* --- Fin Patch Tactile (robuste) --- */\n" >> techpack/display/msm/msm_drv.c
+        echo "✅ Patch tactile robuste appliqué"
+    else
+        echo "⏩ Patch tactile déjà présent, ignoré"
     fi
-
-    # Ajoute le code à la fin du fichier
-    cat >> "$MSM_DRV" << 'TOUCH_PATCH_EOF'
-
-/* --- Début Patch Tactile (fonctionnel) --- */
-static BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);
-
-int panel_register_notifier(struct notifier_block *nb)
-{
-	return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);
-}
-EXPORT_SYMBOL(panel_register_notifier);
-
-int panel_unregister_notifier(struct notifier_block *nb)
-{
-	return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);
-}
-EXPORT_SYMBOL(panel_unregister_notifier);
-
-void touch_set_state(int state)
-{
-	blocking_notifier_call_chain(&motorola_panel_notifier_list, state, NULL);
-}
-EXPORT_SYMBOL(touch_set_state);
-/* --- Fin Patch Tactile --- */
-TOUCH_PATCH_EOF
-
-    echo "✅ Stub tactile ajouté avec succès"
 else
-    echo "✅ Implémentations réelles déjà présentes ou patch déjà appliqué — stub NON appliqué"
+    echo "⚠️ Fichier techpack/display/msm/msm_drv.c introuvable, patch tactile sauté"
 fi
 
 # ==================== 10. COMPILATION ====================
