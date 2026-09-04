@@ -16,12 +16,16 @@ sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf
 
 cd "$GITHUB_WORKSPACE"
 
-# ==================== 1. CLONAGE DU NOYAU ====================
-echo "=== Clonage du kernel Motorola sm8250 ==="
+# ==================== 1. CLONAGE DU NOYAU (figé au 9 août 2026) ====================
+echo "=== Clonage du kernel Motorola sm8250 (historique complet) ==="
 git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git \
-    -b lineage-23.2 --depth=1 kernel_sources
+    -b lineage-23.2 kernel_sources
 
 cd kernel_sources
+
+OLD_COMMIT=$(git rev-list -n 1 --before="2026-08-10 00:00:00" lineage-23.2)
+echo "Commit correspondant au 9 août 2026 : $OLD_COMMIT"
+git checkout "$OLD_COMMIT"
 
 # ==================== 2. CLONE KERNELSU (COMMIT EXACT) ====================
 echo "=== Intégration KernelSU (0b138d6a) ==="
@@ -391,59 +395,8 @@ grep "CONFIG_KSU_SUSFS" out/.config
 # ==================== 8. PATCH SIGNATURES ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
-# ==================== 9. PATCH TACTILE ROBUSTE (sans \n dans les strings, signature corrigée) ====================
-echo "=== Application du patch tactile (version robuste, sans échappement risqué) ==="
-if [ -f "techpack/display/msm/msm_drv.c" ]; then
-    if ! grep -q "MOTOROLA_PANEL_NOTIFIER_DEFINED" techpack/display/msm/msm_drv.c; then
-        cat >> techpack/display/msm/msm_drv.c << 'TOUCH_PATCH_EOF'
-
-/* --- Début Patch Tactile (robuste) --- */
-#ifndef MOTOROLA_PANEL_NOTIFIER_DEFINED
-#define MOTOROLA_PANEL_NOTIFIER_DEFINED
-
-#include <linux/notifier.h>
-#include <linux/module.h>
-#include <linux/printk.h>
-
-static BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);
-
-int panel_register_notifier(struct notifier_block *nb)
-{
-    if (!nb) {
-        pr_err("panel_register_notifier: nb is NULL");
-        return -EINVAL;
-    }
-    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);
-}
-EXPORT_SYMBOL_GPL(panel_register_notifier);
-
-int panel_unregister_notifier(struct notifier_block *nb)
-{
-    if (!nb) {
-        pr_err("panel_unregister_notifier: nb is NULL");
-        return -EINVAL;
-    }
-    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);
-}
-EXPORT_SYMBOL_GPL(panel_unregister_notifier);
-
-int touch_set_state(int state, int panel_idx)
-{
-    pr_debug("touch_set_state called");
-    return 0;
-}
-EXPORT_SYMBOL_GPL(touch_set_state);
-
-#endif /* MOTOROLA_PANEL_NOTIFIER_DEFINED */
-/* --- Fin Patch Tactile (robuste) --- */
-TOUCH_PATCH_EOF
-        echo "✅ Patch tactile robuste appliqué (signature touch_set_state corrigée : int, 2 args)"
-    else
-        echo "⏩ Patch tactile déjà présent, ignoré"
-    fi
-else
-    echo "⚠️ Fichier techpack/display/msm/msm_drv.c introuvable, patch tactile sauté"
-fi
+# ==================== 9. PATCH TACTILE (original, simple) ====================
+printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
 
 # ==================== 10. COMPILATION ====================
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image 2>&1 | tee build.log
