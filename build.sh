@@ -192,8 +192,7 @@ PYEOF
   python3 /tmp/hook_setresuid.py
 fi
 
-echo "=== Configuration ==="
-
+# ==================== 7. CONFIGURATION & PATCH TACTILE ====================
 export ARCH=arm64
 export SUBARCH=arm64
 export CROSS_COMPILE=aarch64-linux-gnu-
@@ -201,18 +200,11 @@ export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
 mkdir -p out
 
-CONFIG=$(find arch/arm64/configs/ \
-  \( -name "*kiev*" -o -name "*lito*" -o -name "*sm8250*" \) \
-  | head -1)
-
-CONFIG_NAME=${CONFIG#arch/arm64/configs/}
-
+# Utilisation directe et explicite du defconfig de référence lito-perf
+CONFIG_NAME="vendor/lito-perf_defconfig"
 echo "Config utilisée: $CONFIG_NAME"
 
-make O=out LLVM=1 \
-  CROSS_COMPILE="$CROSS_COMPILE" \
-  CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
-  "$CONFIG_NAME"
+make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 $CONFIG_NAME
 
 {
   echo "CONFIG_KSU=y"
