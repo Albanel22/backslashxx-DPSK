@@ -375,15 +375,27 @@ export ARCH=arm64
 export SUBARCH=arm64
 export CROSS_COMPILE=aarch64-linux-gnu-
 export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-
 mkdir -p out
 
-# Utilisation directe et explicite du defconfig de référence lito-perf
 CONFIG_NAME="vendor/lito-perf_defconfig"
-echo "Config utilisée: $CONFIG_NAME"
+FRAGMENT="arch/arm64/configs/vendor/ext_config/kiev-default.config"
 
-make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 $CONFIG_NAME
+echo "Config de base : $CONFIG_NAME"
+echo "Fragment device : $FRAGMENT"
 
+if [ "$DRY_RUN" -eq 0 ]; then
+    # 1. Charge la config de base
+    make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 $CONFIG_NAME
+
+    # 2. Merge le fragment kiev-default.config (si il existe)
+    if [ -f "$FRAGMENT" ]; then
+        log "Merging fragment $FRAGMENT ..."
+        scripts/kconfig/merge_config.sh -O out -m out/.config "$FRAGMENT"
+    else
+        log "⚠️ Fragment $FRAGMENT introuvable — on continue sans"
+    fi
+
+    # 3. Active les options KernelSU + SuSFS + Panel Notifier
     ./scripts/config --file out/.config \
         --enable KSU \
         --enable KSU_MANUAL_HOOK \
@@ -400,11 +412,12 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
         --enable KSU_SUSFS_OPEN_REDIRECT \
         --enable KSU_SUSFS_HAS_MAGIC_MOUNT \
         --enable THREAD_INFO_IN_TASK \
-        --enable PANEL_NOTIFICATIONS   # 👈 Activation du panel notifier existant
+        --enable PANEL_NOTIFICATIONS
 
+    # 4. Finalise la config
     make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-    # Ensure explicit CONFIG entries exist (y compris PANEL_NOTIFICATIONS)
+    # Force écriture des options importantes
     cat >> out/.config <<EOF
 CONFIG_KSU_SUSFS=y
 CONFIG_KSU_SUSFS_SUS_PATH=y
@@ -423,14 +436,13 @@ EOF
     grep "CONFIG_KSU_SUSFS" out/.config || true
     grep "CONFIG_PANEL_NOTIFICATIONS" out/.config || true
 
-    # Patch module signature check (disable)
+    # Patch module signature
     sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c || true
 
-    # 🚫 SUPPRESSION DU PATCH TACTILE – on utilise l'existant
     log "✅ Panel Notifier : utilisation de l'implémentation existante (CONFIG_PANEL_NOTIFICATIONS=y)"
     log "   Aucun patch tactile ajouté dans techpack/display/msm/msm_drv.c"
 else
-    log "[DRY-RUN] Configuration du noyau (make, scripts/config, etc.) simulée"
+    log "[DRY-RUN] Configuration du noyau (make + merge fragment) simulée"
 fi
 
 # ==================== 6. COMPILATION DU NOYAU ====================
