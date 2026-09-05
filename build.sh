@@ -284,13 +284,14 @@ export CROSS_COMPILE=aarch64-linux-gnu-
 export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
 mkdir -p out
-CONFIG=$(find arch/arm64/configs/ -name "*kiev*" -o -name "*lito*" -o -name "*sm8250*" | head -1)
-CONFIG_NAME=${CONFIG#arch/arm64/configs/}
+
+# Utilisation directe et explicite du defconfig de référence lito-perf
+CONFIG_NAME="vendor/lito-perf_defconfig"
 echo "Config utilisée: $CONFIG_NAME"
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 $CONFIG_NAME
 
-# Activation KernelSU, SuSFS ET des options tactiles réelles du kernel kiev
+# ==================== Activation KernelSU & SuSFS ====================
 ./scripts/config --file out/.config \
     --enable KSU \
     --enable KSU_MANUAL_HOOK \
@@ -307,15 +308,7 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
     --enable KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
     --enable KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
     --enable KSU_SUSFS_OPEN_REDIRECT \
-    --enable THREAD_INFO_IN_TASK \
-    --enable INPUT \
-    --enable INPUT_EVDEV \
-    --enable INPUT_TOUCHSCREEN \
-    --enable INPUT_TOUCHSCREEN_MMI \
-    --enable PANEL_NOTIFICATIONS \
-    --enable TOUCHSCREEN_FOCALTECH \
-    --enable TOUCHSCREEN_FOCALTECH_0FLASH \
-    --enable TOUCHSCREEN_FOCALTECH_0FLASH_MMI
+    --enable THREAD_INFO_IN_TASK
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
