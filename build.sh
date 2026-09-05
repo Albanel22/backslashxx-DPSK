@@ -309,23 +309,26 @@ log "Lancement de cargo build..."
     set -e
 
     log "Code de sortie cargo : $CARGO_EXIT"
+    log "Répertoire courant : $(pwd)"
+    log "Contenu du répertoire courant :"
+    ls -la || true
 
-    # Cherche le binaire
-    KSUD_BIN=$(find . -path "*/release/ksud" -type f 2>/dev/null | head -1 || true)
+    log "Recherche du binaire ksud dans tout le workspace..."
+    KSUD_BIN=$(find "$GITHUB_WORKSPACE" -name "ksud" -type f 2>/dev/null | head -1 || true)
 
     if [ -z "$KSUD_BIN" ]; then
-        # Essai alternatif
-        KSUD_BIN=$(find target -name "ksud" -type f 2>/dev/null | head -1 || true)
+        # Essai plus large
+        KSUD_BIN=$(find "$GITHUB_WORKSPACE" -type f -executable -name "*ksud*" 2>/dev/null | head -1 || true)
     fi
 
     log "Binaire trouvé : ${KSUD_BIN:-aucun}"
 
     if [ -z "$KSUD_BIN" ] || [ ! -f "$KSUD_BIN" ]; then
         log "❌ ksud introuvable après compilation"
-        log "=== Contenu de target/ ==="
-        find target -type f 2>/dev/null | head -40 || true
+        log "=== Recherche de tous les fichiers 'release' ==="
+        find "$GITHUB_WORKSPACE" -path "*/release/*" -type f 2>/dev/null | head -50 || true
         log "=== Fin du log cargo ==="
-        tail -n 60 "$LOGDIR/ksud_build.log" || true
+        tail -n 40 "$LOGDIR/ksud_build.log" || true
         exit 1
     fi
 
@@ -334,9 +337,6 @@ log "Lancement de cargo build..."
     chmod 755 "$GITHUB_WORKSPACE/ksud"
     ls -lh "$GITHUB_WORKSPACE/ksud"
     log "✅ ksud compilé avec succès"
-else
-    log "[DRY-RUN] Compilation de ksud simulée"
-fi
 
 # ==================== 8. TÉLÉCHARGEMENT BOOT.IMG ====================
 cd "$GITHUB_WORKSPACE" || exit 1
