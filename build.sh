@@ -373,20 +373,16 @@ fi
 # ==================== 5. CONFIGURATION DU NOYAU ====================
 export ARCH=arm64
 export SUBARCH=arm64
-export CROSS_COMPILE=${CROSS_COMPILE:-aarch64-linux-gnu-}
-export CROSS_COMPILE_ARM32=${CROSS_COMPILE_ARM32:-arm-linux-gnueabi-}
-: "${FORCE_CC:-}"
+export CROSS_COMPILE=aarch64-linux-gnu-
+export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
-if [ "$DRY_RUN" -eq 0 ]; then
-    mkdir -p out
-    CONFIG=$(find arch/arm64/configs/ -name "*kiev*" -o -name "*lito*" -o -name "*sm8250*" | head -1 || true)
-    CONFIG_NAME=${CONFIG#arch/arm64/configs/}
-    log "Config utilisée: $CONFIG_NAME"
-    if [ -n "${FORCE_CC:-}" ]; then
-        make O=out LLVM=1 CC="$FORCE_CC" CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 "$CONFIG_NAME"
-    else
-        make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 "$CONFIG_NAME"
-    fi
+mkdir -p out
+
+# Utilisation directe et explicite du defconfig de référence lito-perf
+CONFIG_NAME="vendor/lito-perf_defconfig"
+echo "Config utilisée: $CONFIG_NAME"
+
+make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 $CONFIG_NAME
 
     ./scripts/config --file out/.config \
         --enable KSU \
@@ -417,7 +413,7 @@ CONFIG_KSU_SUSFS_SUS_KSTAT=y
 CONFIG_KSU_SUSFS_SUS_MAP=y
 CONFIG_KSU_SUSFS_SPOOF_UNAME=y
 CONFIG_KSU_SUSFS_ENABLE_LOG=y
-# CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS is not set
+CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
 CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
 CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
 CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
