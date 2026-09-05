@@ -315,7 +315,7 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 # ==================== 8. PATCH SIGNATURES & DISPLAY ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
-printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
+printf "\n/* --- Début Patch Tactile Avancé --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\n\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\n\nint panel_register_notifier(struct notifier_block *nb) {\n    return 0;\n}\nEXPORT_SYMBOL(panel_register_notifier);\n\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return 0;\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\n\nvoid touch_set_state(int state) {\n    return;\n}\nEXPORT_SYMBOL(touch_set_state);\n\nint mmi_touch_feedback(int val) {\n    return 0;\n}\nEXPORT_SYMBOL(mmi_touch_feedback);\n/* --- Fin Patch Tactile Avancé --- */\n" >> techpack/display/msm/msm_drv.c
 
 # ==================== 10. COMPILATION ====================
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image 2>&1 | tee build.log
