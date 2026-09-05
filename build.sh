@@ -317,6 +317,17 @@ sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
 printf "\n/* --- Début Patch Tactile Avancé --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\n\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\n\nint panel_register_notifier(struct notifier_block *nb) {\n    return 0;\n}\nEXPORT_SYMBOL(panel_register_notifier);\n\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return 0;\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\n\nvoid touch_set_state(int state) {\n    return;\n}\nEXPORT_SYMBOL(touch_set_state);\n\nint mmi_touch_feedback(int val) {\n    return 0;\n}\nEXPORT_SYMBOL(mmi_touch_feedback);\n/* --- Fin Patch Tactile Avancé --- */\n" >> techpack/display/msm/msm_drv.c
 
+# ==================== 8b. DEBUG PROBE FOCALTECH ====================
+FTS_PROBE_FILE=$(find drivers/input/touchscreen -name "fts_lib" -o -name "focaltech_core.c" -o -name "fts_ts.c" | grep -E "fts_ts\.c|focaltech_core\.c" | head -1)
+
+if [ -n "$FTS_PROBE_FILE" ] && [ -f "$FTS_PROBE_FILE" ]; then
+    echo "✅ Fichier source FocalTech trouvé : $FTS_PROBE_FILE"
+    # Ajoute un log d'erreur juste avant le retour de la fonction probe en échec
+    sed -i 's/return ret;/pr_err("FTS_TS_DEBUG: probe failed with error = %d\\n", ret); return ret;/g' "$FTS_PROBE_FILE" || true
+else
+    echo "⚠️ Fichier source FocalTech non ciblé automatiquement, vérification du chemin..."
+fi
+
 # ==================== 10. COMPILATION ====================
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image 2>&1 | tee build.log
 
