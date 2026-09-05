@@ -302,15 +302,22 @@ EOF
     export CC="$AARCH64_CLANG_PATH"
     export CXX="$AARCH64_CLANGXX_PATH"
 
-    cargo build --release --target aarch64-linux-android 2>&1 | tee "$LOGDIR/ksud_build.log"
+cargo build --release --target aarch64-linux-android 2>&1 | tee "$LOGDIR/ksud_build.log"
+    CARGO_EXIT=${PIPESTATUS[0]}
 
-    if [ ! -f "target/aarch64-linux-android/release/ksud" ]; then
-        log "❌ ksud introuvable"
-        tail -n 80 "$LOGDIR/ksud_build.log" || true
+    # Cherche le binaire de façon plus sûre
+    KSUD_BIN=$(find target -name "ksud" -type f 2>/dev/null | head -1)
+
+    if [ -z "$KSUD_BIN" ] || [ ! -f "$KSUD_BIN" ]; then
+        log "❌ ksud introuvable après compilation"
+        log "Contenu du dossier target :"
+        find target -type f | head -30 || true
+        tail -n 50 "$LOGDIR/ksud_build.log" || true
         exit 1
     fi
 
-    cp target/aarch64-linux-android/release/ksud "$GITHUB_WORKSPACE/ksud"
+    log "✅ ksud trouvé : $KSUD_BIN"
+    cp "$KSUD_BIN" "$GITHUB_WORKSPACE/ksud"
     chmod 755 "$GITHUB_WORKSPACE/ksud"
     log "✅ ksud compilé avec succès"
 else
