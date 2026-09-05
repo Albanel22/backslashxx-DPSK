@@ -291,6 +291,9 @@ echo "Config utilisée: $CONFIG_NAME"
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 $CONFIG_NAME
 
+sed -i 's/CONFIG_INPUT_TOUCHSCREEN_MMI=m/CONFIG_INPUT_TOUCHSCREEN_MMI=y/g' arch/arm64/configs/vendor/ext_config/kiev-default.config
+sed -i 's/CONFIG_INPUT_FOCALTECH_0FLASH_MMI=m/CONFIG_INPUT_FOCALTECH_0FLASH_MMI=y/g' arch/arm64/configs/vendor/ext_config/kiev-default.config
+
 # ==================== Activation KernelSU & SuSFS ====================
 ./scripts/config --file out/.config \
     --enable KSU \
