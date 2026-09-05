@@ -253,23 +253,36 @@ if [ "$DRY_RUN" -eq 0 ]; then
     if [ ! -d "$HOME/.cargo/bin" ]; then
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
     fi
+    # shellcheck source=/dev/null
     source "$HOME/.cargo/env"
     rustup target add aarch64-linux-android || true
 
     if [ ! -d "$GITHUB_WORKSPACE/android-ndk-r26d" ]; then
+        log "Téléchargement Android NDK r26d..."
         wget -q https://dl.google.com/android/repository/android-ndk-r26d-linux.zip -O /tmp/ndk.zip
         unzip -q /tmp/ndk.zip -d "$GITHUB_WORKSPACE"
         mv "$GITHUB_WORKSPACE"/android-ndk-r26d* "$GITHUB_WORKSPACE/android-ndk-r26d" 2>/dev/null || true
     fi
 
     export ANDROID_NDK_ROOT="$GITHUB_WORKSPACE/android-ndk-r26d"
-    export AARCH64_CLANG_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
-    export AARCH64_CLANGXX_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang++"
-    export AR_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+    export ANDROID_NDK_HOME="$ANDROID_NDK_ROOT"
+
+    NDK_BIN="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"
+    NDK_SYSROOT="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+
+    export AARCH64_CLANG_PATH="$NDK_BIN/aarch64-linux-android26-clang"
+    export AARCH64_CLANGXX_PATH="$NDK_BIN/aarch64-linux-android26-clang++"
+    export AR_PATH="$NDK_BIN/llvm-ar"
+
+    # Très important pour bindgen
+    export BINDGEN_EXTRA_CLANG_ARGS="--sysroot=$NDK_SYSROOT -I$NDK_SYSROOT/usr/include -I$NDK_SYSROOT/usr/include/aarch64-linux-android"
+    export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="$BINDGEN_EXTRA_CLANG_ARGS"
+    export BINDGEN_EXTRA_CLANG_ARGS_aarch64-linux-android="$BINDGEN_EXTRA_CLANG_ARGS"
 
     rm -rf ksud-src
     git clone https://github.com/backslashxx/KernelSU.git ksud-src
     cd ksud-src
+    git fetch --depth=1 origin 0b138d6a9cfe4dc163aa05c21b1e6a14ff868230 || true
     git checkout 0b138d6a9cfe4dc163aa05c21b1e6a14ff868230 || true
     cd userspace/ksud
 
@@ -277,18 +290,32 @@ if [ "$DRY_RUN" -eq 0 ]; then
     cat > .cargo/config.toml <<EOF
 [target.aarch64-linux-android]
 linker = "$AARCH64_CLANG_PATH"
+ar = "$AR_PATH"
+
 [env]
 CC_aarch64_linux_android = "$AARCH64_CLANG_PATH"
 CXX_aarch64_linux_android = "$AARCH64_CLANGXX_PATH"
 AR_aarch64_linux_android = "$AR_PATH"
+BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android = "$BINDGEN_EXTRA_CLANG_ARGS"
 EOF
 
-    cargo build --release --target aarch64-linux-android
+    # Force l'utilisation du bon clang pour le build script aussi
+    export CC="$AARCH64_CLANG_PATH"
+    export CXX="$AARCH64_CLANGXX_PATH"
+
+    cargo build --release --target aarch64-linux-android 2>&1 | tee "$LOGDIR/ksud_build.log"
+
+    if [ ! -f "target/aarch64-linux-android/release/ksud" ]; then
+        log "❌ ksud introuvable"
+        tail -n 80 "$LOGDIR/ksud_build.log" || true
+        exit 1
+    fi
+
     cp target/aarch64-linux-android/release/ksud "$GITHUB_WORKSPACE/ksud"
     chmod 755 "$GITHUB_WORKSPACE/ksud"
-    log "✅ ksud compilé"
+    log "✅ ksud compilé avec succès"
 else
-    log "[DRY-RUN] ksud simulé"
+    log "[DRY-RUN] Compilation de ksud simulée"
 fi
 
 # ==================== 8. TÉLÉCHARGEMENT BOOT.IMG ====================
