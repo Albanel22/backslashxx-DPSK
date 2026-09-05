@@ -274,10 +274,9 @@ if [ "$DRY_RUN" -eq 0 ]; then
     export AARCH64_CLANGXX_PATH="$NDK_BIN/aarch64-linux-android26-clang++"
     export AR_PATH="$NDK_BIN/llvm-ar"
 
-    # Très important pour bindgen
+    # Correct pour bindgen (UNIQUEMENT avec underscores)
     export BINDGEN_EXTRA_CLANG_ARGS="--sysroot=$NDK_SYSROOT -I$NDK_SYSROOT/usr/include -I$NDK_SYSROOT/usr/include/aarch64-linux-android"
     export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="$BINDGEN_EXTRA_CLANG_ARGS"
-    export BINDGEN_EXTRA_CLANG_ARGS_aarch64-linux-android="$BINDGEN_EXTRA_CLANG_ARGS"
 
     rm -rf ksud-src
     git clone https://github.com/backslashxx/KernelSU.git ksud-src
