@@ -332,11 +332,14 @@ log "Lancement de cargo build..."
         exit 1
     fi
 
-    log "✅ ksud trouvé : $KSUD_BIN"
+log "✅ ksud trouvé : $KSUD_BIN"
     cp "$KSUD_BIN" "$GITHUB_WORKSPACE/ksud"
     chmod 755 "$GITHUB_WORKSPACE/ksud"
     ls -lh "$GITHUB_WORKSPACE/ksud"
     log "✅ ksud compilé avec succès"
+else
+    log "[DRY-RUN] Compilation de ksud simulée"
+fi
 
 # ==================== 8. TÉLÉCHARGEMENT BOOT.IMG ====================
 cd "$GITHUB_WORKSPACE" || exit 1
