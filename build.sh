@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD DIAGNOSTIC : KernelSU v3.2.5-76+ (0b138d6a) + SuSFS (pinné 9 août) + debug version ==="
+echo "=== BUILD DIAGNOSTIC : KernelSU v3.2.5-76+ (0b138d6a) + SuSFS (pinné 9 août) + defconfig kiev fusionné ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -347,7 +347,7 @@ KCONFIG_EOF
     fi
 fi
 
-# ==================== 7. CONFIGURATION & PATCH TACTILE ====================
+# ==================== 7. CONFIGURATION (defconfig fusionné lito-perf + kiev) & PATCH TACTILE ====================
 export ARCH=arm64
 export SUBARCH=arm64
 export CROSS_COMPILE=aarch64-linux-gnu-
@@ -355,11 +355,16 @@ export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
 mkdir -p out
 
-# Utilisation directe et explicite du defconfig de référence lito-perf
-CONFIG_NAME="vendor/lito-perf_defconfig"
-echo "Config utilisée: $CONFIG_NAME"
+# IMPORTANT : vendor/kiev_defconfig n'existe pas en tant que fichier autonome.
+# La vraie configuration du Moto One 5G Ace (kiev) est la fusion de :
+#   - vendor/lito-perf_defconfig       (base générique du chipset lito)
+#   - vendor/ext_config/kiev-default.config (fragment spécifique kiev)
+# Ce fragment désactive les drivers tactiles génériques (TOUCHSCREEN_FTS/ST/SYNAPTICS_*)
+# et active le vrai driver SPI Motorola (INPUT_FOCALTECH_0FLASH_MMI, IC ft8756).
+echo "Config utilisée : vendor/lito-perf_defconfig + vendor/ext_config/kiev-default.config"
 
-make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 $CONFIG_NAME
+make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
+    vendor/lito-perf_defconfig vendor/ext_config/kiev-default.config
 
 ./scripts/config --file out/.config \
     --enable KSU \
@@ -377,7 +382,9 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
     --enable KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
     --enable KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
     --enable KSU_SUSFS_OPEN_REDIRECT \
-    --enable THREAD_INFO_IN_TASK
+    --enable THREAD_INFO_IN_TASK \
+    --set-val INPUT_FOCALTECH_0FLASH_MMI y \
+    --set-val INPUT_TOUCHSCREEN_MMI y
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
@@ -396,6 +403,9 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 grep "CONFIG_KSU_SUSFS" out/.config
 
+echo "=== Vérification config tactile ==="
+grep -E "CONFIG_INPUT_FOCALTECH_0FLASH_MMI=|CONFIG_INPUT_TOUCHSCREEN_MMI=|CONFIG_TOUCHSCREEN_FTS=|CONFIG_KIEV_DTB=" out/.config || true
+
 # ==================== 8. PATCH SIGNATURES ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
@@ -412,6 +422,9 @@ if [ ! -f "out/arch/arm64/boot/Image" ]; then
 fi
 
 echo "✅ Compilation réussie"
+
+echo "=== Vérification des drivers tactiles réellement compilés ==="
+grep -E "focaltech_0flash_mmi|touchscreen/st/|synaptics_dsx|synaptics_tcm" build.log | head -20 || echo "Aucun driver tactile trouvé dans build.log"
 
 # ==================== 11. COMPILATION KSUD (MÊME COMMIT) ====================
 cd "$GITHUB_WORKSPACE"
