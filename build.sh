@@ -347,7 +347,7 @@ KCONFIG_EOF
     fi
 fi
 
-# ==================== 7. CONFIGURATION (defconfig fusionné lito-perf + kiev) & PATCH TACTILE ====================
+# ==================== 7. CONFIGURATION (defconfigs fusionnés correctement) ====================
 export ARCH=arm64
 export SUBARCH=arm64
 export CROSS_COMPILE=aarch64-linux-gnu-
@@ -355,17 +355,31 @@ export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
 mkdir -p out
 
-# IMPORTANT : vendor/kiev_defconfig n'existe pas en tant que fichier autonome.
-# La vraie configuration du Moto One 5G Ace (kiev) est la fusion de :
-#   - vendor/lito-perf_defconfig       (base générique du chipset lito)
-#   - vendor/ext_config/kiev-default.config (fragment spécifique kiev)
-# Ce fragment désactive les drivers tactiles génériques (TOUCHSCREEN_FTS/ST/SYNAPTICS_*)
-# et active le vrai driver SPI Motorola (INPUT_FOCALTECH_0FLASH_MMI, IC ft8756).
-echo "Config utilisée : vendor/lito-perf_defconfig + vendor/ext_config/kiev-default.config"
+echo "=== Fusion correcte des defconfigs lito-perf + moto-lito + kiev ==="
 
+# 1. Base defconfig
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
-    vendor/lito-perf_defconfig vendor/ext_config/kiev-default.config
+    vendor/lito-perf_defconfig
 
+# 2. Fusionner les fragments avec merge_config.sh (fourni par le kernel)
+./scripts/kconfig/merge_config.sh -m -O out \
+    out/.config \
+    arch/arm64/configs/vendor/ext_config/moto-lito.config \
+    arch/arm64/configs/vendor/ext_config/kiev-default.config
+
+# 3. Vérifier que TOUCHSCREEN_FTS est bien désactivé par le fragment kiev
+./scripts/config --file out/.config --disable TOUCHSCREEN_FTS
+
+# 4. Passer les drivers tactiles en BUILT-IN (=y) pour éviter le problème de modules
+./scripts/config --file out/.config \
+    --enable INPUT_TOUCHSCREEN_MMI \
+    --enable INPUT_FOCALTECH_0FLASH_MMI \
+    --enable INPUT_FOCALTECH_0FLASH_MMI_ENABLE_DOUBLE_TAP \
+    --enable INPUT_FOCALTECH_0FLASH_MMI_ENABLE_ESD \
+    --enable TOUCHCLASS_MMI_GESTURE_POISON_EVENT \
+    --enable BOARD_USES_DOUBLE_TAP_CTRL
+
+# 5. KernelSU + SUSFS
 ./scripts/config --file out/.config \
     --enable KSU \
     --enable KSU_MANUAL_HOOK \
@@ -382,35 +396,28 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
     --enable KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
     --enable KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
     --enable KSU_SUSFS_OPEN_REDIRECT \
-    --enable THREAD_INFO_IN_TASK \
-    --set-val INPUT_FOCALTECH_0FLASH_MMI y \
-    --set-val INPUT_TOUCHSCREEN_MMI y
+    --enable THREAD_INFO_IN_TASK
 
+# 6. Désactiver LTO/CFI qui peuvent causer des problèmes sur 4.19 avec des patches custom
+./scripts/config --file out/.config --disable LTO_CLANG --disable CFI_CLANG
+
+# 7. Régénérer proprement
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-{
-    echo "CONFIG_KSU_SUSFS=y"
-    echo "CONFIG_KSU_SUSFS_SUS_PATH=y"
-    echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y"
-    echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y"
-    echo "CONFIG_KSU_SUSFS_SUS_MAP=y"
-    echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y"
-    echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y"
-    echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y"
-    echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y"
-    echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y"
-} >> out/.config
-
-grep "CONFIG_KSU_SUSFS" out/.config
-
+# 8. Vérifications
 echo "=== Vérification config tactile ==="
-grep -E "CONFIG_INPUT_FOCALTECH_0FLASH_MMI=|CONFIG_INPUT_TOUCHSCREEN_MMI=|CONFIG_TOUCHSCREEN_FTS=|CONFIG_KIEV_DTB=" out/.config || true
+grep -E "CONFIG_TOUCHSCREEN_FTS=|CONFIG_INPUT_FOCALTECH_0FLASH_MMI=|CONFIG_INPUT_TOUCHSCREEN_MMI=|CONFIG_KIEV_DTB=" out/.config
+
+echo "=== Vérification CONFIG_MODULES ==="
+grep "CONFIG_MODULES=" out/.config
 
 # ==================== 8. PATCH SIGNATURES ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
 # ==================== 10. COMPILATION ====================
-make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image 2>&1 | tee build.log
+# Compiler le kernel, les modules, et le dtbo
+make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
+    -j$(nproc) Image modules dtbo.img 2>&1 | tee build.log
 
 if [ ! -f "out/arch/arm64/boot/Image" ]; then
     echo "❌ BUILD FAILED"
@@ -420,8 +427,21 @@ fi
 
 echo "✅ Compilation réussie"
 
-echo "=== Vérification des drivers tactiles réellement compilés ==="
-grep -E "focaltech_0flash_mmi|touchscreen/st/|synaptics_dsx|synaptics_tcm" build.log | head -20 || echo "Aucun driver tactile trouvé dans build.log"
+# Vérifier que les drivers tactiles sont bien dans le kernel (pas en .ko externe)
+echo "=== Vérification drivers tactiles ==="
+if grep -q "CONFIG_INPUT_FOCALTECH_0FLASH_MMI=y" out/.config; then
+    echo "✅ focaltech_0flash_mmi est BUILT-IN"
+else
+    echo "⚠️ focaltech_0flash_mmi est en module ou absent"
+    ls out/drivers/input/touchscreen/focaltech* 2>/dev/null || echo "Répertoire focaltech non trouvé"
+fi
+
+# Vérifier le dtbo
+if [ -f "out/arch/arm64/boot/dtbo.img" ]; then
+    echo "✅ dtbo.img généré"
+else
+    echo "⚠️ dtbo.img non généré — le device peut ne pas booter correctement"
+fi
 
 # ==================== 11. COMPILATION KSUD (MÊME COMMIT) ====================
 cd "$GITHUB_WORKSPACE"
