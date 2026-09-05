@@ -298,27 +298,41 @@ AR_aarch64_linux_android = "$AR_PATH"
 BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android = "$BINDGEN_EXTRA_CLANG_ARGS"
 EOF
 
-    # Force l'utilisation du bon clang pour le build script aussi
+# Force l'utilisation du bon clang pour le build script aussi
     export CC="$AARCH64_CLANG_PATH"
     export CXX="$AARCH64_CLANGXX_PATH"
 
-cargo build --release --target aarch64-linux-android 2>&1 | tee "$LOGDIR/ksud_build.log"
+log "Lancement de cargo build..."
+    set +e
+    cargo build --release --target aarch64-linux-android 2>&1 | tee "$LOGDIR/ksud_build.log"
     CARGO_EXIT=${PIPESTATUS[0]}
+    set -e
 
-    # Cherche le binaire de façon plus sûre
-    KSUD_BIN=$(find target -name "ksud" -type f 2>/dev/null | head -1)
+    log "Code de sortie cargo : $CARGO_EXIT"
+
+    # Cherche le binaire
+    KSUD_BIN=$(find . -path "*/release/ksud" -type f 2>/dev/null | head -1 || true)
+
+    if [ -z "$KSUD_BIN" ]; then
+        # Essai alternatif
+        KSUD_BIN=$(find target -name "ksud" -type f 2>/dev/null | head -1 || true)
+    fi
+
+    log "Binaire trouvé : ${KSUD_BIN:-aucun}"
 
     if [ -z "$KSUD_BIN" ] || [ ! -f "$KSUD_BIN" ]; then
         log "❌ ksud introuvable après compilation"
-        log "Contenu du dossier target :"
-        find target -type f | head -30 || true
-        tail -n 50 "$LOGDIR/ksud_build.log" || true
+        log "=== Contenu de target/ ==="
+        find target -type f 2>/dev/null | head -40 || true
+        log "=== Fin du log cargo ==="
+        tail -n 60 "$LOGDIR/ksud_build.log" || true
         exit 1
     fi
 
     log "✅ ksud trouvé : $KSUD_BIN"
     cp "$KSUD_BIN" "$GITHUB_WORKSPACE/ksud"
     chmod 755 "$GITHUB_WORKSPACE/ksud"
+    ls -lh "$GITHUB_WORKSPACE/ksud"
     log "✅ ksud compilé avec succès"
 else
     log "[DRY-RUN] Compilation de ksud simulée"
