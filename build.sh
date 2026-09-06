@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD FINAL 7 : KernelSU + SuSFS + FocalTech 0flash built-in + stub dsi_freq_head inconditionnel ==="
+echo "=== BUILD FINAL 7 : KernelSU + SuSFS + FocalTech 0flash built-in + DRM_MSM_DSI activé ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -334,7 +334,7 @@ if [ -f "fs/Makefile" ]; then
     fi
 fi
 
-# ==================== 5c. CORRECTION NAMESPACE.C (Déjà partiellement géré, on complète) ====================
+# ==================== 5c. CORRECTION NAMESPACE.C (Complément) ====================
 python3 - << 'PYEOF'
 import re
 
@@ -492,11 +492,16 @@ fi
 
 ./scripts/config --file out/.config --disable LTO_CLANG --disable CFI_CLANG
 
+# === CORRECTION DRM_MSM_DSI pour dsi_freq_head ===
 ./scripts/config --file out/.config --enable MMI_RELAY
+./scripts/config --file out/.config --enable DRM_MSM
+./scripts/config --file out/.config --enable DRM_MSM_DSI
 ./scripts/config --file out/.config --enable DRM_DYNAMIC_REFRESH_RATE
 ./scripts/config --file out/.config --enable SENSORS_CLASS
 
 echo "CONFIG_MMI_RELAY=y" >> out/.config
+echo "CONFIG_DRM_MSM=y" >> out/.config
+echo "CONFIG_DRM_MSM_DSI=y" >> out/.config
 echo "CONFIG_DRM_DYNAMIC_REFRESH_RATE=y" >> out/.config
 echo "CONFIG_SENSORS_CLASS=y" >> out/.config
 
@@ -504,6 +509,16 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 if ! grep -q "CONFIG_INPUT_TOUCHSCREEN_MMI=y" out/.config; then
     echo "❌ CONFIG_INPUT_TOUCHSCREEN_MMI n'est pas y"
+    exit 1
+fi
+
+if ! grep -q "CONFIG_DRM_MSM=y" out/.config; then
+    echo "❌ CONFIG_DRM_MSM n'est pas y"
+    exit 1
+fi
+
+if ! grep -q "CONFIG_DRM_MSM_DSI=y" out/.config; then
+    echo "❌ CONFIG_DRM_MSM_DSI n'est pas y"
     exit 1
 fi
 
@@ -517,16 +532,12 @@ if ! grep -q "CONFIG_SENSORS_CLASS=y" out/.config; then
     exit 1
 fi
 
-# ==================== 8. PATCH SIGNATURES + STUB dsi_freq_head ====================
+# ==================== 8. PATCH SIGNATURES ====================
 echo "=== Neutralisation de la vérification de version des modules ==="
-sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
+sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g) kernel/module.c
 
-echo "=== Résolution du conflit de symbole dupliqué : dsi_freq_head ==="
-if [ -f "fs/susfs.c" ]; then
-    sed -i '/EXPORT_SYMBOL.*dsi_freq_head/d' fs/susfs.c
-    sed -i '/EXPORT_SYMBOL_GPL.*dsi_freq_head/d' fs/susfs.c
-    echo "✅ EXPORT_SYMBOL(dsi_freq_head) retiré de fs/susfs.c"
-fi
+# NOTE : Le stub dsi_freq_head n'est plus nécessaire car CONFIG_DRM_MSM_DSI=y
+# force la compilation de dsi_panel.c qui contient la vraie définition.
 
 # ==================== 9. COMPILATION ====================
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
