@@ -200,12 +200,12 @@ fi
 
 echo "✅ Patch SuSFS trouvé : $(wc -l < $SUSFS_PATCH) lignes"
 
-# ==================== 5. APPLICATION DU PATCH SUSFS + CORRECTION AUTO ====================
+# ==================== 5. APPLICATION DU PATCH SUSFS + CORRECTIONS AUTO ====================
 echo "=== Application du patch SuSFS ==="
 
 patch -p1 < "$SUSFS_PATCH" 2>&1 | tee /tmp/susfs_patch.log || true
 
-# Si le patch a échoué sur task_mmu.c, on applique une correction manuelle robuste
+# 1. Correction auto pour fs/proc/task_mmu.c (conflit mmap_sem / mmap_lock)
 if [ -f "fs/proc/task_mmu.c.rej" ]; then
     echo "⚠️ Rejet détecté dans fs/proc/task_mmu.c. Application d'un correctif Python robuste..."
     python3 - << 'PYEOF'
@@ -220,7 +220,6 @@ if os.path.exists(file_path):
     if 'SUSFS_IS_INODE_SUS_MAP' not in content:
         print("🔧 Application manuelle des hooks SuSFS SUS_MAP dans task_mmu.c...")
         
-        # 1. Injection avant walk_page_range (compatible mmap_sem et mmap_lock)
         pattern1 = r'((?:down_read_killable\(&mm->mmap_sem\)|mmap_read_lock_killable\(mm\))\n\s+if \(ret\)\n\s+goto out_free;\n\s+)(ret = walk_page_range\(start_vaddr, end, &pagemap_walk\);)'
         replacement1 = r'''\1#ifdef CONFIG_KSU_SUSFS_SUS_MAP
 \t\tvma = find_vma(mm, start_vaddr);
@@ -245,7 +244,6 @@ if os.path.exists(file_path):
         else:
             print(f"  ✅ Hook SUS_MAP injecté avec succès ({count1} occurrence(s))")
 
-        # 2. Injection du label bypass_orig_flow avant le déverrouillage
         pattern2 = r'(ret = walk_page_range\(start_vaddr, end, &pagemap_walk\);.*?)(up_read\(&mm->mmap_sem\);|mmap_read_unlock\(mm\);)'
         replacement2 = r'''\1#ifdef CONFIG_KSU_SUSFS_SUS_MAP
 bypass_orig_flow:
@@ -255,15 +253,59 @@ bypass_orig_flow:
         content, count2 = re.subn(pattern2, replacement2, content, flags=re.DOTALL)
         if count2 > 0:
             print(f"  ✅ Label bypass_orig_flow injecté avec succès ({count2} occurrence(s))")
-        else:
-            print("  ⚠️ Échec de l'injection du label bypass_orig_flow")
-
+            
         with open(file_path, 'w') as f:
             f.write(content)
 PYEOF
-    # On supprime le fichier .rej car nous venons de le corriger manuellement
     rm -f fs/proc/task_mmu.c.rej
     echo "✅ Fichier fs/proc/task_mmu.c.rej résolu et supprimé."
+fi
+
+# 2. Correction auto pour fs/namespace.c (vfs_kern_mount)
+if [ -f "fs/namespace.c.rej" ] && grep -q "vfs_kern_mount" "fs/namespace.c.rej"; then
+    echo "⚠️ Rejet détecté dans fs/namespace.c (vfs_kern_mount). Application d'un correctif Python robuste..."
+    python3 - << 'PYEOF'
+import re
+import os
+
+file_path = 'fs/namespace.c'
+if os.path.exists(file_path):
+    with open(file_path, 'r') as f:
+        content = f.read()
+
+    if 'susfs_alloc_non_unshare_ksu_vfsmnt' not in content:
+        print("🔧 Application manuelle des hooks SuSFS SUS_MOUNT (vfs_kern_mount) dans namespace.c...")
+        
+        pattern = r'(\tif \(!type\)\n\t\treturn ERR_PTR\(-ENODEV\);\n)(\n\tmnt = alloc_vfsmnt\(name\);)'
+        
+        replacement = r'''\1
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+\t// - We will just stop checking for ksu process if /sdcard/Android is accessible,
+\t//   for the sake of performance
+\tif (static_branch_unlikely(&susfs_is_sdcard_android_data_not_decrypted)) {
+\t\tif (susfs_is_current_ksu_domain()) {
+\t\t\tmnt = susfs_alloc_non_unshare_ksu_vfsmnt(name ?:"none");
+\t\t\tgoto bypass_orig_flow;
+\t\t}
+\t}
+#endif
+\2
+
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+bypass_orig_flow:
+#endif'''
+        
+        content, count = re.subn(pattern, replacement, content)
+        if count > 0:
+            print(f"  ✅ Hook vfs_kern_mount injecté avec succès ({count} occurrence(s))")
+        else:
+            print("  ⚠️ Échec de l'injection du hook vfs_kern_mount. Pattern non trouvé.")
+            
+        with open(file_path, 'w') as f:
+            f.write(content)
+PYEOF
+    rm -f fs/namespace.c.rej
+    echo "✅ Fichier fs/namespace.c.rej résolu et supprimé."
 fi
 
 # Vérification finale des autres rejets éventuels
@@ -292,7 +334,7 @@ if [ -f "fs/Makefile" ]; then
     fi
 fi
 
-# ==================== 5c. CORRECTION NAMESPACE.C ====================
+# ==================== 5c. CORRECTION NAMESPACE.C (Déjà partiellement géré, on complète) ====================
 python3 - << 'PYEOF'
 import re
 
@@ -480,8 +522,6 @@ echo "=== Neutralisation de la vérification de version des modules ==="
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
 echo "=== Résolution du conflit de symbole dupliqué : dsi_freq_head ==="
-# Retirer l'EXPORT_SYMBOL conflictuel ajouté par le patch SuSFS dans fs/susfs.c
-# Cela empêche la génération de __crc_dsi_freq_head dans susfs.o et résout l'erreur ld.lld
 if [ -f "fs/susfs.c" ]; then
     sed -i '/EXPORT_SYMBOL.*dsi_freq_head/d' fs/susfs.c
     sed -i '/EXPORT_SYMBOL_GPL.*dsi_freq_head/d' fs/susfs.c
