@@ -416,6 +416,10 @@ sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
 # ==================== 10. COMPILATION ====================
 # Compiler le kernel, les modules, et les device trees (dtbs)
+
+make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
+    -j$(nproc) scripts
+	
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
     -j$(nproc) Image modules dtbs 2>&1 | tee build.log
 
