@@ -315,13 +315,32 @@ KCONFIG_EOF
     fi
 fi
 
-# ==================== 6.5 FIX INCLUDE DRM PANEL DANS TOUCHSCREEN_MMI ====================
+# ==================== 6.5 FIX INCLUDE DRM PANEL DANS TOUCHSCREEN_MMI (ULTRA SÛR) ====================
 TOUCH_PANEL_C="drivers/input/touchscreen/touchscreen_mmi/touchscreen_mmi_panel.c"
 if [ -f "$TOUCH_PANEL_C" ]; then
-    if ! grep -q "<linux/drm/drm_panel.h>" "$TOUCH_PANEL_C"; then
-        sed -i 's/#include <linux/module.h>/#include <linux\/module.h>\n#include <linux\/drm\/drm_panel.h>/g' "$TOUCH_PANEL_C"
-        echo "[+] Include <linux/drm/drm_panel.h> ajouté à touchscreen_mmi_panel.c"
-    fi
+    python3 - << 'PYEOF'
+path = "drivers/input/touchscreen/touchscreen_mmi/touchscreen_mmi_panel.c"
+with open(path, 'r') as f:
+    lines = f.readlines()
+
+header_to_add = "#include <linux/drm/drm_panel.h>\n"
+if header_to_add not in "".join(lines):
+    new_lines = []
+    inserted = False
+    for line in lines:
+        new_lines.append(line)
+        if not inserted and line.startswith("#include "):
+            new_lines.append(header_to_add)
+            inserted = True
+    if not inserted:
+        new_lines.insert(0, header_to_add)
+        
+    with open(path, 'w') as f:
+        f.writelines(new_lines)
+    print("[+] Include <linux/drm/drm_panel.h> ajouté proprement.")
+else:
+    print("[+] Include <linux/drm/drm_panel.h> déjà présent.")
+PYEOF
 fi
 
 # ==================== 7. CONFIGURATION ====================
@@ -464,7 +483,7 @@ cat > .cargo/config.toml <<EOF
 linker = "$AARCH64_CLANG_PATH"
 
 [env]
-CC_aarch64_linux_android = "$Aarch64_CLANG_PATH"
+CC_aarch64_linux_android = "$AARCH64_CLANG_PATH"
 CXX_aarch64_linux_android = "$AARCH64_CLANGXX_PATH"
 AR_aarch64_linux_android = "$AR_PATH"
 BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android = "$BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android"
