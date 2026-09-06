@@ -366,8 +366,11 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 ./scripts/config --file out/.config --disable TOUCHSCREEN_FTS
 
-# ACTIVATION DES OPTIONS TACTILES, NOTIFICATIONS DSI ET CAPTEURS
+# ACTIVATION DES OPTIONS GRAPHIQUES, DRM, NOTIFICATIONS ET CAPTEURS
 ./scripts/config --file out/.config \
+    --enable DRM \
+    --enable DRM_PANEL \
+    --enable DRM_BRIDGE \
     --enable MMI_RELAY \
     --enable INPUT_TOUCHSCREEN_MMI \
     --enable INPUT_FOCALTECH_0FLASH_MMI \
@@ -402,8 +405,8 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-echo "=== Vérification config tactile ==="
-grep -E "CONFIG_TOUCHSCREEN_FTS=|CONFIG_INPUT_FOCALTECH_0FLASH_MMI=|CONFIG_INPUT_TOUCHSCREEN_MMI=|CONFIG_MMI_RELAY=|CONFIG_DRM_PANEL_NOTIFICATIONS=|CONFIG_SENSORS_CORE=" out/.config
+echo "=== Vérification config tactile et DRM ==="
+grep -E "CONFIG_TOUCHSCREEN_FTS=|CONFIG_INPUT_FOCALTECH_0FLASH_MMI=|CONFIG_INPUT_TOUCHSCREEN_MMI=|CONFIG_MMI_RELAY=|CONFIG_DRM_PANEL_NOTIFICATIONS=|CONFIG_SENSORS_CORE=|CONFIG_DRM_PANEL=" out/.config
 
 # ==================== 8. PATCH SIGNATURES ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
@@ -431,6 +434,10 @@ if [ -f "out/.config" ]; then
     sed -i 's/CONFIG_INPUT_TOUCHSCREEN_MMI=m/CONFIG_INPUT_TOUCHSCREEN_MMI=y/g' out/.config
     sed -i 's/# CONFIG_MMI_RELAY is not set/CONFIG_MMI_RELAY=y/g' out/.config
     sed -i 's/CONFIG_MMI_RELAY=m/CONFIG_MMI_RELAY=y/g' out/.config
+    sed -i 's/# CONFIG_DRM is not set/CONFIG_DRM=y/g' out/.config
+    sed -i 's/CONFIG_DRM=m/CONFIG_DRM=y/g' out/.config
+    sed -i 's/# CONFIG_DRM_PANEL is not set/CONFIG_DRM_PANEL=y/g' out/.config
+    sed -i 's/CONFIG_DRM_PANEL=m/CONFIG_DRM_PANEL=y/g' out/.config
     sed -i 's/# CONFIG_DRM_PANEL_NOTIFICATIONS is not set/CONFIG_DRM_PANEL_NOTIFICATIONS=y/g' out/.config
     sed -i 's/CONFIG_DRM_PANEL_NOTIFICATIONS=m/CONFIG_DRM_PANEL_NOTIFICATIONS=y/g' out/.config
     sed -i 's/# CONFIG_DRM_PANEL_EVENT_NOTIFICATIONS is not set/CONFIG_DRM_PANEL_EVENT_NOTIFICATIONS=y/g' out/.config
@@ -446,13 +453,19 @@ if [ -f "out/.config" ]; then
     if ! grep -q "CONFIG_MMI_RELAY=y" out/.config; then
         echo "CONFIG_MMI_RELAY=y" >> out/.config
     fi
+    if ! grep -q "CONFIG_DRM=y" out/.config; then
+        echo "CONFIG_DRM=y" >> out/.config
+    fi
+    if ! grep -q "CONFIG_DRM_PANEL=y" out/.config; then
+        echo "CONFIG_DRM_PANEL=y" >> out/.config
+    fi
     if ! grep -q "CONFIG_DRM_PANEL_NOTIFICATIONS=y" out/.config; then
         echo "CONFIG_DRM_PANEL_NOTIFICATIONS=y" >> out/.config
     fi
     if ! grep -q "CONFIG_SENSORS_CORE=y" out/.config; then
         echo "CONFIG_SENSORS_CORE=y" >> out/.config
     fi
-    echo "✅ Options tactiles, notifications et capteurs forcées à =y"
+    echo "✅ Options tactiles, DRM, notifications et capteurs forcées à =y"
 fi
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
