@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD FINAL 4 : KernelSU + SuSFS + FocalTech 0flash built-in + dépendances MMI/DRM/SENSORS ==="
+echo "=== BUILD FINAL 5 : KernelSU + SuSFS + FocalTech 0flash built-in + correctif dsi_freq_head ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -178,7 +178,7 @@ fi
 
 echo "✅ Hooks KernelSU en place"
 
-# ==================== 4. TÉLÉCHARGEMENT DU VRAI SUSFS (pinné au 9 août 2026) ====================
+# ==================== 4. TÉLÉCHARGEMENT DU VRAI SUSFS ====================
 echo "=== Téléchargement du SuSFS (JackA1ltman, commit pinné) ==="
 
 JACK_COMMIT="6eae2b587750336507096469fee74a2173e14bf6"
@@ -188,13 +188,12 @@ cd /tmp/jack_repo
 git checkout "$JACK_COMMIT"
 cd "$GITHUB_WORKSPACE/kernel_sources"
 
-echo "✅ Repo SuSFS pinné au commit $JACK_COMMIT (9 août 2026)"
+echo "✅ Repo SuSFS pinné au commit $JACK_COMMIT"
 
 SUSFS_PATCH="/tmp/jack_repo/Patches/Patch/susfs_patch_to_4.19.patch"
 
 if [ ! -f "$SUSFS_PATCH" ]; then
     echo "❌ Patch SuSFS 4.19 non trouvé !"
-    find /tmp/jack_repo/Patches -name "*.patch" | sort
     exit 1
 fi
 
@@ -210,14 +209,6 @@ if [ -f "fs/susfs.c" ]; then
 else
     echo "❌ fs/susfs.c non créé !"
     exit 1
-fi
-
-if [ -f "include/linux/susfs.h" ]; then
-    echo "✅ include/linux/susfs.h créé"
-fi
-
-if [ -f "include/linux/susfs_def.h" ]; then
-    echo "✅ include/linux/susfs_def.h créé"
 fi
 
 find . -name "*.rej" -type f -delete 2>/dev/null || true
@@ -347,8 +338,6 @@ export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
 mkdir -p out
 
-echo "=== Fusion correcte des defconfigs lito-perf + moto-lito + kiev ==="
-
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
     vendor/lito-perf_defconfig
 
@@ -357,16 +346,12 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
     arch/arm64/configs/vendor/ext_config/moto-lito.config \
     arch/arm64/configs/vendor/ext_config/kiev-default.config
 
-# --- CORRECTION KCONFIG POUR INPUT_TOUCHSCREEN_MMI ---
-echo "=== Correction Kconfig INPUT_TOUCHSCREEN_MMI (bool au lieu de tristate) ==="
+echo "=== Correction Kconfig INPUT_TOUCHSCREEN_MMI (bool) ==="
 MMI_KCONFIG=$(grep -Rl "config INPUT_TOUCHSCREEN_MMI" drivers/input/touchscreen/ | head -1)
 if [ -n "$MMI_KCONFIG" ]; then
     sed -i '/config INPUT_TOUCHSCREEN_MMI/,/^$/ s/tristate/bool/' "$MMI_KCONFIG"
     sed -i '/config INPUT_TOUCHSCREEN_MMI/,/^$/ s/default n/default y/' "$MMI_KCONFIG"
-    echo "✅ Kconfig modifié : $(basename $MMI_KCONFIG)"
-else
-    echo "❌ Kconfig INPUT_TOUCHSCREEN_MMI introuvable"
-    exit 1
+    echo "✅ Kconfig modifié"
 fi
 
 ./scripts/config --file out/.config --disable TOUCHSCREEN_FTS
@@ -399,7 +384,6 @@ fi
 
 ./scripts/config --file out/.config --disable LTO_CLANG --disable CFI_CLANG
 
-# --- AJOUT DES DÉPENDANCES MANQUANTES ---
 ./scripts/config --file out/.config --enable MMI_RELAY
 ./scripts/config --file out/.config --enable DRM_DYNAMIC_REFRESH_RATE
 ./scripts/config --file out/.config --enable SENSORS_CLASS
@@ -410,29 +394,37 @@ echo "CONFIG_SENSORS_CLASS=y" >> out/.config
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-# Vérification finale
 if ! grep -q "CONFIG_INPUT_TOUCHSCREEN_MMI=y" out/.config; then
     echo "❌ CONFIG_INPUT_TOUCHSCREEN_MMI n'est pas y"
-    grep "CONFIG_INPUT_TOUCHSCREEN_MMI" out/.config
     exit 1
 fi
 
 if ! grep -q "CONFIG_DRM_DYNAMIC_REFRESH_RATE=y" out/.config; then
     echo "❌ CONFIG_DRM_DYNAMIC_REFRESH_RATE n'est pas y"
-    grep "CONFIG_DRM_DYNAMIC_REFRESH_RATE" out/.config
     exit 1
 fi
 
 if ! grep -q "CONFIG_SENSORS_CLASS=y" out/.config; then
     echo "❌ CONFIG_SENSORS_CLASS n'est pas y"
-    grep "CONFIG_SENSORS_CLASS" out/.config
     exit 1
 fi
 
-echo "✅ Toutes les configs sont correctes"
-
-# ==================== 8. PATCH SIGNATURES ====================
+# ==================== 8. PATCH SIGNATURES + STUB dsi_freq_head ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
+
+# Stub de secours pour dsi_freq_head
+if ! grep -q "dsi_freq_head" drivers/input/touchscreen/touchscreen_mmi/touchscreen_mmi_notif.c; then
+    cat >> drivers/input/touchscreen/touchscreen_mmi/touchscreen_mmi_notif.c << 'EOF'
+
+#ifdef CONFIG_DRM_DYNAMIC_REFRESH_RATE
+struct blocking_notifier_head dsi_freq_head = BLOCKING_NOTIFIER_INIT(dsi_freq_head);
+EXPORT_SYMBOL_GPL(dsi_freq_head);
+#endif
+EOF
+    echo "✅ Stub dsi_freq_head ajouté"
+else
+    echo "✅ dsi_freq_head déjà présent"
+fi
 
 # ==================== 9. COMPILATION ====================
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
@@ -500,7 +492,7 @@ cp "$KSUD_BINARY" "$GITHUB_WORKSPACE/ksud"
 chmod 755 "$GITHUB_WORKSPACE/ksud"
 echo "✅ ksud compilé"
 
-# ==================== 11. REPACK (URLs du 6 septembre) ====================
+# ==================== 11. REPACK ====================
 cd "$GITHUB_WORKSPACE"
 
 curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/${NIGHTLY_DATE_COMPACT}/boot.img"
