@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD FINAL 2 : KernelSU + SuSFS + FocalTech 0flash built-in + correctif MMI complet ==="
+echo "=== BUILD FINAL 3 : KernelSU + SuSFS + FocalTech 0flash built-in + correction Kconfig MMI ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -339,7 +339,7 @@ KCONFIG_EOF
     fi
 fi
 
-# ==================== 7. CONFIGURATION (defconfigs fusionnés correctement) ====================
+# ==================== 7. CONFIGURATION + CORRECTION KCONFIG MMI ====================
 export ARCH=arm64
 export SUBARCH=arm64
 export CROSS_COMPILE=aarch64-linux-gnu-
@@ -349,20 +349,28 @@ mkdir -p out
 
 echo "=== Fusion correcte des defconfigs lito-perf + moto-lito + kiev ==="
 
-# 1. Base defconfig
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
     vendor/lito-perf_defconfig
 
-# 2. Fusionner les fragments avec merge_config.sh
 ./scripts/kconfig/merge_config.sh -m -O out \
     out/.config \
     arch/arm64/configs/vendor/ext_config/moto-lito.config \
     arch/arm64/configs/vendor/ext_config/kiev-default.config
 
-# 3. Désactiver TOUCHSCREEN_FTS (générique)
+# --- CORRECTION KCONFIG POUR INPUT_TOUCHSCREEN_MMI ---
+echo "=== Correction Kconfig INPUT_TOUCHSCREEN_MMI (bool au lieu de tristate) ==="
+MMI_KCONFIG=$(grep -Rl "config INPUT_TOUCHSCREEN_MMI" drivers/input/touchscreen/ | head -1)
+if [ -n "$MMI_KCONFIG" ]; then
+    sed -i '/config INPUT_TOUCHSCREEN_MMI/,/^$/ s/tristate/bool/' "$MMI_KCONFIG"
+    sed -i '/config INPUT_TOUCHSCREEN_MMI/,/^$/ s/default n/default y/' "$MMI_KCONFIG"
+    echo "✅ Kconfig modifié : $(basename $MMI_KCONFIG)"
+else
+    echo "❌ Kconfig INPUT_TOUCHSCREEN_MMI introuvable"
+    exit 1
+fi
+
 ./scripts/config --file out/.config --disable TOUCHSCREEN_FTS
 
-# 4. Passer les drivers tactiles en BUILT-IN (=y)
 ./scripts/config --file out/.config \
     --enable INPUT_TOUCHSCREEN_MMI \
     --enable INPUT_FOCALTECH_0FLASH_MMI \
@@ -371,7 +379,6 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
     --enable TOUCHCLASS_MMI_GESTURE_POISON_EVENT \
     --enable BOARD_USES_DOUBLE_TAP_CTRL
 
-# 5. KernelSU + SUSFS
 ./scripts/config --file out/.config \
     --enable KSU \
     --enable KSU_MANUAL_HOOK \
@@ -390,59 +397,40 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
     --enable KSU_SUSFS_OPEN_REDIRECT \
     --enable THREAD_INFO_IN_TASK
 
-# 6. Désactiver LTO/CFI
 ./scripts/config --file out/.config --disable LTO_CLANG --disable CFI_CLANG
 
-# 7. Régénérer proprement
+# Forcer MMI_RELAY en y
+./scripts/config --file out/.config --enable MMI_RELAY
+echo "CONFIG_MMI_RELAY=y" >> out/.config
+
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-# 8. FORCE INPUT_TOUCHSCREEN_MMI en y et vérifier
-./scripts/config --file out/.config --enable INPUT_TOUCHSCREEN_MMI
-echo "CONFIG_INPUT_TOUCHSCREEN_MMI=y" >> out/.config
-make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
-
+# Vérification finale
 if ! grep -q "CONFIG_INPUT_TOUCHSCREEN_MMI=y" out/.config; then
-    echo "❌ CONFIG_INPUT_TOUCHSCREEN_MMI n'est pas y !"
+    echo "❌ CONFIG_INPUT_TOUCHSCREEN_MMI n'est toujours pas y"
     grep "CONFIG_INPUT_TOUCHSCREEN_MMI" out/.config
     exit 1
 fi
 
-grep "CONFIG_INPUT_TOUCHSCREEN_MMI" out/.config
+if ! grep -q "CONFIG_MMI_RELAY=y" out/.config; then
+    echo "❌ CONFIG_MMI_RELAY n'est toujours pas y"
+    grep "CONFIG_MMI_RELAY" out/.config
+    exit 1
+fi
+
+echo "✅ CONFIG_INPUT_TOUCHSCREEN_MMI=y confirmé"
+echo "✅ CONFIG_MMI_RELAY=y confirmé"
 
 # ==================== 8. PATCH SIGNATURES ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
-# ==================== 9. CORRECTIF KBUILD TOUCHSCREEN_MMI ====================
-echo "=== Application du correctif Makefile pour touchscreen_mmi ==="
-
-# S'assurer que le dossier touchscreen_mmi est dans le Makefile parent
-if ! grep -q "obj-\$(CONFIG_INPUT_TOUCHSCREEN_MMI).*touchscreen_mmi/" drivers/input/touchscreen/Makefile; then
-    echo "obj-\$(CONFIG_INPUT_TOUCHSCREEN_MMI) += touchscreen_mmi/" >> drivers/input/touchscreen/Makefile
-fi
-
-# Créer un Makefile interne si absent
-if [ ! -f drivers/input/touchscreen/touchscreen_mmi/Makefile ]; then
-    echo "obj-\$(CONFIG_INPUT_TOUCHSCREEN_MMI) := touchscreen_mmi.o" > drivers/input/touchscreen/touchscreen_mmi/Makefile
-    echo "touchscreen_mmi-objs := touchscreen_mmi_class.o touchscreen_mmi_panel.o touchscreen_mmi_notif.o touchscreen_mmi_gesture.o" >> drivers/input/touchscreen/touchscreen_mmi/Makefile
-else
-    # S'assurer que le Makefile contient bien les objets
-    if ! grep -q "touchscreen_mmi_class" drivers/input/touchscreen/touchscreen_mmi/Makefile; then
-        echo "obj-\$(CONFIG_INPUT_TOUCHSCREEN_MMI) := touchscreen_mmi.o" > drivers/input/touchscreen/touchscreen_mmi/Makefile
-        echo "touchscreen_mmi-objs := touchscreen_mmi_class.o touchscreen_mmi_panel.o touchscreen_mmi_notif.o touchscreen_mmi_gesture.o" >> drivers/input/touchscreen/touchscreen_mmi/Makefile
-    fi
-fi
-
-# ==================== 10. COMPILATION ====================
-
-# 1. Compiler les scripts internes
+# ==================== 9. COMPILATION ====================
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
     -j$(nproc) scripts
 
-# 2. Compiler le kernel et les modules
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
     -j$(nproc) Image modules
 
-# 3. Compiler les dtbs
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
     HOSTCC=gcc HOSTRANDOM=no DTC_EXT=$(pwd)/out/scripts/dtc/dtc dtbs 2>&1 | tee -a build.log
 
@@ -454,21 +442,7 @@ fi
 
 echo "✅ Compilation réussie"
 
-echo "=== Vérification drivers tactiles ==="
-if grep -q "CONFIG_INPUT_FOCALTECH_0FLASH_MMI=y" out/.config; then
-    echo "✅ focaltech_0flash_mmi est BUILT-IN"
-else
-    echo "⚠️ focaltech_0flash_mmi est en module ou absent"
-    ls out/drivers/input/touchscreen/focaltech* 2>/dev/null || echo "Répertoire focaltech non trouvé"
-fi
-
-if [ -d "out/arch/arm64/boot/dts/qcom" ]; then
-    echo "✅ Dossier DTBS généré avec succès"
-else
-    echo "⚠️ Dossier DTBS non trouvé"
-fi
-
-# ==================== 11. COMPILATION KSUD (MÊME COMMIT) ====================
+# ==================== 10. COMPILATION KSUD ====================
 cd "$GITHUB_WORKSPACE"
 
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -516,7 +490,7 @@ cp "$KSUD_BINARY" "$GITHUB_WORKSPACE/ksud"
 chmod 755 "$GITHUB_WORKSPACE/ksud"
 echo "✅ ksud compilé"
 
-# ==================== 12. REPACK (URLs du 6 septembre) ====================
+# ==================== 11. REPACK (URLs du 6 septembre) ====================
 cd "$GITHUB_WORKSPACE"
 
 curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/${NIGHTLY_DATE_COMPACT}/boot.img"
