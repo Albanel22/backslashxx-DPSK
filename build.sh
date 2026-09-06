@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD DIAGNOSTIC : KernelSU v3.2.5-76+ (0b138d6a) + SuSFS (pinné 9 août) + defconfig kiev fusionné ==="
+echo "=== BUILD FINAL 7 : KernelSU + SuSFS + FocalTech 0flash built-in + stub dsi_freq_head inconditionnel ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -16,10 +16,23 @@ sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf
 
 cd "$GITHUB_WORKSPACE"
 
+# === SYNCHRONISATION COMMIT / NIGHTLY ===
+NIGHTLY_DATE="2026-09-06"
+NIGHTLY_DATE_COMPACT="20260906"
+echo "Nightly: $NIGHTLY_DATE"
+COMMIT_HASH=$(curl -s "https://api.github.com/repos/LineageOS/android_kernel_motorola_sm8250/commits?sha=lineage-23.2&until=${NIGHTLY_DATE}T23:59:59Z&per_page=1" | grep -oP '"sha": "\K[0-9a-f]+' | head -1)
+echo "Commit pour nightly du $NIGHTLY_DATE : $COMMIT_HASH"
+
 # ==================== 1. CLONAGE DU NOYAU ====================
-echo "=== Clonage du kernel Motorola sm8250 ==="
+echo "=== Clonage du kernel Motorola sm8250 (commit synchronisé) ==="
 git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git \
     -b lineage-23.2 --depth=1 kernel_sources
+cd kernel_sources
+if [ -n "$COMMIT_HASH" ]; then
+    git fetch --depth=1 origin "$COMMIT_HASH"
+    git checkout "$COMMIT_HASH"
+fi
+cd ..
 
 cd kernel_sources
 
@@ -72,7 +85,6 @@ grep -n "DKSU_VERSION" drivers/kernelsu/Makefile
 # ==================== 2d. FIX VERSION/UAPI ====================
 echo "=== Fix version et UAPI ==="
 
-# Fix UAPI
 if [ -f "/tmp/KernelSU/uapi/supercall.h" ]; then
     sed -i 's/static const __u32 KERNEL_SU_UAPI_VERSION = [0-9]*;/static const __u32 KERNEL_SU_UAPI_VERSION = 2;/' /tmp/KernelSU/uapi/supercall.h
     sed -i 's/#define KERNEL_SU_UAPI_VERSION [0-9]*/#define KERNEL_SU_UAPI_VERSION 2/' /tmp/KernelSU/uapi/supercall.h
@@ -91,26 +103,6 @@ if [ -f "$DISPATCH_FILE" ]; then
     sed -i 's/struct ksu_get_info_cmd cmd = { \.version = KERNEL_SU_VERSION, \.flags = 0 };/struct ksu_get_info_cmd cmd = { .version = 32601, .flags = 0 };/' "$DISPATCH_FILE"
     sed -i 's/struct ksu_get_info_legacy_cmd cmd = { \.version = KERNEL_SU_VERSION, \.flags = 0 };/struct ksu_get_info_legacy_cmd cmd = { .version = 32601, .flags = 0 };/' "$DISPATCH_FILE"
     echo "[+] Corrections dispatch.c appliquées"
-fi
-
-# ==================== 2e. AJOUT DU LOG DE DEBUG ====================
-echo "=== Ajout du pr_info de debug dans do_get_info ==="
-if [ -f "$DISPATCH_FILE" ]; then
-    # Insérer un pr_info juste avant le copy_to_user de do_get_info
-    python3 - << 'PYEOF'
-DISPATCH_FILE="/tmp/KernelSU/kernel/supercall/dispatch.c"
-with open(DISPATCH_FILE, "r") as f:
-    content = f.read()
-
-old = "\tif (copy_to_user(arg, &cmd, sizeof(cmd))) {"
-new = "\tpr_info(\"KSU DEBUG: version=%u uapi_version=%u\\n\", cmd.version, cmd.uapi_version);\n" + old
-
-content = content.replace(old, new, 1)
-with open(DISPATCH_FILE, "w") as f:
-    f.write(content)
-print("[+] pr_info ajouté")
-PYEOF
-    grep -n "KSU DEBUG" "$DISPATCH_FILE"
 fi
 
 # ==================== 3. HOOKS MANUELS KERNELSU ====================
@@ -186,7 +178,7 @@ fi
 
 echo "✅ Hooks KernelSU en place"
 
-# ==================== 4. TÉLÉCHARGEMENT DU VRAI SUSFS (pinné au 9 août 2026) ====================
+# ==================== 4. TÉLÉCHARGEMENT DU VRAI SUSFS ====================
 echo "=== Téléchargement du SuSFS (JackA1ltman, commit pinné) ==="
 
 JACK_COMMIT="6eae2b587750336507096469fee74a2173e14bf6"
@@ -196,13 +188,12 @@ cd /tmp/jack_repo
 git checkout "$JACK_COMMIT"
 cd "$GITHUB_WORKSPACE/kernel_sources"
 
-echo "✅ Repo SuSFS pinné au commit $JACK_COMMIT (9 août 2026)"
+echo "✅ Repo SuSFS pinné au commit $JACK_COMMIT"
 
 SUSFS_PATCH="/tmp/jack_repo/Patches/Patch/susfs_patch_to_4.19.patch"
 
 if [ ! -f "$SUSFS_PATCH" ]; then
     echo "❌ Patch SuSFS 4.19 non trouvé !"
-    find /tmp/jack_repo/Patches -name "*.patch" | sort
     exit 1
 fi
 
@@ -218,14 +209,6 @@ if [ -f "fs/susfs.c" ]; then
 else
     echo "❌ fs/susfs.c non créé !"
     exit 1
-fi
-
-if [ -f "include/linux/susfs.h" ]; then
-    echo "✅ include/linux/susfs.h créé"
-fi
-
-if [ -f "include/linux/susfs_def.h" ]; then
-    echo "✅ include/linux/susfs_def.h créé"
 fi
 
 find . -name "*.rej" -type f -delete 2>/dev/null || true
@@ -347,7 +330,7 @@ KCONFIG_EOF
     fi
 fi
 
-# ==================== 7. CONFIGURATION (defconfig fusionné lito-perf + kiev) & PATCH TACTILE ====================
+# ==================== 7. CONFIGURATION + CORRECTIONS ====================
 export ARCH=arm64
 export SUBARCH=arm64
 export CROSS_COMPILE=aarch64-linux-gnu-
@@ -355,16 +338,31 @@ export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
 mkdir -p out
 
-# IMPORTANT : vendor/kiev_defconfig n'existe pas en tant que fichier autonome.
-# La vraie configuration du Moto One 5G Ace (kiev) est la fusion de :
-#   - vendor/lito-perf_defconfig       (base générique du chipset lito)
-#   - vendor/ext_config/kiev-default.config (fragment spécifique kiev)
-# Ce fragment désactive les drivers tactiles génériques (TOUCHSCREEN_FTS/ST/SYNAPTICS_*)
-# et active le vrai driver SPI Motorola (INPUT_FOCALTECH_0FLASH_MMI, IC ft8756).
-echo "Config utilisée : vendor/lito-perf_defconfig + vendor/ext_config/kiev-default.config"
-
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
-    vendor/lito-perf_defconfig vendor/ext_config/kiev-default.config
+    vendor/lito-perf_defconfig
+
+./scripts/kconfig/merge_config.sh -m -O out \
+    out/.config \
+    arch/arm64/configs/vendor/ext_config/moto-lito.config \
+    arch/arm64/configs/vendor/ext_config/kiev-default.config
+
+echo "=== Correction Kconfig INPUT_TOUCHSCREEN_MMI (bool) ==="
+MMI_KCONFIG=$(grep -Rl "config INPUT_TOUCHSCREEN_MMI" drivers/input/touchscreen/ | head -1)
+if [ -n "$MMI_KCONFIG" ]; then
+    sed -i '/config INPUT_TOUCHSCREEN_MMI/,/^$/ s/tristate/bool/' "$MMI_KCONFIG"
+    sed -i '/config INPUT_TOUCHSCREEN_MMI/,/^$/ s/default n/default y/' "$MMI_KCONFIG"
+    echo "✅ Kconfig modifié"
+fi
+
+./scripts/config --file out/.config --disable TOUCHSCREEN_FTS
+
+./scripts/config --file out/.config \
+    --enable INPUT_TOUCHSCREEN_MMI \
+    --enable INPUT_FOCALTECH_0FLASH_MMI \
+    --enable INPUT_FOCALTECH_0FLASH_MMI_ENABLE_DOUBLE_TAP \
+    --enable INPUT_FOCALTECH_0FLASH_MMI_ENABLE_ESD \
+    --enable TOUCHCLASS_MMI_GESTURE_POISON_EVENT \
+    --enable BOARD_USES_DOUBLE_TAP_CTRL
 
 ./scripts/config --file out/.config \
     --enable KSU \
@@ -384,28 +382,45 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
     --enable KSU_SUSFS_OPEN_REDIRECT \
     --enable THREAD_INFO_IN_TASK
 
+./scripts/config --file out/.config --disable LTO_CLANG --disable CFI_CLANG
+
+./scripts/config --file out/.config --enable MMI_RELAY
+./scripts/config --file out/.config --enable DRM_DYNAMIC_REFRESH_RATE
+./scripts/config --file out/.config --enable SENSORS_CLASS
+
+echo "CONFIG_MMI_RELAY=y" >> out/.config
+echo "CONFIG_DRM_DYNAMIC_REFRESH_RATE=y" >> out/.config
+echo "CONFIG_SENSORS_CLASS=y" >> out/.config
+
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-{
-    echo "CONFIG_KSU_SUSFS=y"
-    echo "CONFIG_KSU_SUSFS_SUS_PATH=y"
-    echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y"
-    echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y"
-    echo "CONFIG_KSU_SUSFS_SUS_MAP=y"
-    echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y"
-    echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y"
-    echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y"
-    echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y"
-    echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y"
-} >> out/.config
+if ! grep -q "CONFIG_INPUT_TOUCHSCREEN_MMI=y" out/.config; then
+    echo "❌ CONFIG_INPUT_TOUCHSCREEN_MMI n'est pas y"
+    exit 1
+fi
 
-grep "CONFIG_KSU_SUSFS" out/.config
+if ! grep -q "CONFIG_DRM_DYNAMIC_REFRESH_RATE=y" out/.config; then
+    echo "❌ CONFIG_DRM_DYNAMIC_REFRESH_RATE n'est pas y"
+    exit 1
+fi
 
-# ==================== 8. PATCH SIGNATURES ====================
+if ! grep -q "CONFIG_SENSORS_CLASS=y" out/.config; then
+    echo "❌ CONFIG_SENSORS_CLASS n'est pas y"
+    exit 1
+fi
+
+# ==================== 8. PATCH SIGNATURES + STUB dsi_freq_head ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
-# ==================== 10. COMPILATION ====================
-make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image 2>&1 | tee build.log
+# ==================== 9. COMPILATION ====================
+make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
+    -j$(nproc) scripts
+
+make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
+    -j$(nproc) Image modules
+
+make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
+    HOSTCC=gcc HOSTRANDOM=no DTC_EXT=$(pwd)/out/scripts/dtc/dtc dtbs 2>&1 | tee -a build.log
 
 if [ ! -f "out/arch/arm64/boot/Image" ]; then
     echo "❌ BUILD FAILED"
@@ -415,7 +430,7 @@ fi
 
 echo "✅ Compilation réussie"
 
-# ==================== 11. COMPILATION KSUD (MÊME COMMIT) ====================
+# ==================== 10. COMPILATION KSUD ====================
 cd "$GITHUB_WORKSPACE"
 
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -463,23 +478,11 @@ cp "$KSUD_BINARY" "$GITHUB_WORKSPACE/ksud"
 chmod 755 "$GITHUB_WORKSPACE/ksud"
 echo "✅ ksud compilé"
 
-# ==================== 12. REPACK ====================
+# ==================== 11. REPACK ====================
 cd "$GITHUB_WORKSPACE"
 
-curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/boot.img" 2>/dev/null || {
-    mkbootimg \
-      --kernel kernel_sources/out/arch/arm64/boot/Image \
-      --ramdisk /dev/null \
-      --output final_boot.img \
-      --header_version 2 \
-      --pagesize 4096 \
-      --base 0x00000000 \
-      --kernel_offset 0x00008000 \
-      --ramdisk_offset 0x01000000 \
-      --tags_offset 0x00000100 \
-      --cmdline "androidboot.hardware=kiev androidboot.selinux=permissive"
-}
-curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/dtbo.img" 2>/dev/null || true
+curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/${NIGHTLY_DATE_COMPACT}/boot.img"
+curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/${NIGHTLY_DATE_COMPACT}/dtbo.img"
 
 if [ -f "boot-stock.img" ]; then
   mkdir -p repack
