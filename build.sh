@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD FINAL 10 : KernelSU + SuSFS + FocalTech 0flash built-in + DRM natif ==="
+echo "=== BUILD FINAL 7 : KernelSU + SuSFS + FocalTech 0flash built-in + stub dsi_freq_head inconditionnel ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -387,14 +387,10 @@ fi
 ./scripts/config --file out/.config --enable MMI_RELAY
 ./scripts/config --file out/.config --enable DRM_DYNAMIC_REFRESH_RATE
 ./scripts/config --file out/.config --enable SENSORS_CLASS
-./scripts/config --file out/.config --enable DRM
-./scripts/config --file out/.config --enable DRM_MSM
 
 echo "CONFIG_MMI_RELAY=y" >> out/.config
 echo "CONFIG_DRM_DYNAMIC_REFRESH_RATE=y" >> out/.config
 echo "CONFIG_SENSORS_CLASS=y" >> out/.config
-echo "CONFIG_DRM=y" >> out/.config
-echo "CONFIG_DRM_MSM=y" >> out/.config
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
@@ -413,14 +409,10 @@ if ! grep -q "CONFIG_SENSORS_CLASS=y" out/.config; then
     exit 1
 fi
 
-# ==================== 8. PATCH SIGNATURES ====================
+# ==================== 8. PATCH SIGNATURES + STUB dsi_freq_head ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
 # ==================== 9. COMPILATION ====================
-# Nettoyage des objets pour forcer la recompilation
-find out/fs -name "susfs.o" -delete 2>/dev/null || true
-find out/techpack/display/msm/dsi -name "dsi_panel.o" -delete 2>/dev/null || true
-
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
     -j$(nproc) scripts
 
