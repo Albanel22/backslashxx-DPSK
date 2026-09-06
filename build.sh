@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD FINAL 3 : KernelSU + SuSFS + FocalTech 0flash built-in + correction Kconfig MMI ==="
+echo "=== BUILD FINAL 4 : KernelSU + SuSFS + FocalTech 0flash built-in + dépendances MMI/DRM/SENSORS ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -339,7 +339,7 @@ KCONFIG_EOF
     fi
 fi
 
-# ==================== 7. CONFIGURATION + CORRECTION KCONFIG MMI ====================
+# ==================== 7. CONFIGURATION + CORRECTIONS ====================
 export ARCH=arm64
 export SUBARCH=arm64
 export CROSS_COMPILE=aarch64-linux-gnu-
@@ -399,27 +399,37 @@ fi
 
 ./scripts/config --file out/.config --disable LTO_CLANG --disable CFI_CLANG
 
-# Forcer MMI_RELAY en y
+# --- AJOUT DES DÉPENDANCES MANQUANTES ---
 ./scripts/config --file out/.config --enable MMI_RELAY
+./scripts/config --file out/.config --enable DRM_DYNAMIC_REFRESH_RATE
+./scripts/config --file out/.config --enable SENSORS_CLASS
+
 echo "CONFIG_MMI_RELAY=y" >> out/.config
+echo "CONFIG_DRM_DYNAMIC_REFRESH_RATE=y" >> out/.config
+echo "CONFIG_SENSORS_CLASS=y" >> out/.config
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
 # Vérification finale
 if ! grep -q "CONFIG_INPUT_TOUCHSCREEN_MMI=y" out/.config; then
-    echo "❌ CONFIG_INPUT_TOUCHSCREEN_MMI n'est toujours pas y"
+    echo "❌ CONFIG_INPUT_TOUCHSCREEN_MMI n'est pas y"
     grep "CONFIG_INPUT_TOUCHSCREEN_MMI" out/.config
     exit 1
 fi
 
-if ! grep -q "CONFIG_MMI_RELAY=y" out/.config; then
-    echo "❌ CONFIG_MMI_RELAY n'est toujours pas y"
-    grep "CONFIG_MMI_RELAY" out/.config
+if ! grep -q "CONFIG_DRM_DYNAMIC_REFRESH_RATE=y" out/.config; then
+    echo "❌ CONFIG_DRM_DYNAMIC_REFRESH_RATE n'est pas y"
+    grep "CONFIG_DRM_DYNAMIC_REFRESH_RATE" out/.config
     exit 1
 fi
 
-echo "✅ CONFIG_INPUT_TOUCHSCREEN_MMI=y confirmé"
-echo "✅ CONFIG_MMI_RELAY=y confirmé"
+if ! grep -q "CONFIG_SENSORS_CLASS=y" out/.config; then
+    echo "❌ CONFIG_SENSORS_CLASS n'est pas y"
+    grep "CONFIG_SENSORS_CLASS" out/.config
+    exit 1
+fi
+
+echo "✅ Toutes les configs sont correctes"
 
 # ==================== 8. PATCH SIGNATURES ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
