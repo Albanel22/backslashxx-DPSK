@@ -423,8 +423,8 @@ if [ -n "$FTS_FILE" ]; then
     sed -i 's/__exit//g' "$FTS_FILE"
     sed -i 's/module_exit(.*)//g' "$FTS_FILE"
     
-    # Corrige l'appel de fonction incorrect (ts_mmi_dev_unregister -> fts_mmi_dev_unregister)
-    sed -i 's/ts_mmi_dev_unregister/fts_mmi_dev_unregister/g' "$FTS_FILE"
+    # Corrige l'appel de fonction incorrect (ts_mmi_dev_register -> fts_mmi_dev_register)
+    sed -i 's/\bts_mmi_dev_register\b/fts_mmi_dev_register/g' "$FTS_FILE"
     
     echo "✅ Patch FocalTech appliqué et corrigé sur $FTS_FILE"
 else
