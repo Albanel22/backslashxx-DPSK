@@ -396,28 +396,29 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 # 7. Régénérer proprement
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-# 8. Vérifications
-echo "=== Vérification config tactile ==="
-grep -E "CONFIG_TOUCHSCREEN_FTS=|CONFIG_INPUT_FOCALTECH_0FLASH_MMI=|CONFIG_INPUT_TOUCHSCREEN_MMI=|CONFIG_KIEV_DTB=" out/.config
+# 8. Vérification config INPUT_TOUCHSCREEN_MMI
+if ! grep -q "CONFIG_INPUT_TOUCHSCREEN_MMI=y" out/.config; then
+    ./scripts/config --file out/.config --enable INPUT_TOUCHSCREEN_MMI
+    make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
+fi
 
-echo "=== Vérification CONFIG_MODULES ==="
-grep "CONFIG_MODULES=" out/.config
+grep "CONFIG_INPUT_TOUCHSCREEN_MMI" out/.config
 
 # ==================== 8. PATCH SIGNATURES ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
-# ==================== 9. PATCH DRIVER FOCALTECH POUR BUILT-IN ====================
-echo "=== Application du patch FocalTech pour built-in (ciblé 0flash) ==="
+# ==================== 9. CORRECTIF KBUILD TOUCHSCREEN_MMI ====================
+echo "=== Application du correctif Makefile pour touchscreen_mmi (Kbuild manquant) ==="
 
-FTS_FILE="drivers/input/touchscreen/focaltech_0flash_mmi/focaltech_ts_mmi.c"
+if ! grep -q "touchscreen_mmi/touchscreen_mmi_class.o" drivers/input/touchscreen/Makefile; then
+    cat >> drivers/input/touchscreen/Makefile << 'MAKEFILE_EOF'
 
-if [ -f "$FTS_FILE" ]; then
-    # Supprimer les annotations __exit et module_exit si présentes
-    sed -i 's/__exit//g' "$FTS_FILE"
-    sed -i 's/module_exit(.*)//g' "$FTS_FILE"
-    echo "✅ Patch appliqué sur $FTS_FILE"
-else
-    echo "⚠️ Fichier $FTS_FILE introuvable. Vérifiez le chemin."
+# Compilation directe des fichiers touchscreen_mmi (correctif Kbuild manquant)
+obj-$(CONFIG_INPUT_TOUCHSCREEN_MMI) += touchscreen_mmi/touchscreen_mmi_class.o \
+                                        touchscreen_mmi/touchscreen_mmi_panel.o \
+                                        touchscreen_mmi/touchscreen_mmi_notif.o \
+                                        touchscreen_mmi/touchscreen_mmi_gesture.o
+MAKEFILE_EOF
 fi
 
 # ==================== 10. COMPILATION ====================
