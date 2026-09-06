@@ -415,13 +415,18 @@ grep "CONFIG_MODULES=" out/.config
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
 # ==================== 10. COMPILATION ====================
-# Compiler le kernel, les modules, et les device trees (dtbs)
 
+# 1. Compiler d'abord les scripts internes (dont le dtc local du noyau)
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
     -j$(nproc) scripts
-	
+
+# 2. Compiler le kernel et les modules d'abord
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
-    -j$(nproc) Image modules dtbs 2>&1 | tee build.log
+    -j$(nproc) Image modules
+
+# 3. Compiler les dtbs en forçant l'utilisation du dtc local généré dans out/scripts/dtc/dtc
+make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
+    HOSTCC=gcc HOSTRANDOM=no DTC_EXT=$(pwd)/out/scripts/dtc/dtc dtbs 2>&1 | tee -a build.log
 
 if [ ! -f "out/arch/arm64/boot/Image" ]; then
     echo "❌ BUILD FAILED"
