@@ -414,6 +414,19 @@ grep "CONFIG_MODULES=" out/.config
 # ==================== 8. PATCH SIGNATURES ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
+# ==================== 9. PATCH DRIVER FOCALTECH POUR BUILT-IN ====================
+echo "=== Application du patch FocalTech pour built-in ==="
+FTS_FILE=$(find drivers/input/touchscreen/ -name "focaltech_ts_mmi.c" -o -name "focaltech_core.c" 2>/dev/null | head -n 1)
+
+if [ -n "$FTS_FILE" ]; then
+    # Supprime les annotations __exit et module_exit qui bloquent le linkage built-in
+    sed -i 's/__exit//g' "$FTS_FILE"
+    sed -i 's/module_exit(.*)//g' "$FTS_FILE"
+    echo "✅ Patch FocalTech appliqué sur $FTS_FILE"
+else
+    echo "⚠️ Fichier source FocalTech non trouvé pour le patch"
+fi
+
 # ==================== 10. COMPILATION ====================
 
 # 1. Compiler d'abord les scripts internes (dont le dtc local du noyau)
