@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD FINAL 9 : KernelSU + SuSFS + FocalTech 0flash built-in + DRM natif ==="
+echo "=== BUILD FINAL 10 : KernelSU + SuSFS + FocalTech 0flash built-in + DRM natif ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -417,7 +417,7 @@ fi
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
 # ==================== 9. COMPILATION ====================
-# Nettoyer les objets obsolètes pour éviter les doublons
+# Nettoyage des objets pour forcer la recompilation
 find out/fs -name "susfs.o" -delete 2>/dev/null || true
 find out/techpack/display/msm/dsi -name "dsi_panel.o" -delete 2>/dev/null || true
 
