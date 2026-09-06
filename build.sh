@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD FINAL 6 : KernelSU + SuSFS + FocalTech 0flash built-in + correctif of_drm_find_panel ==="
+echo "=== BUILD FINAL 7 : KernelSU + SuSFS + FocalTech 0flash built-in + stub dsi_freq_head inconditionnel ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -387,12 +387,10 @@ fi
 ./scripts/config --file out/.config --enable MMI_RELAY
 ./scripts/config --file out/.config --enable DRM_DYNAMIC_REFRESH_RATE
 ./scripts/config --file out/.config --enable SENSORS_CLASS
-./scripts/config --file out/.config --enable DRM_PANEL_NOTIFICATIONS
 
 echo "CONFIG_MMI_RELAY=y" >> out/.config
 echo "CONFIG_DRM_DYNAMIC_REFRESH_RATE=y" >> out/.config
 echo "CONFIG_SENSORS_CLASS=y" >> out/.config
-echo "CONFIG_DRM_PANEL_NOTIFICATIONS=y" >> out/.config
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
@@ -411,34 +409,19 @@ if ! grep -q "CONFIG_SENSORS_CLASS=y" out/.config; then
     exit 1
 fi
 
-# ==================== 8. PATCH SIGNATURES + STUBS ====================
+# ==================== 8. PATCH SIGNATURES + STUB dsi_freq_head ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
-# Stub de secours pour dsi_freq_head
-if ! grep -q "dsi_freq_head" drivers/input/touchscreen/touchscreen_mmi/touchscreen_mmi_notif.c; then
+# Stub de secours pour dsi_freq_head (AJOUT INCONDITIONNEL)
+if ! grep -q "struct blocking_notifier_head dsi_freq_head" drivers/input/touchscreen/touchscreen_mmi/touchscreen_mmi_notif.c; then
     cat >> drivers/input/touchscreen/touchscreen_mmi/touchscreen_mmi_notif.c << 'EOF'
 
-#ifdef CONFIG_DRM_DYNAMIC_REFRESH_RATE
 struct blocking_notifier_head dsi_freq_head = BLOCKING_NOTIFIER_INIT(dsi_freq_head);
 EXPORT_SYMBOL_GPL(dsi_freq_head);
-#endif
 EOF
-    echo "✅ Stub dsi_freq_head ajouté"
+    echo "✅ Stub dsi_freq_head ajouté sans condition"
 else
     echo "✅ dsi_freq_head déjà présent"
-fi
-
-# Déclaration de secours pour of_drm_find_panel
-if ! grep -q "of_drm_find_panel" drivers/input/touchscreen/touchscreen_mmi/touchscreen_mmi_panel.c; then
-    cat >> drivers/input/touchscreen/touchscreen_mmi/touchscreen_mmi_panel.c << 'EOF'
-
-#ifdef CONFIG_DRM_DYNAMIC_REFRESH_RATE
-extern struct drm_panel *of_drm_find_panel(struct device_node *node);
-#endif
-EOF
-    echo "✅ Déclaration of_drm_find_panel ajoutée"
-else
-    echo "✅ of_drm_find_panel déjà déclaré"
 fi
 
 # ==================== 9. COMPILATION ====================
