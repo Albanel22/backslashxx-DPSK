@@ -72,7 +72,6 @@ grep -n "DKSU_VERSION" drivers/kernelsu/Makefile
 # ==================== 2d. FIX VERSION/UAPI ====================
 echo "=== Fix version et UAPI ==="
 
-# Fix UAPI
 if [ -f "/tmp/KernelSU/uapi/supercall.h" ]; then
     sed -i 's/static const __u32 KERNEL_SU_UAPI_VERSION = [0-9]*;/static const __u32 KERNEL_SU_UAPI_VERSION = 2;/' /tmp/KernelSU/uapi/supercall.h
     sed -i 's/#define KERNEL_SU_UAPI_VERSION [0-9]*/#define KERNEL_SU_UAPI_VERSION 2/' /tmp/KernelSU/uapi/supercall.h
@@ -135,14 +134,12 @@ hook_insert() {
 
 HOOKS_FAILED=0
 
-# fs/exec.c
 hook_insert "fs/exec.c" \
     '(?s)static int do_execveat_common\(.*?int flags\)\s*\n\{' \
     '#ifdef CONFIG_KSU\nextern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,\n\t\t\t\t\t void *envp, int *flags);\n#endif\n' \
     'ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);' \
     || HOOKS_FAILED=1
 
-# fs/open.c
 if grep -Pzo 'long do_faccessat\(int dfd, const char __user \*filename, int mode\)\s*\n\{' fs/open.c > /dev/null 2>&1; then
     hook_insert "fs/open.c" \
         'long do_faccessat\(int dfd, const char __user \*filename, int mode\)\s*\n\{' \
@@ -160,7 +157,6 @@ else
     HOOKS_FAILED=1
 fi
 
-# fs/stat.c
 if grep -Pzo 'int vfs_statx\(int dfd, const char __user \*filename, int flags,' fs/stat.c > /dev/null 2>&1; then
     hook_insert "fs/stat.c" \
         'int vfs_statx\(int dfd, const char __user \*filename, int flags,[^{]*\{' \
@@ -195,42 +191,18 @@ cd /tmp/jack_repo
 git checkout "$JACK_COMMIT"
 cd "$GITHUB_WORKSPACE/kernel_sources"
 
-echo "✅ Repo SuSFS pinné au commit $JACK_COMMIT"
-
 SUSFS_PATCH="/tmp/jack_repo/Patches/Patch/susfs_patch_to_4.19.patch"
 
 if [ ! -f "$SUSFS_PATCH" ]; then
     echo "❌ Patch SuSFS 4.19 non trouvé !"
-    find /tmp/jack_repo/Patches -name "*.patch" | sort
     exit 1
 fi
-
-echo "✅ Patch SuSFS trouvé : $(wc -l < $SUSFS_PATCH) lignes"
-
-# ==================== 5. APPLICATION DU PATCH SUSFS ====================
-echo "=== Application du patch SuSFS ==="
 
 patch -p1 < "$SUSFS_PATCH" 2>&1 | tee /tmp/susfs_patch.log || true
-
-if [ -f "fs/susfs.c" ]; then
-    echo "✅ fs/susfs.c créé ($(wc -l < fs/susfs.c) lignes)"
-else
-    echo "❌ fs/susfs.c non créé !"
-    exit 1
-fi
-
-if [ -f "include/linux/susfs.h" ]; then
-    echo "✅ include/linux/susfs.h créé"
-fi
-
-if [ -f "include/linux/susfs_def.h" ]; then
-    echo "✅ include/linux/susfs_def.h créé"
-fi
 
 find . -name "*.rej" -type f -delete 2>/dev/null || true
 find . -name "*.orig" -type f -delete 2>/dev/null || true
 
-# ==================== 5b. CORRECTION FS/MAKEFILE ====================
 if [ -f "fs/Makefile" ]; then
     if ! grep -q "susfs.o" fs/Makefile; then
         echo "obj-\$(CONFIG_KSU_SUSFS) += susfs.o" >> fs/Makefile
@@ -242,7 +214,6 @@ if [ -f "fs/Makefile" ]; then
     fi
 fi
 
-# ==================== 5c. CORRECTION NAMESPACE.C ====================
 python3 - << 'PYEOF'
 import re
 
@@ -267,12 +238,10 @@ with open('fs/namespace.c', 'w') as f:
     f.write(content)
 PYEOF
 
-# ==================== 5d. CORRECTION TASK_MMU.C ====================
 if [ -f "fs/proc/task_mmu.c" ]; then
     sed -i 's/struct vm_area_struct \*vma;/struct vm_area_struct *vma __maybe_unused;/g' fs/proc/task_mmu.c
 fi
 
-# ==================== 5e. AJOUT DES SYMBOLES MANQUANTS ====================
 if ! grep -q "susfs_ksu_sid = 0" fs/susfs.c; then
     cat >> fs/susfs.c << 'SUSFS_EOF'
 
@@ -346,6 +315,15 @@ KCONFIG_EOF
     fi
 fi
 
+# ==================== 6.5 FIX INCLUDE DRM PANEL DANS TOUCHSCREEN_MMI ====================
+TOUCH_PANEL_C="drivers/input/touchscreen/touchscreen_mmi/touchscreen_mmi_panel.c"
+if [ -f "$TOUCH_PANEL_C" ]; then
+    if ! grep -q "<linux/drm/drm_panel.h>" "$TOUCH_PANEL_C"; then
+        sed -i 's/#include <linux/module.h>/#include <linux\/module.h>\n#include <linux\/drm\/drm_panel.h>/g' "$TOUCH_PANEL_C"
+        echo "[+] Include <linux/drm/drm_panel.h> ajouté à touchscreen_mmi_panel.c"
+    fi
+fi
+
 # ==================== 7. CONFIGURATION ====================
 export ARCH=arm64
 export SUBARCH=arm64
@@ -405,26 +383,17 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-echo "=== Vérification config tactile et DRM ==="
-grep -E "CONFIG_TOUCHSCREEN_FTS=|CONFIG_INPUT_FOCALTECH_0FLASH_MMI=|CONFIG_INPUT_TOUCHSCREEN_MMI=|CONFIG_MMI_RELAY=|CONFIG_DRM_PANEL_NOTIFICATIONS=|CONFIG_SENSORS_CORE=|CONFIG_DRM_PANEL=" out/.config
-
 # ==================== 8. PATCH SIGNATURES ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
 # ==================== 9. PATCH DRIVER FOCALTECH POUR BUILT-IN ====================
-echo "=== Application du patch FocalTech pour built-in ==="
 FTS_FILE=$(find drivers/input/touchscreen/ -name "focaltech_ts_mmi.c" -o -name "focaltech_core.c" 2>/dev/null | head -n 1)
 
 if [ -n "$FTS_FILE" ]; then
     sed -i 's/__exit//g' "$FTS_FILE"
     sed -i 's/module_exit(.*)//g' "$FTS_FILE"
-    
     sed -i 's/\bts_mmi_dev_register\b/fts_mmi_dev_register/g' "$FTS_FILE"
     sed -i 's/\bts_mmi_dev_unregister\b/fts_mmi_dev_unregister/g' "$FTS_FILE"
-    
-    echo "✅ Patch FocalTech appliqué et corrigé sur $FTS_FILE"
-else
-    echo "⚠️ Fichier source FocalTech non trouvé pour le patch"
 fi
 
 # ==================== 10. COMPILATION ====================
@@ -446,26 +415,6 @@ if [ -f "out/.config" ]; then
     sed -i 's/CONFIG_TOUCH_PANEL_NOTIFICATIONS=m/CONFIG_TOUCH_PANEL_NOTIFICATIONS=y/g' out/.config
     sed -i 's/# CONFIG_SENSORS_CORE is not set/CONFIG_SENSORS_CORE=y/g' out/.config
     sed -i 's/CONFIG_SENSORS_CORE=m/CONFIG_SENSORS_CORE=y/g' out/.config
-    
-    if ! grep -q "CONFIG_INPUT_TOUCHSCREEN_MMI=y" out/.config; then
-        echo "CONFIG_INPUT_TOUCHSCREEN_MMI=y" >> out/.config
-    fi
-    if ! grep -q "CONFIG_MMI_RELAY=y" out/.config; then
-        echo "CONFIG_MMI_RELAY=y" >> out/.config
-    fi
-    if ! grep -q "CONFIG_DRM=y" out/.config; then
-        echo "CONFIG_DRM=y" >> out/.config
-    fi
-    if ! grep -q "CONFIG_DRM_PANEL=y" out/.config; then
-        echo "CONFIG_DRM_PANEL=y" >> out/.config
-    fi
-    if ! grep -q "CONFIG_DRM_PANEL_NOTIFICATIONS=y" out/.config; then
-        echo "CONFIG_DRM_PANEL_NOTIFICATIONS=y" >> out/.config
-    fi
-    if ! grep -q "CONFIG_SENSORS_CORE=y" out/.config; then
-        echo "CONFIG_SENSORS_CORE=y" >> out/.config
-    fi
-    echo "✅ Options tactiles, DRM, notifications et capteurs forcées à =y"
 fi
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
@@ -515,7 +464,7 @@ cat > .cargo/config.toml <<EOF
 linker = "$AARCH64_CLANG_PATH"
 
 [env]
-CC_aarch64_linux_android = "$AARCH64_CLANG_PATH"
+CC_aarch64_linux_android = "$Aarch64_CLANG_PATH"
 CXX_aarch64_linux_android = "$AARCH64_CLANGXX_PATH"
 AR_aarch64_linux_android = "$AR_PATH"
 BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android = "$BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android"
@@ -563,10 +512,6 @@ if [ -f "boot-stock.img" ]; then
   set +e
   ./magiskboot unpack boot.img
   set -e
-  if [ ! -f "kernel" ] || [ ! -f "ramdisk.cpio" ]; then
-    echo "❌ Échec du unpack"
-    exit 1
-  fi
   cp "$GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image" kernel
   ./magiskboot cpio ramdisk.cpio \
     "mkdir 0755 data" \
