@@ -315,31 +315,31 @@ KCONFIG_EOF
     fi
 fi
 
-# ==================== 6.5 FIX INCLUDE DRM PANEL DANS TOUCHSCREEN_MMI (ULTRA SÛR) ====================
+# ==================== 6.5 FIX INCLUDE DRM PANEL DANS TOUCHSCREEN_MMI (CORRIGÉ 4.19) ====================
 TOUCH_PANEL_C="drivers/input/touchscreen/touchscreen_mmi/touchscreen_mmi_panel.c"
 if [ -f "$TOUCH_PANEL_C" ]; then
     python3 - << 'PYEOF'
 path = "drivers/input/touchscreen/touchscreen_mmi/touchscreen_mmi_panel.c"
 with open(path, 'r') as f:
-    lines = f.readlines()
+    content = f.read()
 
-header_to_add = "#include <linux/drm/drm_panel.h>\n"
-if header_to_add not in "".join(lines):
-    new_lines = []
-    inserted = False
-    for line in lines:
-        new_lines.append(line)
-        if not inserted and line.startswith("#include "):
-            new_lines.append(header_to_add)
-            inserted = True
-    if not inserted:
-        new_lines.insert(0, header_to_add)
+# Nettoyage des anciennes tentatives erronées (corruptions et chemins incorrects)
+content = content.replace("module.h>/module.h>", "module.h>")
+content = content.replace("#include <linux/drm/drm_panel.h>\n", "")
+content = content.replace("#include <drm/drm_panel.h>\n", "")
+
+header_to_add = "#include <drm/drm_panel.h>\n"
+if header_to_add not in content:
+    if "#include <linux/module.h>" in content:
+        content = content.replace("#include <linux/module.h>", "#include <linux/module.h>\n" + header_to_add.strip(), 1)
+    else:
+        content = header_to_add + content
         
     with open(path, 'w') as f:
-        f.writelines(new_lines)
-    print("[+] Include <linux/drm/drm_panel.h> ajouté proprement.")
+        f.write(content)
+    print("[+] Include <drm/drm_panel.h> ajouté proprement.")
 else:
-    print("[+] Include <linux/drm/drm_panel.h> déjà présent.")
+    print("[+] Include <drm/drm_panel.h> déjà présent.")
 PYEOF
 fi
 
