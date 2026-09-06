@@ -412,6 +412,19 @@ fi
 # ==================== 8. PATCH SIGNATURES + STUB dsi_freq_head ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
+# Définition de secours pour dsi_freq_head dans touchscreen_mmi_notif.c
+if ! grep -q "struct blocking_notifier_head dsi_freq_head" drivers/input/touchscreen/touchscreen_mmi/touchscreen_mmi_notif.c; then
+    sed -i '/#include <linux\/touchscreen_mmi.h>/a\
+\
+#ifdef CONFIG_DRM_DYNAMIC_REFRESH_RATE\
+struct blocking_notifier_head dsi_freq_head = BLOCKING_NOTIFIER_INIT(dsi_freq_head);\
+EXPORT_SYMBOL_GPL(dsi_freq_head);\
+#endif' drivers/input/touchscreen/touchscreen_mmi/touchscreen_mmi_notif.c
+    echo "✅ Stub dsi_freq_head ajouté dans touchscreen_mmi_notif.c"
+else
+    echo "✅ dsi_freq_head déjà présent dans touchscreen_mmi_notif.c"
+fi
+
 # ==================== 9. COMPILATION ====================
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
     -j$(nproc) scripts
