@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD FINAL : KernelSU + SuSFS + FocalTech 0flash built-in + synchro nightly ==="
+echo "=== BUILD FINAL 2 : KernelSU + SuSFS + FocalTech 0flash built-in + correctif MMI complet ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -359,7 +359,7 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
     arch/arm64/configs/vendor/ext_config/moto-lito.config \
     arch/arm64/configs/vendor/ext_config/kiev-default.config
 
-# 3. Désactiver TOUCHSCREEN_FTS (générique) pour éviter les conflits
+# 3. Désactiver TOUCHSCREEN_FTS (générique)
 ./scripts/config --file out/.config --disable TOUCHSCREEN_FTS
 
 # 4. Passer les drivers tactiles en BUILT-IN (=y)
@@ -390,16 +390,21 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
     --enable KSU_SUSFS_OPEN_REDIRECT \
     --enable THREAD_INFO_IN_TASK
 
-# 6. Désactiver LTO/CFI pour la compatibilité
+# 6. Désactiver LTO/CFI
 ./scripts/config --file out/.config --disable LTO_CLANG --disable CFI_CLANG
 
 # 7. Régénérer proprement
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-# 8. Vérification config INPUT_TOUCHSCREEN_MMI
+# 8. FORCE INPUT_TOUCHSCREEN_MMI en y et vérifier
+./scripts/config --file out/.config --enable INPUT_TOUCHSCREEN_MMI
+echo "CONFIG_INPUT_TOUCHSCREEN_MMI=y" >> out/.config
+make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
+
 if ! grep -q "CONFIG_INPUT_TOUCHSCREEN_MMI=y" out/.config; then
-    ./scripts/config --file out/.config --enable INPUT_TOUCHSCREEN_MMI
-    make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
+    echo "❌ CONFIG_INPUT_TOUCHSCREEN_MMI n'est pas y !"
+    grep "CONFIG_INPUT_TOUCHSCREEN_MMI" out/.config
+    exit 1
 fi
 
 grep "CONFIG_INPUT_TOUCHSCREEN_MMI" out/.config
@@ -408,22 +413,28 @@ grep "CONFIG_INPUT_TOUCHSCREEN_MMI" out/.config
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
 # ==================== 9. CORRECTIF KBUILD TOUCHSCREEN_MMI ====================
-echo "=== Application du correctif Makefile pour touchscreen_mmi (Kbuild manquant) ==="
+echo "=== Application du correctif Makefile pour touchscreen_mmi ==="
 
-if ! grep -q "touchscreen_mmi/touchscreen_mmi_class.o" drivers/input/touchscreen/Makefile; then
-    cat >> drivers/input/touchscreen/Makefile << 'MAKEFILE_EOF'
+# S'assurer que le dossier touchscreen_mmi est dans le Makefile parent
+if ! grep -q "obj-\$(CONFIG_INPUT_TOUCHSCREEN_MMI).*touchscreen_mmi/" drivers/input/touchscreen/Makefile; then
+    echo "obj-\$(CONFIG_INPUT_TOUCHSCREEN_MMI) += touchscreen_mmi/" >> drivers/input/touchscreen/Makefile
+fi
 
-# Compilation directe des fichiers touchscreen_mmi (correctif Kbuild manquant)
-obj-$(CONFIG_INPUT_TOUCHSCREEN_MMI) += touchscreen_mmi/touchscreen_mmi_class.o \
-                                        touchscreen_mmi/touchscreen_mmi_panel.o \
-                                        touchscreen_mmi/touchscreen_mmi_notif.o \
-                                        touchscreen_mmi/touchscreen_mmi_gesture.o
-MAKEFILE_EOF
+# Créer un Makefile interne si absent
+if [ ! -f drivers/input/touchscreen/touchscreen_mmi/Makefile ]; then
+    echo "obj-\$(CONFIG_INPUT_TOUCHSCREEN_MMI) := touchscreen_mmi.o" > drivers/input/touchscreen/touchscreen_mmi/Makefile
+    echo "touchscreen_mmi-objs := touchscreen_mmi_class.o touchscreen_mmi_panel.o touchscreen_mmi_notif.o touchscreen_mmi_gesture.o" >> drivers/input/touchscreen/touchscreen_mmi/Makefile
+else
+    # S'assurer que le Makefile contient bien les objets
+    if ! grep -q "touchscreen_mmi_class" drivers/input/touchscreen/touchscreen_mmi/Makefile; then
+        echo "obj-\$(CONFIG_INPUT_TOUCHSCREEN_MMI) := touchscreen_mmi.o" > drivers/input/touchscreen/touchscreen_mmi/Makefile
+        echo "touchscreen_mmi-objs := touchscreen_mmi_class.o touchscreen_mmi_panel.o touchscreen_mmi_notif.o touchscreen_mmi_gesture.o" >> drivers/input/touchscreen/touchscreen_mmi/Makefile
+    fi
 fi
 
 # ==================== 10. COMPILATION ====================
 
-# 1. Compiler les scripts internes (dtc local)
+# 1. Compiler les scripts internes
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
     -j$(nproc) scripts
 
