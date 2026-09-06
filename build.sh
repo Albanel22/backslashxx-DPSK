@@ -96,7 +96,6 @@ fi
 # ==================== 2e. AJOUT DU LOG DE DEBUG ====================
 echo "=== Ajout du pr_info de debug dans do_get_info ==="
 if [ -f "$DISPATCH_FILE" ]; then
-    # Insérer un pr_info juste avant le copy_to_user de do_get_info
     python3 - << 'PYEOF'
 DISPATCH_FILE="/tmp/KernelSU/kernel/supercall/dispatch.c"
 with open(DISPATCH_FILE, "r") as f:
@@ -186,7 +185,7 @@ fi
 
 echo "✅ Hooks KernelSU en place"
 
-# ==================== 4. TÉLÉCHARGEMENT DU VRAI SUSFS (pinné au 9 août 2026) ====================
+# ==================== 4. TÉLÉCHARGEMENT DU VRAI SUSFS ====================
 echo "=== Téléchargement du SuSFS (JackA1ltman, commit pinné) ==="
 
 JACK_COMMIT="6eae2b587750336507096469fee74a2173e14bf6"
@@ -196,7 +195,7 @@ cd /tmp/jack_repo
 git checkout "$JACK_COMMIT"
 cd "$GITHUB_WORKSPACE/kernel_sources"
 
-echo "✅ Repo SuSFS pinné au commit $JACK_COMMIT (9 août 2026)"
+echo "✅ Repo SuSFS pinné au commit $JACK_COMMIT"
 
 SUSFS_PATCH="/tmp/jack_repo/Patches/Patch/susfs_patch_to_4.19.patch"
 
@@ -347,7 +346,7 @@ KCONFIG_EOF
     fi
 fi
 
-# ==================== 7. CONFIGURATION (defconfigs fusionnés correctement) ====================
+# ==================== 7. CONFIGURATION ====================
 export ARCH=arm64
 export SUBARCH=arm64
 export CROSS_COMPILE=aarch64-linux-gnu-
@@ -357,21 +356,19 @@ mkdir -p out
 
 echo "=== Fusion correcte des defconfigs lito-perf + moto-lito + kiev ==="
 
-# 1. Base defconfig
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
     vendor/lito-perf_defconfig
 
-# 2. Fusionner les fragments avec merge_config.sh (fourni par le kernel)
 ./scripts/kconfig/merge_config.sh -m -O out \
     out/.config \
     arch/arm64/configs/vendor/ext_config/moto-lito.config \
     arch/arm64/configs/vendor/ext_config/kiev-default.config
 
-# 3. Vérifier que TOUCHSCREEN_FTS est bien désactivé par le fragment kiev
 ./scripts/config --file out/.config --disable TOUCHSCREEN_FTS
 
-# 4. Passer les drivers tactiles en BUILT-IN (=y) pour éviter le problème de modules
+# AJOUT DE MMI_RELAY POUR LEVER LA DÉPENDANCE DE INPUT_TOUCHSCREEN_MMI
 ./scripts/config --file out/.config \
+    --enable MMI_RELAY \
     --enable INPUT_TOUCHSCREEN_MMI \
     --enable INPUT_FOCALTECH_0FLASH_MMI \
     --enable INPUT_FOCALTECH_0FLASH_MMI_ENABLE_DOUBLE_TAP \
@@ -379,7 +376,6 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
     --enable TOUCHCLASS_MMI_GESTURE_POISON_EVENT \
     --enable BOARD_USES_DOUBLE_TAP_CTRL
 
-# 5. KernelSU + SUSFS
 ./scripts/config --file out/.config \
     --enable KSU \
     --enable KSU_MANUAL_HOOK \
@@ -398,18 +394,12 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
     --enable KSU_SUSFS_OPEN_REDIRECT \
     --enable THREAD_INFO_IN_TASK
 
-# 6. Désactiver LTO/CFI qui peuvent causer des problèmes sur 4.19 avec des patches custom
 ./scripts/config --file out/.config --disable LTO_CLANG --disable CFI_CLANG
 
-# 7. Régénérer proprement
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-# 8. Vérifications
 echo "=== Vérification config tactile ==="
-grep -E "CONFIG_TOUCHSCREEN_FTS=|CONFIG_INPUT_FOCALTECH_0FLASH_MMI=|CONFIG_INPUT_TOUCHSCREEN_MMI=|CONFIG_KIEV_DTB=" out/.config
-
-echo "=== Vérification CONFIG_MODULES ==="
-grep "CONFIG_MODULES=" out/.config
+grep -E "CONFIG_TOUCHSCREEN_FTS=|CONFIG_INPUT_FOCALTECH_0FLASH_MMI=|CONFIG_INPUT_TOUCHSCREEN_MMI=|CONFIG_MMI_RELAY=" out/.config
 
 # ==================== 8. PATCH SIGNATURES ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
@@ -419,11 +409,9 @@ echo "=== Application du patch FocalTech pour built-in ==="
 FTS_FILE=$(find drivers/input/touchscreen/ -name "focaltech_ts_mmi.c" -o -name "focaltech_core.c" 2>/dev/null | head -n 1)
 
 if [ -n "$FTS_FILE" ]; then
-    # Supprime les annotations __exit et module_exit qui bloquent le linkage built-in
     sed -i 's/__exit//g' "$FTS_FILE"
     sed -i 's/module_exit(.*)//g' "$FTS_FILE"
     
-    # Corrige les deux appels de fonctions incorrects dans le code source
     sed -i 's/\bts_mmi_dev_register\b/fts_mmi_dev_register/g' "$FTS_FILE"
     sed -i 's/\bts_mmi_dev_unregister\b/fts_mmi_dev_unregister/g' "$FTS_FILE"
     
@@ -434,25 +422,26 @@ fi
 
 # ==================== 10. COMPILATION ====================
 
-# Forcer la classe MMI touchscreen en built-in (=y) pour lier correctement le driver tactile
 if [ -f "out/.config" ]; then
     sed -i 's/# CONFIG_INPUT_TOUCHSCREEN_MMI is not set/CONFIG_INPUT_TOUCHSCREEN_MMI=y/g' out/.config
     sed -i 's/CONFIG_INPUT_TOUCHSCREEN_MMI=m/CONFIG_INPUT_TOUCHSCREEN_MMI=y/g' out/.config
+    sed -i 's/# CONFIG_MMI_RELAY is not set/CONFIG_MMI_RELAY=y/g' out/.config
+    sed -i 's/CONFIG_MMI_RELAY=m/CONFIG_MMI_RELAY=y/g' out/.config
     if ! grep -q "CONFIG_INPUT_TOUCHSCREEN_MMI=y" out/.config; then
         echo "CONFIG_INPUT_TOUCHSCREEN_MMI=y" >> out/.config
     fi
-    echo "✅ CONFIG_INPUT_TOUCHSCREEN_MMI forcé à =y"
+    if ! grep -q "CONFIG_MMI_RELAY=y" out/.config; then
+        echo "CONFIG_MMI_RELAY=y" >> out/.config
+    fi
+    echo "✅ CONFIG_INPUT_TOUCHSCREEN_MMI et CONFIG_MMI_RELAY forcés à =y"
 fi
 
-# 1. Compiler d'abord les scripts internes (dont le dtc local du noyau)
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
     -j$(nproc) scripts
 
-# 2. Compiler le kernel et les modules d'abord
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
     -j$(nproc) Image modules
 
-# 3. Compiler les dtbs en forçant l'utilisation du dtc local généré dans out/scripts/dtc/dtc
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
     HOSTCC=gcc HOSTRANDOM=no DTC_EXT=$(pwd)/out/scripts/dtc/dtc dtbs 2>&1 | tee -a build.log
 
@@ -464,23 +453,7 @@ fi
 
 echo "✅ Compilation réussie"
 
-# Vérifier que les drivers tactiles sont bien dans le kernel (pas en .ko externe)
-echo "=== Vérification drivers tactiles ==="
-if grep -q "CONFIG_INPUT_FOCALTECH_0FLASH_MMI=y" out/.config; then
-    echo "✅ focaltech_0flash_mmi est BUILT-IN"
-else
-    echo "⚠️ focaltech_0flash_mmi est en module ou absent"
-    ls out/drivers/input/touchscreen/focaltech* 2>/dev/null || echo "Répertoire focaltech non trouvé"
-fi
-
-# Vérifier la génération des dtbs
-if [ -d "out/arch/arm64/boot/dts/qcom" ]; then
-    echo "✅ Dossier DTBS généré avec succès"
-else
-    echo "⚠️ Dossier DTBS non trouvé"
-fi
-
-# ==================== 11. COMPILATION KSUD (MÊME COMMIT) ====================
+# ==================== 11. COMPILATION KSUD ====================
 cd "$GITHUB_WORKSPACE"
 
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
