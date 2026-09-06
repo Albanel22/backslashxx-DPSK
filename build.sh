@@ -422,7 +422,11 @@ if [ -n "$FTS_FILE" ]; then
     # Supprime les annotations __exit et module_exit qui bloquent le linkage built-in
     sed -i 's/__exit//g' "$FTS_FILE"
     sed -i 's/module_exit(.*)//g' "$FTS_FILE"
-    echo "✅ Patch FocalTech appliqué sur $FTS_FILE"
+    
+    # Corrige l'appel de fonction incorrect (ts_mmi_dev_unregister -> fts_mmi_dev_unregister)
+    sed -i 's/ts_mmi_dev_unregister/fts_mmi_dev_unregister/g' "$FTS_FILE"
+    
+    echo "✅ Patch FocalTech appliqué et corrigé sur $FTS_FILE"
 else
     echo "⚠️ Fichier source FocalTech non trouvé pour le patch"
 fi
