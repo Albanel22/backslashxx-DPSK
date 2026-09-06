@@ -412,16 +412,16 @@ fi
 # ==================== 8. PATCH SIGNATURES + STUB dsi_freq_head ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
-# Stub de secours pour dsi_freq_head (AJOUT INCONDITIONNEL)
-if ! grep -q "struct blocking_notifier_head dsi_freq_head" drivers/input/touchscreen/touchscreen_mmi/touchscreen_mmi_notif.c; then
-    cat >> drivers/input/touchscreen/touchscreen_mmi/touchscreen_mmi_notif.c << 'EOF'
+# Stub de secours pour dsi_freq_head dans fs/susfs.c (toujours compilé en built-in)
+if ! grep -q "struct blocking_notifier_head dsi_freq_head" fs/susfs.c; then
+    cat >> fs/susfs.c << 'EOF'
 
 struct blocking_notifier_head dsi_freq_head = BLOCKING_NOTIFIER_INIT(dsi_freq_head);
 EXPORT_SYMBOL_GPL(dsi_freq_head);
 EOF
-    echo "✅ Stub dsi_freq_head ajouté sans condition"
+    echo "✅ Stub dsi_freq_head ajouté dans fs/susfs.c"
 else
-    echo "✅ dsi_freq_head déjà présent"
+    echo "✅ dsi_freq_head déjà présent dans fs/susfs.c"
 fi
 
 # ==================== 9. COMPILATION ====================
