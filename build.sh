@@ -415,9 +415,9 @@ grep "CONFIG_MODULES=" out/.config
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
 # ==================== 10. COMPILATION ====================
-# Compiler le kernel, les modules, et le dtbo
+# Compiler le kernel, les modules, et les device trees (dtbs)
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
-    -j$(nproc) Image modules dtbo.img 2>&1 | tee build.log
+    -j$(nproc) Image modules dtbs 2>&1 | tee build.log
 
 if [ ! -f "out/arch/arm64/boot/Image" ]; then
     echo "❌ BUILD FAILED"
@@ -436,11 +436,11 @@ else
     ls out/drivers/input/touchscreen/focaltech* 2>/dev/null || echo "Répertoire focaltech non trouvé"
 fi
 
-# Vérifier le dtbo
-if [ -f "out/arch/arm64/boot/dtbo.img" ]; then
-    echo "✅ dtbo.img généré"
+# Vérifier la génération des dtbs
+if [ -d "out/arch/arm64/boot/dts/qcom" ]; then
+    echo "✅ Dossier DTBS généré avec succès"
 else
-    echo "⚠️ dtbo.img non généré — le device peut ne pas booter correctement"
+    echo "⚠️ Dossier DTBS non trouvé"
 fi
 
 # ==================== 11. COMPILATION KSUD (MÊME COMMIT) ====================
