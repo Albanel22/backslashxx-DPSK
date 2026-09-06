@@ -434,6 +434,16 @@ fi
 
 # ==================== 10. COMPILATION ====================
 
+# Forcer la classe MMI touchscreen en built-in (=y) pour lier correctement le driver tactile
+if [ -f "out/.config" ]; then
+    sed -i 's/# CONFIG_INPUT_TOUCHSCREEN_MMI is not set/CONFIG_INPUT_TOUCHSCREEN_MMI=y/g' out/.config
+    sed -i 's/CONFIG_INPUT_TOUCHSCREEN_MMI=m/CONFIG_INPUT_TOUCHSCREEN_MMI=y/g' out/.config
+    if ! grep -q "CONFIG_INPUT_TOUCHSCREEN_MMI=y" out/.config; then
+        echo "CONFIG_INPUT_TOUCHSCREEN_MMI=y" >> out/.config
+    fi
+    echo "✅ CONFIG_INPUT_TOUCHSCREEN_MMI forcé à =y"
+fi
+
 # 1. Compiler d'abord les scripts internes (dont le dtc local du noyau)
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
     -j$(nproc) scripts
