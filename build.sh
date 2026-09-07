@@ -405,25 +405,10 @@ if ! grep -q "CONFIG_SENSORS_CLASS=y" out/.config; then
     exit 1
 fi
 
-# ==================== 8. PATCH SIGNATURES + STUB FAIBLE ====================
+# ==================== 8. PATCH SIGNATURES ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
-# Stub faible pour dsi_freq_head (ne remplace pas le vrai symbole si présent)
-if ! grep -q "dsi_freq_head" fs/susfs.c; then
-    cat >> fs/susfs.c << 'EOF'
-
-#ifdef CONFIG_DRM_DYNAMIC_REFRESH_RATE
-__attribute__((weak)) struct blocking_notifier_head dsi_freq_head =
-    BLOCKING_NOTIFIER_INIT(dsi_freq_head);
-EXPORT_SYMBOL_GPL(dsi_freq_head);
-#endif
-EOF
-    echo "✅ Stub faible dsi_freq_head ajouté dans fs/susfs.c"
-else
-    echo "✅ dsi_freq_head déjà présent dans fs/susfs.c"
-fi
-
-# Correctif pour strnstr (si nécessaire)
+# Correctif pour l'appel strnstr dans msm_drv.c (au cas où)
 sed -i 's/strnstr(dev_name(dev), "mdp")/strnstr(dev_name(dev), "mdp", strlen("mdp"))/' drivers/gpu/drm/msm/msm_drv.c 2>/dev/null || true
 
 # ==================== 9. COMPILATION ====================
