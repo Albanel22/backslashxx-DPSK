@@ -281,7 +281,6 @@ path = "drivers/input/touchscreen/synaptics_mmi_class/synaptics_dsx_i2c.c"
 with open(path, 'r') as f:
     code = f.read()
 
-# 1. Sécurisation des appels func_remove et func_init
 code = code.replace(
     "exp_fhandler->func_remove(rmi4_data);\nif (exp_fhandler->func_remove)",
     "if (exp_fhandler->func_remove)\nexp_fhandler->func_remove(rmi4_data);"
@@ -290,19 +289,14 @@ code = code.replace(
     "exp_fhandler->func_init(rmi4_data);\nif (exp_fhandler->func_init)",
     "if (exp_fhandler->func_init)\nexp_fhandler->func_init(rmi4_data);"
 )
-
-# 2. Correction de la condition de type de fonction dans la boucle
 code = code.replace(
     "if (exp_fhandler->func_init != func_init)",
     "if (exp_fhandler->fn_type != fn_type ||\nexp_fhandler->func_init != func_init)"
 )
 
-# 3. Nettoyage des fonctions dummy obsolètes si elles existent encore
 import re
 code = re.sub(r'static int dummy_init\(struct synaptics_rmi4_data \*rmi4_data\)\s*\{[^}]+\}', '', code)
 code = re.sub(r'static void dummy_remove\(struct synaptics_rmi4_data \*rmi4_data\)\s*\{[^}]+\}', '', code)
-
-# 4. Ajustement des arguments lors de l'enregistrement de la fonction DRM
 code = code.replace(
     "dummy_init, dummy_remove, NULL, NULL,",
     "NULL, NULL, NULL, NULL,"
@@ -313,6 +307,46 @@ with open(path, 'w') as f:
 print("[+] Patch synaptics_dsx_i2c.c appliqué.")
 PYEOF
 fi
+
+# ==================== 4c. PATCHS TOUCHSCREEN MMI (PANEL & NOTIF) ====================
+echo "=== Application des correctifs touchscreen_mmi ==="
+python3 - << 'PYEOF'
+import os
+
+panel_path = "drivers/input/touchscreen/touchscreen_mmi/touchscreen_mmi_panel.c"
+if os.path.exists(panel_path):
+    with open(panel_path, 'r') as f:
+        code = f.read()
+    if '#include <drm/drm_panel.h>' not in code:
+        code = '#include <drm/drm_panel.h>\n' + code
+        with open(panel_path, 'w') as f:
+            f.write(code)
+        print("[+] Inclusion de <drm/drm_panel.h> ajoutée dans touchscreen_mmi_panel.c")
+
+notif_path = "drivers/input/touchscreen/touchscreen_mmi/touchscreen_mmi_notif.c"
+if os.path.exists(notif_path):
+    with open(notif_path, 'r') as f:
+        code = f.read()
+    if '#include <linux/msm_drm_notify.h>' not in code:
+        code = '#include <linux/msm_drm_notify.h>\n' + code
+        with open(notif_path, 'w') as f:
+            f.write(code)
+        print("[+] Inclusion de <linux/msm_drm_notify.h> ajoutée dans touchscreen_mmi_notif.c")
+
+header_path = "include/linux/touchscreen_mmi.h"
+if os.path.exists(header_path):
+    with open(header_path, 'r') as f:
+        header_content = f.read()
+    if 'panel_nb' not in header_content:
+        header_content = header_content.replace(
+            "};",
+            "\tstruct notifier_block panel_nb;\n};",
+            1
+        )
+        with open(header_path, 'w') as f:
+            f.write(header_content)
+        print("[+] Champ panel_nb ajouté à struct ts_mmi_dev dans touchscreen_mmi.h")
+PYEOF
 
 # ==================== 5. KCONFIG SUSFS ====================
 if [ -f "drivers/kernelsu/Kconfig" ]; then
@@ -438,18 +472,6 @@ if [ -n "$FTS_FILE" ]; then
     sed -i 's/\bts_mmi_dev_register\b/fts_mmi_dev_register/g' "$FTS_FILE"
     sed -i 's/\bts_mmi_dev_unregister\b/fts_mmi_dev_unregister/g' "$FTS_FILE"
 fi
-
-python3 - << 'PYEOF'
-path = "drivers/input/touchscreen/touchscreen_mmi/touchscreen_mmi_panel.c"
-with open(path, 'r') as f:
-    code = f.read()
-
-if '#include <drm/drm_panel.h>' not in code:
-    code = '#include <drm/drm_panel.h>\n' + code
-    with open(path, 'w') as f:
-        f.write(code)
-    print("[+] Inclusion de <drm/drm_panel.h> ajoutée dans touchscreen_mmi_panel.c")
-PYEOF
 
 # ==================== 9. COMPILATION ====================
 
