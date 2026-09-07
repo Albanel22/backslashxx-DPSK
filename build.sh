@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD FINAL 7 : KernelSU + SuSFS + FocalTech 0flash built-in + stub dsi_freq_head inconditionnel ==="
+echo "=== BUILD FINAL 8 : KernelSU + SuSFS + FocalTech 0flash built-in + fix CONFIG_DRM_DYNAMIC_REFRESH_RATE (techpack/display) ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -409,7 +409,34 @@ if ! grep -q "CONFIG_SENSORS_CLASS=y" out/.config; then
     exit 1
 fi
 
-# ==================== 8. PATCH SIGNATURES + STUB dsi_freq_head ====================
+# ==================== 7b. FIX TECHPACK/DISPLAY (config interne séparée) ====================
+# techpack/display/ utilise son PROPRE système de config, indépendant du .config
+# principal du kernel : techpack/display/Makefile inclut soit konadisp.conf,
+# soit saipdisp.conf, soit bengaldisp.conf selon CONFIG_ARCH_KONA/LITO/BENGAL,
+# et injecte le header .h correspondant via LINUXINCLUDE. Sur ARCH_LITO (notre
+# cas), c'est saipdisp.conf + saipdispconf.h qui sont utilisés — et ils ne
+# contiennent PAS CONFIG_DRM_DYNAMIC_REFRESH_RATE par défaut, alors que
+# techpack/display/msm/dsi/dsi_panel.c (qui définit dsi_freq_head) et
+# drivers/input/touchscreen/touchscreen_mmi/touchscreen_mmi_notif.c (qui
+# l'utilise) sont tous les deux gardés par #if defined(CONFIG_DRM_DYNAMIC_REFRESH_RATE).
+# Sans ce correctif, dsi_freq_head n'est jamais défini -> undefined symbol au link.
+echo "=== Ajout de CONFIG_DRM_DYNAMIC_REFRESH_RATE dans techpack/display (saip, ARCH_LITO) ==="
+
+if ! grep -q "CONFIG_DRM_DYNAMIC_REFRESH_RATE" techpack/display/config/saipdisp.conf; then
+    echo "export CONFIG_DRM_DYNAMIC_REFRESH_RATE=y" >> techpack/display/config/saipdisp.conf
+    echo "✅ Ajouté à saipdisp.conf"
+else
+    echo "✅ Déjà présent dans saipdisp.conf"
+fi
+
+if ! grep -q "CONFIG_DRM_DYNAMIC_REFRESH_RATE" techpack/display/config/saipdispconf.h; then
+    sed -i '$a #define CONFIG_DRM_DYNAMIC_REFRESH_RATE 1' techpack/display/config/saipdispconf.h
+    echo "✅ Ajouté à saipdispconf.h"
+else
+    echo "✅ Déjà présent dans saipdispconf.h"
+fi
+
+# ==================== 8. PATCH SIGNATURES ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
 # ==================== 9. COMPILATION ====================
