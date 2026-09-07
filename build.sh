@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD FINAL 12 : Reset Total + Config Tactile Forcée + KernelSU + SuSFS ==="
+echo "=== BUILD FINAL 12 FIX : Reset Total + Config Tactile Forcée + KernelSU + SuSFS ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -16,7 +16,7 @@ sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf
 
 cd "$GITHUB_WORKSPACE"
 
-# === CIBLE : 30 AOÛT (Pour correspondre à votre ROM actuelle et éviter le bootloop) ===
+# === CIBLE : 30 AOÛT ===
 NIGHTLY_DATE="2026-08-30"
 NIGHTLY_DATE_COMPACT="20260830"
 echo "Nightly ciblée : $NIGHTLY_DATE"
@@ -70,27 +70,162 @@ cd /tmp/jack_repo && git checkout "6eae2b587750336507096469fee74a2173e14bf6" && 
 
 patch -p1 < "/tmp/jack_repo/Patches/Patch/susfs_patch_to_4.19.patch" 2>&1 | tee /tmp/susfs.log || true
 
-# Corrections auto des rejets connus
+# === CORRECTION PYTHON ROBUSTE POUR task_mmu.c ===
 if [ -f "fs/proc/task_mmu.c.rej" ]; then
-    sed -i '/ret = walk_page_range/i\#ifdef CONFIG_KSU_SUSFS_SUS_MAP\n\t\tvma = find_vma(mm, start_vaddr);\n\t\tif (vma && vma->vm_file && SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))\n\t\t\tgoto bypass_orig_flow;\n#endif' fs/proc/task_mmu.c
-    sed -i '/up_read(&mm->mmap_sem);/i\#ifdef CONFIG_KSU_SUSFS_SUS_MAP\nbypass_orig_flow:\n#endif' fs/proc/task_mmu.c
+    echo "⚠️ Rejet détecté dans task_mmu.c. Correction automatique..."
+    python3 - << 'PYEOF'
+import re, os
+file_path = 'fs/proc/task_mmu.c'
+if os.path.exists(file_path):
+    with open(file_path, 'r') as f:
+        content = f.read()
+    
+    if 'SUSFS_IS_INODE_SUS_MAP' not in content:
+        # Injection avant walk_page_range (compatible mmap_sem et mmap_lock)
+        pattern1 = r'((?:down_read_killable\(&mm->mmap_sem\)|mmap_read_lock_killable\(mm\))\n\s+if \(ret\)\n\s+goto out_free;\n\s+)(ret = walk_page_range\(start_vaddr, end, &pagemap_walk\);)'
+        replacement1 = r'''\1#ifdef CONFIG_KSU_SUSFS_SUS_MAP
+\t\tvma = find_vma(mm, start_vaddr);
+\t\tif (vma && vma->vm_file && SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))
+\t\t\tgoto bypass_orig_flow;
+#endif
+\t\2'''
+        content, count1 = re.subn(pattern1, replacement1, content)
+        
+        if count1 == 0:
+            # Fallback : injection directe avant walk_page_range
+            if "ret = walk_page_range(start_vaddr, end, &pagemap_walk);" in content:
+                content = content.replace(
+                    "ret = walk_page_range(start_vaddr, end, &pagemap_walk);",
+                    """#ifdef CONFIG_KSU_SUSFS_SUS_MAP
+\t\tvma = find_vma(mm, start_vaddr);
+\t\tif (vma && vma->vm_file && SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))
+\t\t\tgoto bypass_orig_flow;
+#endif
+\t\tret = walk_page_range(start_vaddr, end, &pagemap_walk);"""
+                )
+        
+        # Injection du label bypass_orig_flow
+        pattern2 = r'(ret = walk_page_range\(start_vaddr, end, &pagemap_walk\);.*?)(up_read\(&mm->mmap_sem\);|mmap_read_unlock\(mm\);)'
+        replacement2 = r'''\1#ifdef CONFIG_KSU_SUSFS_SUS_MAP
+bypass_orig_flow:
+#endif
+\t\2'''
+        content, count2 = re.subn(pattern2, replacement2, content, flags=re.DOTALL)
+        
+        with open(file_path, 'w') as f:
+            f.write(content)
+        print("✅ Correction task_mmu.c appliquée")
+PYEOF
     rm -f fs/proc/task_mmu.c.rej
 fi
 
-find . -name "*.rej" -type f | grep -q . && { echo "❌ Rejets de patch persistants"; exit 1; }
+# === CORRECTION POUR namespace.c (vfs_kern_mount) ===
+if [ -f "fs/namespace.c.rej" ] && grep -q "vfs_kern_mount" "fs/namespace.c.rej"; then
+    echo "⚠️ Rejet détecté dans namespace.c. Correction automatique..."
+    python3 - << 'PYEOF'
+import re, os
+file_path = 'fs/namespace.c'
+if os.path.exists(file_path):
+    with open(file_path, 'r') as f:
+        content = f.read()
+    
+    if 'susfs_alloc_non_unshare_ksu_vfsmnt' not in content:
+        pattern = r'(\tif \(!type\)\n\t\treturn ERR_PTR\(-ENODEV\);\n)(\n\tmnt = alloc_vfsmnt\(name\);)'
+        replacement = r'''\1
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+\tif (static_branch_unlikely(&susfs_is_sdcard_android_data_not_decrypted)) {
+\t\tif (susfs_is_current_ksu_domain()) {
+\t\t\tmnt = susfs_alloc_non_unshare_ksu_vfsmnt(name ?:"none");
+\t\t\tgoto bypass_orig_flow;
+\t\t}
+\t}
+#endif
+\2
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+bypass_orig_flow:
+#endif'''
+        content, _ = re.subn(pattern, replacement, content)
+        with open(file_path, 'w') as f:
+            f.write(content)
+        print("✅ Correction namespace.c appliquée")
+PYEOF
+    rm -f fs/namespace.c.rej
+fi
+
+# Vérification finale
+if find . -name "*.rej" -type f | grep -q .; then
+    echo "❌ Rejets de patch persistants :"
+    find . -name "*.rej" -type f -exec echo "=== {} ===" \; -exec cat {} \;
+    exit 1
+fi
+
 [ -f "fs/Makefile" ] && grep -q "susfs.o" fs/Makefile || echo "obj-\$(CONFIG_KSU_SUSFS) += susfs.o" >> fs/Makefile
 
-# ==================== 4. CONFIGURATION (LA CLÉ DU SUCCÈS) ====================
+# Corrections namespace.c complémentaires
+python3 - << 'PYEOF'
+import re
+with open('fs/namespace.c', 'r') as f: content = f.read()
+content = re.sub(r'^\s*n(?=#ifdef|#endif|#include|#define|extern)', '', content, flags=re.MULTILINE)
+if '#include <linux/susfs_def.h>' not in content:
+    content = content.replace('#include <linux/sched/task.h>', '#include <linux/sched/task.h>\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n#include <linux/susfs_def.h>\n#endif')
+if 'extern bool susfs_is_current_ksu_domain' not in content:
+    content = content.replace('#include "pnode.h"', '#include "pnode.h"\n\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nextern bool susfs_is_current_ksu_domain(void);\nextern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n#define CL_COPY_MNT_NS BIT(25)\n#endif')
+with open('fs/namespace.c', 'w') as f: f.write(content)
+PYEOF
+
+[ -f "fs/proc/task_mmu.c" ] && sed -i 's/struct vm_area_struct \*vma;/struct vm_area_struct *vma __maybe_unused;/g' fs/proc/task_mmu.c
+
+# Symboles manquants
+if ! grep -q "susfs_ksu_sid = 0" fs/susfs.c; then
+    cat >> fs/susfs.c << 'SUSFS_EOF'
+#ifdef CONFIG_KSU_SUSFS
+bool susfs_is_current_ksu_domain(void) { return (current_cred()->uid.val == 0 || current_cred()->uid.val == 2000); }
+EXPORT_SYMBOL(susfs_is_current_ksu_domain);
+u32 susfs_ksu_sid = 0; EXPORT_SYMBOL(susfs_ksu_sid);
+u32 susfs_priv_app_sid = 0; EXPORT_SYMBOL(susfs_priv_app_sid);
+#endif
+SUSFS_EOF
+fi
+
+# Kconfig SuSFS
+if [ -f "drivers/kernelsu/Kconfig" ] && ! grep -q "KSU_SUSFS" drivers/kernelsu/Kconfig; then
+    cat >> drivers/kernelsu/Kconfig << 'KCONFIG_EOF'
+menuconfig KSU_SUSFS
+	bool "KernelSU SUSFS support"
+	depends on KSU
+	default y
+if KSU_SUSFS
+config KSU_SUSFS_SUS_PATH
+	bool "sus_path"; default y
+config KSU_SUSFS_SUS_MOUNT
+	bool "sus_mount"; default y
+config KSU_SUSFS_SUS_KSTAT
+	bool "sus_kstat"; default y
+config KSU_SUSFS_SUS_MAP
+	bool "sus_map"; default y
+config KSU_SUSFS_SPOOF_UNAME
+	bool "spoof_uname"; default y
+config KSU_SUSFS_ENABLE_LOG
+	bool "enable_log"; default y
+config KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
+	bool "hide_ksu_susfs_symbols"; default y
+config KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+	bool "spoof_cmdline_or_bootconfig"; default y
+config KSU_SUSFS_OPEN_REDIRECT
+	bool "open_redirect"; default y
+endif
+KCONFIG_EOF
+fi
+
+# ==================== 4. CONFIGURATION ====================
 export ARCH=arm64
 export CROSS_COMPILE=aarch64-linux-gnu-
 export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 mkdir -p out
 
-# 1. On part de la config de base officielle
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 vendor/lito-perf_defconfig
 ./scripts/kconfig/merge_config.sh -m -O out out/.config arch/arm64/configs/vendor/ext_config/moto-lito.config arch/arm64/configs/vendor/ext_config/kiev-default.config
 
-# 2. ON FORCE LES OPTIONS DU TACTILE QUI FONCTIONNENT (D'après votre Kconfig)
 echo "=== Forçage des options Tactile MMI ==="
 ./scripts/config --file out/.config --enable MMI_RELAY
 ./scripts/config --file out/.config --enable INPUT_TOUCHSCREEN_MMI
@@ -98,7 +233,6 @@ echo "=== Forçage des options Tactile MMI ==="
 ./scripts/config --file out/.config --enable INPUT_FOCALTECH_0FLASH_MMI_ENABLE_DOUBLE_TAP
 ./scripts/config --file out/.config --enable BOARD_USES_DOUBLE_TAP_CTRL
 
-# 3. ON FORCE KERNELSU ET SUSFS
 ./scripts/config --file out/.config \
     --enable KSU --enable KSU_MANUAL_HOOK \
     --disable KPROBES --disable HAVE_KPROBES --disable KPROBE_EVENTS \
@@ -107,19 +241,16 @@ echo "=== Forçage des options Tactile MMI ==="
     --enable KSU_SUSFS_ENABLE_LOG --enable KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
     --enable KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG --enable KSU_SUSFS_OPEN_REDIRECT
 
-# 4. ON DÉSACTIVE LES CONFLITS CONNUS
 ./scripts/config --file out/.config --disable LTO_CLANG --disable CFI_CLANG
 ./scripts/config --file out/.config --disable DRM_MSM --disable DRM_MSM_DSI
 
-# On applique les changements
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-# Vérification que le tactile est bien activé
 if ! grep -q "CONFIG_INPUT_TOUCHSCREEN_MMI=y" out/.config; then
-    echo "❌ Échec : Le tactile n'est pas activé dans la config !"
+    echo "❌ Échec : Le tactile n'est pas activé !"
     exit 1
 fi
-echo "✅ Configuration validée (Tactile + KSU + SuSFS activés)"
+echo "✅ Configuration validée"
 
 # ==================== 5. STUB DE SÉCURITÉ ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
@@ -129,7 +260,9 @@ __attribute__((weak)) struct blocking_notifier_head dsi_freq_head = BLOCKING_NOT
 EOF
 
 # ==================== 6. COMPILATION ====================
-make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image modules dtbs 2>&1 | tee build.log
+make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) scripts
+make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image modules
+make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 HOSTCC=gcc HOSTRANDOM=no DTC_EXT=$(pwd)/out/scripts/dtc/dtc dtbs 2>&1 | tee build.log
 
 if [ ! -f "out/arch/arm64/boot/Image" ]; then
     echo "❌ BUILD FAILED"
