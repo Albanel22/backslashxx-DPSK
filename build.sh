@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD FINAL 20 : KernelSU + SuSFS + FocalTech 0flash + Stub faible sécurisé ==="
+echo "=== BUILD FINAL 21 : KernelSU + SuSFS + FocalTech 0flash + Stub faible + DTC système ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -431,8 +431,9 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
     -j$(nproc) Image modules
 
+# Compilation des DTBS sans DTC_EXT pour éviter le segfault
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
-    HOSTCC=gcc HOSTRANDOM=no DTC_EXT=$(pwd)/out/scripts/dtc/dtc dtbs 2>&1 | tee -a build.log
+    HOSTCC=gcc HOSTRANDOM=no dtbs 2>&1 | tee -a build.log
 
 if [ ! -f "out/arch/arm64/boot/Image" ]; then
     echo "❌ BUILD FAILED"
