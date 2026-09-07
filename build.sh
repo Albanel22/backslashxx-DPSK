@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD FINAL 13 : KernelSU + SuSFS + FocalTech 0flash built-in + DRM natif propre ==="
+echo "=== BUILD FINAL 14 : KernelSU + SuSFS + FocalTech 0flash built-in + DRM sans MSM + stub dsi_freq_head ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -389,13 +389,11 @@ fi
 ./scripts/config --file out/.config --enable DRM_DYNAMIC_REFRESH_RATE
 ./scripts/config --file out/.config --enable SENSORS_CLASS
 ./scripts/config --file out/.config --enable DRM
-./scripts/config --file out/.config --enable DRM_MSM
 
 echo "CONFIG_MMI_RELAY=y" >> out/.config
 echo "CONFIG_DRM_DYNAMIC_REFRESH_RATE=y" >> out/.config
 echo "CONFIG_SENSORS_CLASS=y" >> out/.config
 echo "CONFIG_DRM=y" >> out/.config
-echo "CONFIG_DRM_MSM=y" >> out/.config
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
@@ -414,11 +412,20 @@ if ! grep -q "CONFIG_SENSORS_CLASS=y" out/.config; then
     exit 1
 fi
 
-# ==================== 8. PATCH SIGNATURES ====================
+# ==================== 8. PATCH SIGNATURES + STUB dsi_freq_head ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
-# Correctif pour l'appel strnstr dans msm_drv.c
-sed -i 's/strnstr(dev_name(dev), "mdp")/strnstr(dev_name(dev), "mdp", strlen("mdp"))/' drivers/gpu/drm/msm/msm_drv.c
+# Stub dsi_freq_head (car le vrai symbole n'est pas compilé sans DRM_MSM)
+if ! grep -q "struct blocking_notifier_head dsi_freq_head" fs/susfs.c; then
+    cat >> fs/susfs.c << 'EOF'
+
+struct blocking_notifier_head dsi_freq_head = BLOCKING_NOTIFIER_INIT(dsi_freq_head);
+EXPORT_SYMBOL_GPL(dsi_freq_head);
+EOF
+    echo "✅ Stub dsi_freq_head ajouté dans fs/susfs.c"
+else
+    echo "✅ dsi_freq_head déjà présent dans fs/susfs.c"
+fi
 
 # ==================== 9. COMPILATION ====================
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
