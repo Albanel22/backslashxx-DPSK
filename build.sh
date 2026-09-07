@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD FINAL 15 : KernelSU + SuSFS + FocalTech 0flash built-in + DRM simple ==="
+echo "=== BUILD FINAL 16 : KernelSU + SuSFS + FocalTech 0flash built-in + DRM + DRM_MSM ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -388,10 +388,12 @@ fi
 ./scripts/config --file out/.config --enable MMI_RELAY
 ./scripts/config --file out/.config --enable SENSORS_CLASS
 ./scripts/config --file out/.config --enable DRM
+./scripts/config --file out/.config --enable DRM_MSM
 
 echo "CONFIG_MMI_RELAY=y" >> out/.config
 echo "CONFIG_SENSORS_CLASS=y" >> out/.config
 echo "CONFIG_DRM=y" >> out/.config
+echo "CONFIG_DRM_MSM=y" >> out/.config
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
