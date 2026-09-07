@@ -23,6 +23,9 @@ git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git \
 
 cd kernel_sources
 
+# Nettoyage initial rigoureux pour repartir sur une base saine
+make mrproper
+
 # ==================== 2. CLONE KERNELSU (COMMIT EXACT) ====================
 echo "=== Intégration KernelSU (0b138d6a) ==="
 rm -rf drivers/kernelsu KernelSU susfs4ksu /tmp/KernelSU || true
@@ -258,11 +261,60 @@ EXPORT_SYMBOL(susfs_ksu_sid);
 
 u32 susfs_priv_app_sid = 0;
 EXPORT_SYMBOL(susfs_priv_app_sid);
+
+/* Stub faible pour éviter les manques de symboles graphiques */
+int __attribute__((weak)) dsi_freq_head(void)
+{
+    return 0;
+}
+EXPORT_SYMBOL(dsi_freq_head);
 #endif
 SUSFS_EOF
 fi
 
-# ==================== 6. KCONFIG SUSFS ====================
+# ==================== 4b. APPLICATION DU PATCH SYNAPTICS ====================
+echo "=== Application du patch tactile Synaptics ==="
+SYN_FILE="drivers/input/touchscreen/synaptics_mmi_class/synaptics_dsx_i2c.c"
+if [ -f "$SYN_FILE" ]; then
+python3 - << 'PYEOF'
+path = "drivers/input/touchscreen/synaptics_mmi_class/synaptics_dsx_i2c.c"
+with open(path, 'r') as f:
+    code = f.read()
+
+# 1. Sécurisation des appels func_remove et func_init
+code = code.replace(
+    "exp_fhandler->func_remove(rmi4_data);\nif (exp_fhandler->func_remove)",
+    "if (exp_fhandler->func_remove)\nexp_fhandler->func_remove(rmi4_data);"
+)
+code = code.replace(
+    "exp_fhandler->func_init(rmi4_data);\nif (exp_fhandler->func_init)",
+    "if (exp_fhandler->func_init)\nexp_fhandler->func_init(rmi4_data);"
+)
+
+# 2. Correction de la condition de type de fonction dans la boucle
+code = code.replace(
+    "if (exp_fhandler->func_init != func_init)",
+    "if (exp_fhandler->fn_type != fn_type ||\nexp_fhandler->func_init != func_init)"
+)
+
+# 3. Nettoyage des fonctions dummy obsolètes si elles existent encore
+import re
+code = re.sub(r'static int dummy_init\(struct synaptics_rmi4_data \*rmi4_data\)\s*\{[^}]+\}', '', code)
+code = re.sub(r'static void dummy_remove\(struct synaptics_rmi4_data \*rmi4_data\)\s*\{[^}]+\}', '', code)
+
+# 4. Ajustement des arguments lors de l'enregistrement de la fonction DRM
+code = code.replace(
+    "dummy_init, dummy_remove, NULL, NULL,",
+    "NULL, NULL, NULL, NULL,"
+)
+
+with open(path, 'w') as f:
+    f.write(code)
+print("[+] Patch synaptics_dsx_i2c.c appliqué.")
+PYEOF
+fi
+
+# ==================== 5. KCONFIG SUSFS ====================
 if [ -f "drivers/kernelsu/Kconfig" ]; then
     if ! grep -q "KSU_SUSFS" drivers/kernelsu/Kconfig; then
         cat >> drivers/kernelsu/Kconfig << 'KCONFIG_EOF'
@@ -315,7 +367,7 @@ KCONFIG_EOF
     fi
 fi
 
-# ==================== 7. CONFIGURATION ====================
+# ==================== 6. CONFIGURATION ====================
 export ARCH=arm64
 export SUBARCH=arm64
 export CROSS_COMPILE=aarch64-linux-gnu-
@@ -374,10 +426,10 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-# ==================== 8. PATCH SIGNATURES ====================
+# ==================== 7. PATCH SIGNATURES ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
-# ==================== 9. PATCH DRIVER FOCALTECH POUR BUILT-IN ====================
+# ==================== 8. PATCH DRIVER FOCALTECH POUR BUILT-IN ====================
 FTS_FILE=$(find drivers/input/touchscreen/ -name "focaltech_ts_mmi.c" -o -name "focaltech_core.c" 2>/dev/null | head -n 1)
 
 if [ -n "$FTS_FILE" ]; then
@@ -387,7 +439,7 @@ if [ -n "$FTS_FILE" ]; then
     sed -i 's/\bts_mmi_dev_unregister\b/fts_mmi_dev_unregister/g' "$FTS_FILE"
 fi
 
-# ==================== 10. COMPILATION ====================
+# ==================== 9. COMPILATION ====================
 
 if [ -f "out/.config" ]; then
     sed -i 's/# CONFIG_INPUT_TOUCHSCREEN_MMI is not set/CONFIG_INPUT_TOUCHSCREEN_MMI=y/g' out/.config
@@ -425,7 +477,7 @@ fi
 
 echo "✅ Compilation réussie"
 
-# ==================== 11. COMPILATION KSUD ====================
+# ==================== 10. COMPILATION KSUD ====================
 cd "$GITHUB_WORKSPACE"
 
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -473,7 +525,7 @@ cp "$KSUD_BINARY" "$GITHUB_WORKSPACE/ksud"
 chmod 755 "$GITHUB_WORKSPACE/ksud"
 echo "✅ ksud compilé"
 
-# ==================== 12. REPACK ====================
+# ==================== 11. REPACK ====================
 cd "$GITHUB_WORKSPACE"
 
 curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260830/boot.img" 2>/dev/null || {
