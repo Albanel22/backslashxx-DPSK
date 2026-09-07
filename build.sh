@@ -23,7 +23,7 @@ git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git \
 
 cd kernel_sources
 
-# Nettoyage initial rigoureux pour repartir sur une base saine
+# Nettoyage initial rigoureux (Point 1 de la feuille de route)
 make mrproper
 
 # ==================== 2. CLONE KERNELSU (COMMIT EXACT) ====================
@@ -262,7 +262,7 @@ EXPORT_SYMBOL(susfs_ksu_sid);
 u32 susfs_priv_app_sid = 0;
 EXPORT_SYMBOL(susfs_priv_app_sid);
 
-/* Stub faible pour éviter les manques de symboles graphiques */
+/* Symbole faible pour éviter le crash/plantage si dsi_freq_head est absent (Point 3) */
 int __attribute__((weak)) dsi_freq_head(void)
 {
     return 0;
@@ -328,7 +328,6 @@ if os.path.exists(notif_path):
     with open(notif_path, 'r') as f:
         code = f.read()
     
-    # Déclarations préalables pour éviter les erreurs de visibilité Clang -Wvisibility
     declarations_fix = """
 #ifndef _PANEL_EVENT_NOTIFIER_FWD_DEF
 #define _PANEL_EVENT_NOTIFIER_FWD_DEF
@@ -361,6 +360,12 @@ if os.path.exists(header_path):
             f.write(header_content)
         print("[+] Champ panel_nb ajouté à struct ts_mmi_dev dans touchscreen_mmi.h")
 PYEOF
+
+# ==================== 4d. CORRECTION CLANG strnstr (Point 4) ====================
+MSM_DRV_FILE="drivers/gpu/drm/msm/msm_drv.c"
+if [ -f "$MSM_DRV_FILE" ]; then
+    sed -i 's/strnstr(dev_name(dev), /strnstr(dev_name(dev), sizeof(dev_name(dev)), /g' "$MSM_DRV_FILE" || true
+fi
 
 # ==================== 5. KCONFIG SUSFS ====================
 if [ -f "drivers/kernelsu/Kconfig" ]; then
