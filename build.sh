@@ -315,8 +315,10 @@ KCONFIG_EOF
     fi
 fi
 
-# ==================== 6.5 & 6.6 BALAYAGE AUTOMATIQUE DRM PANEL DANS TOUCHSCREEN_MMI ====================
-echo "=== Injection automatique de <drm/drm_panel.h> dans touchscreen_mmi ==="
+# ==================== 6.5 & 6.6 BALAYAGE AUTOMATIQUE & CORRECTIF TOUCHSCREEN_MMI ====================
+echo "=== Correction des types, includes et membres manquants pour touchscreen_mmi ==="
+
+# 1. Injection des includes DRM / Panel Notifier
 for f in drivers/input/touchscreen/touchscreen_mmi/*.c drivers/input/touchscreen/touchscreen_mmi/*.h; do
     if [ -f "$f" ]; then
         python3 - "$f" << 'PYEOF'
@@ -325,14 +327,11 @@ path = sys.argv[1]
 with open(path, 'r') as file:
     content = file.read()
 
-# Nettoyage des anciennes tentatives erronées (corruptions et chemins incorrects)
-content = content.replace("module.h>/module.h>", "module.h>")
 content = content.replace("#include <linux/drm/drm_panel.h>\n", "")
 content = content.replace("#include <drm/drm_panel.h>\n", "")
 
-# Si le fichier manipule des panels ou le drm sans inclure l'en-tête
 if ("panel" in content or "drm" in content) and "#include <drm/drm_panel.h>" not in content:
-    header_to_add = "#include <drm/drm_panel.h>\n"
+    header_to_add = "#include <drm/drm_panel.h>\n#include <linux/panel_event_notifier.h>\n"
     if "#include <linux/module.h>" in content:
         content = content.replace("#include <linux/module.h>", "#include <linux/module.h>\n" + header_to_add.strip(), 1)
     else:
@@ -340,10 +339,28 @@ if ("panel" in content or "drm" in content) and "#include <drm/drm_panel.h>" not
         
     with open(path, 'w') as file:
         file.write(content)
-    print(f"[+] <drm/drm_panel.h> injecté proprement dans {path}")
+    print(f"[+] Headers injectés dans {path}")
 PYEOF
     fi
 done
+
+# 2. Ajout du membre panel_nb manquant dans struct ts_mmi_dev
+TOUCH_HEADER="include/linux/touchscreen_mmi.h"
+if [ -f "$TOUCH_HEADER" ]; then
+    python3 - << 'PYEOF'
+path = "include/linux/touchscreen_mmi.h"
+with open(path, 'r') as f:
+    content = f.read()
+
+if "struct notifier_block panel_nb;" not in content:
+    target = "struct ts_mmi_dev {"
+    if target in content:
+        content = content.replace(target, target + "\n\tstruct notifier_block panel_nb;", 1)
+        with open(path, 'w') as f:
+            f.write(content)
+        print("[+] struct notifier_block panel_nb ajouté à struct ts_mmi_dev")
+PYEOF
+fi
 
 # ==================== 7. CONFIGURATION ====================
 export ARCH=arm64
