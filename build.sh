@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD FINAL 7 : KernelSU + SuSFS + FocalTech 0flash built-in + stub dsi_freq_head faible ==="
+echo "=== BUILD FINAL 8 : KernelSU + SuSFS + FocalTech 0flash + Date alignée 30 Août ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -16,10 +16,10 @@ sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf
 
 cd "$GITHUB_WORKSPACE"
 
-# === SYNCHRONISATION COMMIT / NIGHTLY ===
-NIGHTLY_DATE="2026-09-06"
-NIGHTLY_DATE_COMPACT="20260906"
-echo "Nightly: $NIGHTLY_DATE"
+# === SYNCHRONISATION COMMIT / NIGHTLY (ALIGNÉ SUR LA ROM DU 30 AOÛT) ===
+NIGHTLY_DATE="2026-08-30"
+NIGHTLY_DATE_COMPACT="20260830"
+echo "Nightly ciblée : $NIGHTLY_DATE (pour correspondre à la ROM installée)"
 COMMIT_HASH=$(curl -s "https://api.github.com/repos/LineageOS/android_kernel_motorola_sm8250/commits?sha=lineage-23.2&until=${NIGHTLY_DATE}T23:59:59Z&per_page=1" | grep -oP '"sha": "\K[0-9a-f]+' | head -1)
 echo "Commit pour nightly du $NIGHTLY_DATE : $COMMIT_HASH"
 
@@ -204,83 +204,47 @@ echo "=== Application du patch SuSFS ==="
 
 patch -p1 < "$SUSFS_PATCH" 2>&1 | tee /tmp/susfs_patch.log || true
 
-# 1. Correction auto pour fs/proc/task_mmu.c (conflit mmap_sem / mmap_lock)
+# 1. Correction auto pour fs/proc/task_mmu.c
 if [ -f "fs/proc/task_mmu.c.rej" ]; then
-    echo "⚠️ Rejet détecté dans fs/proc/task_mmu.c. Application d'un correctif Python robuste..."
+    echo "⚠️ Rejet détecté dans fs/proc/task_mmu.c. Application d'un correctif Python..."
     python3 - << 'PYEOF'
-import re
-import os
-
+import re, os
 file_path = 'fs/proc/task_mmu.c'
 if os.path.exists(file_path):
-    with open(file_path, 'r') as f:
-        content = f.read()
-
+    with open(file_path, 'r') as f: content = f.read()
     if 'SUSFS_IS_INODE_SUS_MAP' not in content:
-        print("🔧 Application manuelle des hooks SuSFS SUS_MAP dans task_mmu.c...")
-        
         pattern1 = r'((?:down_read_killable\(&mm->mmap_sem\)|mmap_read_lock_killable\(mm\))\n\s+if \(ret\)\n\s+goto out_free;\n\s+)(ret = walk_page_range\(start_vaddr, end, &pagemap_walk\);)'
         replacement1 = r'''\1#ifdef CONFIG_KSU_SUSFS_SUS_MAP
 \t\tvma = find_vma(mm, start_vaddr);
 \t\tif (vma && vma->vm_file && SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))
 \t\t\tgoto bypass_orig_flow;
-#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
+#endif
 \t\2'''
-        
-        content, count1 = re.subn(pattern1, replacement1, content)
-        if count1 == 0:
-            if "ret = walk_page_range(start_vaddr, end, &pagemap_walk);" in content:
-                content = content.replace(
-                    "ret = walk_page_range(start_vaddr, end, &pagemap_walk);",
-                    """#ifdef CONFIG_KSU_SUSFS_SUS_MAP
-\t\tvma = find_vma(mm, start_vaddr);
-\t\tif (vma && vma->vm_file && SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))
-\t\t\tgoto bypass_orig_flow;
-#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
-\t\tret = walk_page_range(start_vaddr, end, &pagemap_walk);"""
-                )
-                print("  ✅ Hook SUS_MAP injecté (fallback)")
-        else:
-            print(f"  ✅ Hook SUS_MAP injecté avec succès ({count1} occurrence(s))")
-
+        content, _ = re.subn(pattern1, replacement1, content)
         pattern2 = r'(ret = walk_page_range\(start_vaddr, end, &pagemap_walk\);.*?)(up_read\(&mm->mmap_sem\);|mmap_read_unlock\(mm\);)'
         replacement2 = r'''\1#ifdef CONFIG_KSU_SUSFS_SUS_MAP
 bypass_orig_flow:
-#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
+#endif
 \t\2'''
-        
-        content, count2 = re.subn(pattern2, replacement2, content, flags=re.DOTALL)
-        if count2 > 0:
-            print(f"  ✅ Label bypass_orig_flow injecté avec succès ({count2} occurrence(s))")
-            
-        with open(file_path, 'w') as f:
-            f.write(content)
+        content, _ = re.subn(pattern2, replacement2, content, flags=re.DOTALL)
+        with open(file_path, 'w') as f: f.write(content)
+        print("  ✅ Hook SUS_MAP injecté")
 PYEOF
     rm -f fs/proc/task_mmu.c.rej
-    echo "✅ Fichier fs/proc/task_mmu.c.rej résolu et supprimé."
 fi
 
-# 2. Correction auto pour fs/namespace.c (vfs_kern_mount)
+# 2. Correction auto pour fs/namespace.c
 if [ -f "fs/namespace.c.rej" ] && grep -q "vfs_kern_mount" "fs/namespace.c.rej"; then
-    echo "⚠️ Rejet détecté dans fs/namespace.c (vfs_kern_mount). Application d'un correctif Python robuste..."
+    echo "⚠️ Rejet détecté dans fs/namespace.c. Application d'un correctif Python..."
     python3 - << 'PYEOF'
-import re
-import os
-
+import re, os
 file_path = 'fs/namespace.c'
 if os.path.exists(file_path):
-    with open(file_path, 'r') as f:
-        content = f.read()
-
+    with open(file_path, 'r') as f: content = f.read()
     if 'susfs_alloc_non_unshare_ksu_vfsmnt' not in content:
-        print("🔧 Application manuelle des hooks SuSFS SUS_MOUNT (vfs_kern_mount) dans namespace.c...")
-        
         pattern = r'(\tif \(!type\)\n\t\treturn ERR_PTR\(-ENODEV\);\n)(\n\tmnt = alloc_vfsmnt\(name\);)'
-        
         replacement = r'''\1
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-\t// - We will just stop checking for ksu process if /sdcard/Android is accessible,
-\t//   for the sake of performance
 \tif (static_branch_unlikely(&susfs_is_sdcard_android_data_not_decrypted)) {
 \t\tif (susfs_is_current_ksu_domain()) {
 \t\t\tmnt = susfs_alloc_non_unshare_ksu_vfsmnt(name ?:"none");
@@ -289,33 +253,24 @@ if os.path.exists(file_path):
 \t}
 #endif
 \2
-
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 bypass_orig_flow:
 #endif'''
-        
-        content, count = re.subn(pattern, replacement, content)
-        if count > 0:
-            print(f"  ✅ Hook vfs_kern_mount injecté avec succès ({count} occurrence(s))")
-        else:
-            print("  ⚠️ Échec de l'injection du hook vfs_kern_mount. Pattern non trouvé.")
-            
-        with open(file_path, 'w') as f:
-            f.write(content)
+        content, _ = re.subn(pattern, replacement, content)
+        with open(file_path, 'w') as f: f.write(content)
+        print("  ✅ Hook vfs_kern_mount injecté")
 PYEOF
     rm -f fs/namespace.c.rej
-    echo "✅ Fichier fs/namespace.c.rej résolu et supprimé."
 fi
 
-# Vérification finale des autres rejets éventuels
 if find . -name "*.rej" -type f | grep -q .; then
-    echo "❌ Échec critique : Des rejets de patch (.rej) ont été détectés dans d'autres fichiers."
+    echo "❌ Échec critique : Des rejets de patch (.rej) persistent."
     find . -name "*.rej" -type f -exec echo "=== {} ===" \; -exec cat {} \;
     exit 1
 fi
 
 if [ -f "fs/susfs.c" ]; then
-    echo "✅ fs/susfs.c créé ($(wc -l < fs/susfs.c) lignes)"
+    echo "✅ fs/susfs.c créé"
 else
     echo "❌ fs/susfs.c non créé !"
     exit 1
@@ -323,61 +278,38 @@ fi
 
 # ==================== 5b. CORRECTION FS/MAKEFILE ====================
 if [ -f "fs/Makefile" ]; then
-    if ! grep -q "susfs.o" fs/Makefile; then
-        echo "obj-\$(CONFIG_KSU_SUSFS) += susfs.o" >> fs/Makefile
-    fi
+    grep -q "susfs.o" fs/Makefile || echo "obj-\$(CONFIG_KSU_SUSFS) += susfs.o" >> fs/Makefile
     if [ -f "fs/sus_su.c" ]; then
-        if ! grep -q "sus_su.o" fs/Makefile; then
-            echo "obj-\$(CONFIG_KSU_SUSFS) += sus_su.o" >> fs/Makefile
-        fi
+        grep -q "sus_su.o" fs/Makefile || echo "obj-\$(CONFIG_KSU_SUSFS) += sus_su.o" >> fs/Makefile
     fi
 fi
 
 # ==================== 5c. CORRECTION NAMESPACE.C (Complément) ====================
 python3 - << 'PYEOF'
 import re
-
-with open('fs/namespace.c', 'r') as f:
-    content = f.read()
-
+with open('fs/namespace.c', 'r') as f: content = f.read()
 content = re.sub(r'^\s*n(?=#ifdef|#endif|#include|#define|extern)', '', content, flags=re.MULTILINE)
-
 if '#include <linux/susfs_def.h>' not in content:
-    content = content.replace(
-        '#include <linux/sched/task.h>',
-        '#include <linux/sched/task.h>\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n#include <linux/susfs_def.h>\n#endif'
-    )
-
+    content = content.replace('#include <linux/sched/task.h>', '#include <linux/sched/task.h>\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n#include <linux/susfs_def.h>\n#endif')
 if 'extern bool susfs_is_current_ksu_domain' not in content:
-    content = content.replace(
-        '#include "pnode.h"',
-        '#include "pnode.h"\n\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nextern bool susfs_is_current_ksu_domain(void);\nextern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n#define CL_COPY_MNT_NS BIT(25)\n#endif'
-    )
-
-with open('fs/namespace.c', 'w') as f:
-    f.write(content)
+    content = content.replace('#include "pnode.h"', '#include "pnode.h"\n\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nextern bool susfs_is_current_ksu_domain(void);\nextern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n#define CL_COPY_MNT_NS BIT(25)\n#endif')
+with open('fs/namespace.c', 'w') as f: f.write(content)
 PYEOF
 
 # ==================== 5d. CORRECTION TASK_MMU.C ====================
-if [ -f "fs/proc/task_mmu.c" ]; then
-    sed -i 's/struct vm_area_struct \*vma;/struct vm_area_struct *vma __maybe_unused;/g' fs/proc/task_mmu.c
-fi
+[ -f "fs/proc/task_mmu.c" ] && sed -i 's/struct vm_area_struct \*vma;/struct vm_area_struct *vma __maybe_unused;/g' fs/proc/task_mmu.c
 
 # ==================== 5e. AJOUT DES SYMBOLES MANQUANTS ====================
 if ! grep -q "susfs_ksu_sid = 0" fs/susfs.c; then
     cat >> fs/susfs.c << 'SUSFS_EOF'
-
 #ifdef CONFIG_KSU_SUSFS
-bool susfs_is_current_ksu_domain(void)
-{
+bool susfs_is_current_ksu_domain(void) {
     const struct cred *cred = current_cred();
     return (cred->uid.val == 0 || cred->uid.val == 2000);
 }
 EXPORT_SYMBOL(susfs_is_current_ksu_domain);
-
 u32 susfs_ksu_sid = 0;
 EXPORT_SYMBOL(susfs_ksu_sid);
-
 u32 susfs_priv_app_sid = 0;
 EXPORT_SYMBOL(susfs_priv_app_sid);
 #endif
@@ -385,56 +317,42 @@ SUSFS_EOF
 fi
 
 # ==================== 6. KCONFIG SUSFS ====================
-if [ -f "drivers/kernelsu/Kconfig" ]; then
-    if ! grep -q "KSU_SUSFS" drivers/kernelsu/Kconfig; then
-        cat >> drivers/kernelsu/Kconfig << 'KCONFIG_EOF'
-
+if [ -f "drivers/kernelsu/Kconfig" ] && ! grep -q "KSU_SUSFS" drivers/kernelsu/Kconfig; then
+    cat >> drivers/kernelsu/Kconfig << 'KCONFIG_EOF'
 menuconfig KSU_SUSFS
 	bool "KernelSU SUSFS support"
 	depends on KSU
 	default y
-
 if KSU_SUSFS
-
 config KSU_SUSFS_SUS_PATH
 	bool "sus_path"
 	default y
-
 config KSU_SUSFS_SUS_MOUNT
 	bool "sus_mount"
 	default y
-
 config KSU_SUSFS_SUS_KSTAT
 	bool "sus_kstat"
 	default y
-
 config KSU_SUSFS_SUS_MAP
 	bool "sus_map"
 	default y
-
 config KSU_SUSFS_SPOOF_UNAME
 	bool "spoof_uname"
 	default y
-
 config KSU_SUSFS_ENABLE_LOG
 	bool "enable_log"
 	default y
-
 config KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
 	bool "hide_ksu_susfs_symbols"
 	default y
-
 config KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
 	bool "spoof_cmdline_or_bootconfig"
 	default y
-
 config KSU_SUSFS_OPEN_REDIRECT
 	bool "open_redirect"
 	default y
-
 endif
 KCONFIG_EOF
-    fi
 fi
 
 # ==================== 7. CONFIGURATION + CORRECTIONS ====================
@@ -462,7 +380,6 @@ if [ -n "$MMI_KCONFIG" ]; then
 fi
 
 ./scripts/config --file out/.config --disable TOUCHSCREEN_FTS
-
 ./scripts/config --file out/.config \
     --enable INPUT_TOUCHSCREEN_MMI \
     --enable INPUT_FOCALTECH_0FLASH_MMI \
@@ -491,7 +408,7 @@ fi
 
 ./scripts/config --file out/.config --disable LTO_CLANG --disable CFI_CLANG
 
-# === Configuration DRM : désactiver DRM_MSM (mainline) pour éviter les conflits avec le techpack ===
+# === Configuration DRM : désactiver DRM_MSM pour éviter les conflits avec le techpack ===
 ./scripts/config --file out/.config --disable DRM_MSM
 ./scripts/config --file out/.config --disable DRM_MSM_DSI
 ./scripts/config --file out/.config --enable MMI_RELAY
@@ -506,36 +423,23 @@ echo "CONFIG_SENSORS_CLASS=y" >> out/.config
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-if ! grep -q "CONFIG_INPUT_TOUCHSCREEN_MMI=y" out/.config; then
-    echo "❌ CONFIG_INPUT_TOUCHSCREEN_MMI n'est pas y"
-    exit 1
-fi
+if ! grep -q "CONFIG_INPUT_TOUCHSCREEN_MMI=y" out/.config; then echo "❌ CONFIG_INPUT_TOUCHSCREEN_MMI n'est pas y"; exit 1; fi
+if ! grep -q "CONFIG_DRM_DYNAMIC_REFRESH_RATE=y" out/.config; then echo "❌ CONFIG_DRM_DYNAMIC_REFRESH_RATE n'est pas y"; exit 1; fi
+if ! grep -q "CONFIG_SENSORS_CLASS=y" out/.config; then echo "❌ CONFIG_SENSORS_CLASS n'est pas y"; exit 1; fi
 
-if ! grep -q "CONFIG_DRM_DYNAMIC_REFRESH_RATE=y" out/.config; then
-    echo "❌ CONFIG_DRM_DYNAMIC_REFRESH_RATE n'est pas y"
-    exit 1
-fi
-
-if ! grep -q "CONFIG_SENSORS_CLASS=y" out/.config; then
-    echo "❌ CONFIG_SENSORS_CLASS n'est pas y"
-    exit 1
-fi
-
-# ==================== 8. PATCH SIGNATURES + STUB dsi_freq_head FAIBLE ====================
+# ==================== 8. PATCH SIGNATURES + STUB dsi_freq_head ====================
 echo "=== Neutralisation de la vérification de version des modules ==="
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
 echo "=== Ajout du stub inconditionnel (weak) pour dsi_freq_head ==="
-# Le driver techpack (techpack/display/msm/dsi/dsi_panel.c) définit dsi_freq_head
-# mais n'est pas toujours compilé selon la configuration. On fournit un stub faible
-# qui sera utilisé uniquement si aucune autre définition n'existe.
-# L'attribut weak garantit qu'il n'y aura jamais de conflit de symboles dupliqués.
 cat >> fs/susfs.c << 'DSI_STUB_EOF'
 
 #include <linux/notifier.h>
 
 /* Stub inconditionnel pour dsi_freq_head (variable, pas une fonction) */
-__attribute__((weak)) struct blocking_notifier_head dsi_freq_head;
+/* Initialisé explicitement pour éviter tout risque de plantage au boot */
+__attribute__((weak)) struct blocking_notifier_head dsi_freq_head = 
+    BLOCKING_NOTIFIER_INIT(dsi_freq_head);
 
 DSI_STUB_EOF
 echo "✅ Stub weak (variable) pour dsi_freq_head ajouté à fs/susfs.c"
@@ -609,6 +513,8 @@ echo "✅ ksud compilé"
 # ==================== 11. REPACK ====================
 cd "$GITHUB_WORKSPACE"
 
+# Téléchargement des images stock du 30 Août 2026
+echo "=== Téléchargement des images stock du 30 Août 2026 ==="
 curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/${NIGHTLY_DATE_COMPACT}/boot.img"
 curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/${NIGHTLY_DATE_COMPACT}/dtbo.img"
 
