@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD FINAL 17 : KernelSU + SuSFS + FocalTech 0flash built-in + DRM simple (sans DRM_MSM) ==="
+echo "=== BUILD FINAL 18 : KernelSU + SuSFS + FocalTech 0flash + Stub faible + Correctif Synaptics ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -336,6 +336,8 @@ export SUBARCH=arm64
 export CROSS_COMPILE=aarch64-linux-gnu-
 export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
+# Nettoyage radical
+make O=out mrproper 2>/dev/null || true
 rm -rf out
 mkdir -p out
 
@@ -387,13 +389,9 @@ fi
 
 ./scripts/config --file out/.config --enable MMI_RELAY
 ./scripts/config --file out/.config --enable SENSORS_CLASS
-./scripts/config --file out/.config --enable DRM
-./scripts/config --file out/.config --disable DRM_MSM
 
 echo "CONFIG_MMI_RELAY=y" >> out/.config
 echo "CONFIG_SENSORS_CLASS=y" >> out/.config
-echo "CONFIG_DRM=y" >> out/.config
-# PAS de CONFIG_DRM_MSM=y
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
@@ -407,8 +405,26 @@ if ! grep -q "CONFIG_SENSORS_CLASS=y" out/.config; then
     exit 1
 fi
 
-# ==================== 8. PATCH SIGNATURES ====================
+# ==================== 8. PATCH SIGNATURES + STUB FAIBLE ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
+
+# Stub faible pour dsi_freq_head (ne remplace pas le vrai symbole si présent)
+if ! grep -q "dsi_freq_head" fs/susfs.c; then
+    cat >> fs/susfs.c << 'EOF'
+
+#ifdef CONFIG_DRM_DYNAMIC_REFRESH_RATE
+__attribute__((weak)) struct blocking_notifier_head dsi_freq_head =
+    BLOCKING_NOTIFIER_INIT(dsi_freq_head);
+EXPORT_SYMBOL_GPL(dsi_freq_head);
+#endif
+EOF
+    echo "✅ Stub faible dsi_freq_head ajouté dans fs/susfs.c"
+else
+    echo "✅ dsi_freq_head déjà présent dans fs/susfs.c"
+fi
+
+# Correctif pour strnstr (si nécessaire)
+sed -i 's/strnstr(dev_name(dev), "mdp")/strnstr(dev_name(dev), "mdp", strlen("mdp"))/' drivers/gpu/drm/msm/msm_drv.c 2>/dev/null || true
 
 # ==================== 9. COMPILATION ====================
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
