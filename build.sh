@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD FINAL 14 : KernelSU + SuSFS + FocalTech 0flash built-in + DRM sans MSM + stub dsi_freq_head ==="
+echo "=== BUILD FINAL 15 : KernelSU + SuSFS + FocalTech 0flash built-in + DRM simple ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -386,12 +386,10 @@ fi
 ./scripts/config --file out/.config --disable LTO_CLANG --disable CFI_CLANG
 
 ./scripts/config --file out/.config --enable MMI_RELAY
-./scripts/config --file out/.config --enable DRM_DYNAMIC_REFRESH_RATE
 ./scripts/config --file out/.config --enable SENSORS_CLASS
 ./scripts/config --file out/.config --enable DRM
 
 echo "CONFIG_MMI_RELAY=y" >> out/.config
-echo "CONFIG_DRM_DYNAMIC_REFRESH_RATE=y" >> out/.config
 echo "CONFIG_SENSORS_CLASS=y" >> out/.config
 echo "CONFIG_DRM=y" >> out/.config
 
@@ -399,11 +397,6 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 if ! grep -q "CONFIG_INPUT_TOUCHSCREEN_MMI=y" out/.config; then
     echo "❌ CONFIG_INPUT_TOUCHSCREEN_MMI n'est pas y"
-    exit 1
-fi
-
-if ! grep -q "CONFIG_DRM_DYNAMIC_REFRESH_RATE=y" out/.config; then
-    echo "❌ CONFIG_DRM_DYNAMIC_REFRESH_RATE n'est pas y"
     exit 1
 fi
 
