@@ -262,7 +262,6 @@ EXPORT_SYMBOL(susfs_ksu_sid);
 u32 susfs_priv_app_sid = 0;
 EXPORT_SYMBOL(susfs_priv_app_sid);
 
-/* Symbole faible pour éviter le crash/plantage si dsi_freq_head est absent (Point 3) */
 int __attribute__((weak)) dsi_freq_head(void)
 {
     return 0;
@@ -308,37 +307,21 @@ print("[+] Patch synaptics_dsx_i2c.c appliqué.")
 PYEOF
 fi
 
-# ==================== 4c. PATCHS TOUCHSCREEN MMI (PANEL & NOTIF) ====================
-echo "=== Application des correctifs touchscreen_mmi ==="
+# ==================== 4c. CORRECTIFS TOUCHSCREEN MMI & NOTIFICATIONS (MSM DRM) ====================
+echo "=== Application des correctifs touchscreen_mmi & msm_drm ==="
 python3 - << 'PYEOF'
 import os
-
-panel_path = "drivers/input/touchscreen/touchscreen_mmi/touchscreen_mmi_panel.c"
-if os.path.exists(panel_path):
-    with open(panel_path, 'r') as f:
-        code = f.read()
-    if '#include <drm/drm_panel.h>' not in code:
-        code = '#include <drm/drm_panel.h>\n' + code
-        with open(panel_path, 'w') as f:
-            f.write(code)
-        print("[+] Inclusion de <drm/drm_panel.h> ajoutée dans touchscreen_mmi_panel.c")
+import re
 
 notif_path = "drivers/input/touchscreen/touchscreen_mmi/touchscreen_mmi_notif.c"
 if os.path.exists(notif_path):
     with open(notif_path, 'r') as f:
         code = f.read()
     
-    declarations_fix = """
-#ifndef _PANEL_EVENT_NOTIFIER_FWD_DEF
-#define _PANEL_EVENT_NOTIFIER_FWD_DEF
-enum panel_event_notifier_tag;
-struct panel_event_notification;
-struct panel_event_notification_data;
-#endif
-"""
-    if 'enum panel_event_notifier_tag;' not in code:
-        code = declarations_fix + code
-
+    # Remplacer les types de callback obsolètes/incompatibles par les types compatibles 4.19 msm_drm
+    code = code.replace('enum panel_event_notifier_tag tag', 'unsigned long val')
+    code = code.replace('struct panel_event_notification_data evdata;', 'struct msm_drm_notifier *evdata = v;')
+    
     if '#include <linux/msm_drm_notify.h>' not in code:
         code = '#include <linux/msm_drm_notify.h>\n' + code
 
@@ -349,19 +332,39 @@ struct panel_event_notification_data;
 header_path = "include/linux/touchscreen_mmi.h"
 if os.path.exists(header_path):
     with open(header_path, 'r') as f:
-        header_content = f.read()
-    if 'panel_nb' not in header_content:
-        header_content = header_content.replace(
-            "};",
-            "\tstruct notifier_block panel_nb;\n};",
-            1
-        )
-        with open(header_path, 'w') as f:
-            f.write(header_content)
-        print("[+] Champ panel_nb ajouté à struct ts_mmi_dev dans touchscreen_mmi.h")
+        content = f.read()
+
+    # Nettoyage d'éventuelles anciennes déclarations de panel_nb
+    content = re.sub(r'struct notifier_block panel_nb;\s*', '', content)
+
+    # Injection propre de panel_nb à l'intérieur de struct ts_mmi_dev
+    pattern = r'(struct ts_mmi_dev\s*\{[^}]*?)(};)'
+    if re.search(pattern, content, re.DOTALL):
+        replacement = r'\1\n\tstruct notifier_block panel_nb;\n\2'
+        content = re.sub(pattern, replacement, content, count=1, flags=re.DOTALL)
+    
+    # Mise à jour des macros d'enregistrement avec msm_drm
+    new_macros = """
+#define REGISTER_PANEL_NOTIFIER {\\
+	touch_cdev->panel_nb.notifier_call = ts_mmi_panel_cb; \\
+	ret = msm_drm_register_client(&touch_cdev->panel_nb); \\
+}
+
+#define UNREGISTER_PANEL_NOTIFIER {\\
+	msm_drm_unregister_client(&touch_cdev->panel_nb); \\
+}
+"""
+    if "REGISTER_PANEL_NOTIFIER" in content:
+        content = re.sub(r'#define REGISTER_PANEL_NOTIFIER\s*\{[^}]+\}', '', content)
+        content = re.sub(r'#define UNREGISTER_PANEL_NOTIFIER\s*\{[^}]+\}', '', content)
+    
+    content = content + "\n" + new_macros
+    with open(header_path, 'w') as f:
+        f.write(content)
+    print("[+] struct ts_mmi_dev et macros mis à jour dans touchscreen_mmi.h")
 PYEOF
 
-# ==================== 4d. CORRECTION CLANG strnstr (Point 4) ====================
+# ==================== 4d. CORRECTION CLANG strnstr ====================
 MSM_DRV_FILE="drivers/gpu/drm/msm/msm_drv.c"
 if [ -f "$MSM_DRV_FILE" ]; then
     sed -i 's/strnstr(dev_name(dev), /strnstr(dev_name(dev), sizeof(dev_name(dev)), /g' "$MSM_DRV_FILE" || true
