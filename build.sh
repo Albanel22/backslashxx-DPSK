@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD FINAL 7 : KernelSU + SuSFS + FocalTech 0flash built-in + DRM_MSM_DSI activé ==="
+echo "=== BUILD FINAL 7 : KernelSU + SuSFS + FocalTech 0flash built-in + stub dsi_freq_head faible ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -491,16 +491,16 @@ fi
 
 ./scripts/config --file out/.config --disable LTO_CLANG --disable CFI_CLANG
 
-# === CORRECTION DRM_MSM_DSI pour dsi_freq_head ===
+# === Configuration DRM : désactiver DRM_MSM (mainline) pour éviter les conflits avec le techpack ===
+./scripts/config --file out/.config --disable DRM_MSM
+./scripts/config --file out/.config --disable DRM_MSM_DSI
 ./scripts/config --file out/.config --enable MMI_RELAY
-./scripts/config --file out/.config --enable DRM_MSM
-./scripts/config --file out/.config --enable DRM_MSM_DSI
 ./scripts/config --file out/.config --enable DRM_DYNAMIC_REFRESH_RATE
 ./scripts/config --file out/.config --enable SENSORS_CLASS
 
+echo "CONFIG_DRM_MSM=n" >> out/.config
+echo "CONFIG_DRM_MSM_DSI=n" >> out/.config
 echo "CONFIG_MMI_RELAY=y" >> out/.config
-echo "CONFIG_DRM_MSM=y" >> out/.config
-echo "CONFIG_DRM_MSM_DSI=y" >> out/.config
 echo "CONFIG_DRM_DYNAMIC_REFRESH_RATE=y" >> out/.config
 echo "CONFIG_SENSORS_CLASS=y" >> out/.config
 
@@ -508,16 +508,6 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 if ! grep -q "CONFIG_INPUT_TOUCHSCREEN_MMI=y" out/.config; then
     echo "❌ CONFIG_INPUT_TOUCHSCREEN_MMI n'est pas y"
-    exit 1
-fi
-
-if ! grep -q "CONFIG_DRM_MSM=y" out/.config; then
-    echo "❌ CONFIG_DRM_MSM n'est pas y"
-    exit 1
-fi
-
-if ! grep -q "CONFIG_DRM_MSM_DSI=y" out/.config; then
-    echo "❌ CONFIG_DRM_MSM_DSI n'est pas y"
     exit 1
 fi
 
@@ -531,21 +521,24 @@ if ! grep -q "CONFIG_SENSORS_CLASS=y" out/.config; then
     exit 1
 fi
 
-# ==================== 8. PATCH SIGNATURES + CORRECTIONS MSM ====================
+# ==================== 8. PATCH SIGNATURES + STUB dsi_freq_head FAIBLE ====================
 echo "=== Neutralisation de la vérification de version des modules ==="
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
-# === Correction bug strnstr dans msm_drv.c ===
-echo "=== Correction de l'appel strnstr() dans msm_drv.c ==="
-if [ -f "drivers/gpu/drm/msm/msm_drv.c" ]; then
-    # Remplace strnstr(dev_name(dev), "mdp") par strstr(dev_name(dev), "mdp")
-    # car strnstr dans le noyau attend 3 arguments (avec la taille max)
-    sed -i 's/strnstr(dev_name(dev), "mdp")/strstr(dev_name(dev), "mdp")/g' drivers/gpu/drm/msm/msm_drv.c
-    echo "✅ strnstr remplacé par strstr dans msm_drv.c"
-fi
+echo "=== Ajout du stub inconditionnel (weak) pour dsi_freq_head ==="
+# Le driver techpack (techpack/display/msm/dsi/dsi_panel.c) définit dsi_freq_head
+# mais n'est pas toujours compilé selon la configuration. On fournit un stub faible
+# qui sera utilisé uniquement si aucune autre définition n'existe.
+# L'attribut weak garantit qu'il n'y aura jamais de conflit de symboles dupliqués.
+cat >> fs/susfs.c << 'DSI_STUB_EOF'
 
-# NOTE : Le stub dsi_freq_head n'est plus nécessaire car CONFIG_DRM_MSM_DSI=y
-# force la compilation de dsi_panel.c qui contient la vraie définition.
+#include <linux/notifier.h>
+
+/* Stub inconditionnel pour dsi_freq_head (variable, pas une fonction) */
+__attribute__((weak)) struct blocking_notifier_head dsi_freq_head;
+
+DSI_STUB_EOF
+echo "✅ Stub weak (variable) pour dsi_freq_head ajouté à fs/susfs.c"
 
 # ==================== 9. COMPILATION ====================
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
