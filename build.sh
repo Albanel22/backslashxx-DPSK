@@ -327,11 +327,25 @@ notif_path = "drivers/input/touchscreen/touchscreen_mmi/touchscreen_mmi_notif.c"
 if os.path.exists(notif_path):
     with open(notif_path, 'r') as f:
         code = f.read()
+    
+    # Déclarations préalables pour éviter les erreurs de visibilité Clang -Wvisibility
+    declarations_fix = """
+#ifndef _PANEL_EVENT_NOTIFIER_FWD_DEF
+#define _PANEL_EVENT_NOTIFIER_FWD_DEF
+enum panel_event_notifier_tag;
+struct panel_event_notification;
+struct panel_event_notification_data;
+#endif
+"""
+    if 'enum panel_event_notifier_tag;' not in code:
+        code = declarations_fix + code
+
     if '#include <linux/msm_drm_notify.h>' not in code:
         code = '#include <linux/msm_drm_notify.h>\n' + code
-        with open(notif_path, 'w') as f:
-            f.write(code)
-        print("[+] Inclusion de <linux/msm_drm_notify.h> ajoutée dans touchscreen_mmi_notif.c")
+
+    with open(notif_path, 'w') as f:
+        f.write(code)
+    print("[+] Correctifs appliqués dans touchscreen_mmi_notif.c")
 
 header_path = "include/linux/touchscreen_mmi.h"
 if os.path.exists(header_path):
