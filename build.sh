@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD FINAL 16 : KernelSU + SuSFS + FocalTech 0flash built-in + DRM + DRM_MSM ==="
+echo "=== BUILD FINAL 17 : KernelSU + SuSFS + FocalTech 0flash built-in + DRM simple (sans DRM_MSM) ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -388,12 +388,12 @@ fi
 ./scripts/config --file out/.config --enable MMI_RELAY
 ./scripts/config --file out/.config --enable SENSORS_CLASS
 ./scripts/config --file out/.config --enable DRM
-./scripts/config --file out/.config --enable DRM_MSM
+./scripts/config --file out/.config --disable DRM_MSM
 
 echo "CONFIG_MMI_RELAY=y" >> out/.config
 echo "CONFIG_SENSORS_CLASS=y" >> out/.config
 echo "CONFIG_DRM=y" >> out/.config
-echo "CONFIG_DRM_MSM=y" >> out/.config
+# PAS de CONFIG_DRM_MSM=y
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
@@ -409,9 +409,6 @@ fi
 
 # ==================== 8. PATCH SIGNATURES ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
-
-# Correctif pour l'appel strnstr dans msm_drv.c
-sed -i 's/strnstr(dev_name(dev), "mdp")/strnstr(dev_name(dev), "mdp", strlen("mdp"))/' drivers/gpu/drm/msm/msm_drv.c
 
 # ==================== 9. COMPILATION ====================
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
