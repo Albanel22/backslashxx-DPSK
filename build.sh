@@ -439,6 +439,18 @@ if [ -n "$FTS_FILE" ]; then
     sed -i 's/\bts_mmi_dev_unregister\b/fts_mmi_dev_unregister/g' "$FTS_FILE"
 fi
 
+python3 - << 'PYEOF'
+path = "drivers/input/touchscreen/touchscreen_mmi/touchscreen_mmi_panel.c"
+with open(path, 'r') as f:
+    code = f.read()
+
+if '#include <drm/drm_panel.h>' not in code:
+    code = '#include <drm/drm_panel.h>\n' + code
+    with open(path, 'w') as f:
+        f.write(code)
+    print("[+] Inclusion de <drm/drm_panel.h> ajoutée dans touchscreen_mmi_panel.c")
+PYEOF
+
 # ==================== 9. COMPILATION ====================
 
 if [ -f "out/.config" ]; then
