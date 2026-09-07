@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD FINAL 12 : KernelSU + SuSFS + FocalTech 0flash built-in + DRM natif ==="
+echo "=== BUILD FINAL 13 : KernelSU + SuSFS + FocalTech 0flash built-in + DRM natif propre ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -336,6 +336,7 @@ export SUBARCH=arm64
 export CROSS_COMPILE=aarch64-linux-gnu-
 export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
+rm -rf out
 mkdir -p out
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
@@ -420,10 +421,6 @@ sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 sed -i 's/strnstr(dev_name(dev), "mdp")/strnstr(dev_name(dev), "mdp", strlen("mdp"))/' drivers/gpu/drm/msm/msm_drv.c
 
 # ==================== 9. COMPILATION ====================
-# Nettoyage des objets pour forcer la recompilation
-find out/fs -name "susfs.o" -delete 2>/dev/null || true
-find out/techpack/display/msm/dsi -name "dsi_panel.o" -delete 2>/dev/null || true
-
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
     -j$(nproc) scripts
 
