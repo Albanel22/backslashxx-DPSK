@@ -290,18 +290,21 @@ echo "CONFIG_SENSORS_CLASS=y" >> out/.config
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-# ==================== 8. PATCH SIGNATURES + TACTILE + FIX MSM_DRV ====================
+# ==================== 8. PATCH SIGNATURES + TACTILE (CONDITIONNEL) ====================
 echo "=== Application des correctifs de compilation ==="
 
-# 🛠️ FIX CRITIQUE : strnstr attend 3 arguments dans les noyaux récents avec Clang
+# 🛠️ FIX CRITIQUE : strnstr attend 3 arguments
 if [ -f "drivers/gpu/drm/msm/msm_drv.c" ]; then
     sed -i 's/strnstr(dev_name(dev), "mdp")/strnstr(dev_name(dev), "mdp", strlen(dev_name(dev)))/g' drivers/gpu/drm/msm/msm_drv.c
-    echo "✅ Correction strnstr (3 arguments) appliquée dans msm_drv.c"
+    echo "✅ Correction strnstr appliquée"
 fi
 
-# 📱 PATCH TACTILE MOTOROLA (adapté pour lineage-23.2)
+# 📱 PATCH TACTILE MOTOROLA (seulement si les fonctions n'existent pas déjà)
 if [ -f "techpack/display/msm/msm_drv.c" ]; then
-    if ! grep -q "motorola_panel_notifier_list" techpack/display/msm/msm_drv.c; then
+    # Vérifier si panel_notifier.o existe (signe que les fonctions sont déjà là)
+    if [ -f "drivers/video/panel_notifier.c" ] || grep -q "panel_register_notifier" drivers/video/*.c 2>/dev/null; then
+        echo "⚠️ Les fonctions tactiles existent déjà dans panel_notifier.o - patch non nécessaire"
+    elif ! grep -q "motorola_panel_notifier_list" techpack/display/msm/msm_drv.c; then
         echo "🔧 Application du patch tactile Motorola..."
         
         cat >> techpack/display/msm/msm_drv.c << 'TOUCH_PATCH_EOF'
@@ -312,29 +315,27 @@ if [ -f "techpack/display/msm/msm_drv.c" ]; then
 
 static BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);
 
-__weak int panel_register_notifier(struct notifier_block *nb) {
+int panel_register_notifier(struct notifier_block *nb) {
     return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);
 }
 EXPORT_SYMBOL(panel_register_notifier);
 
-__weak int panel_unregister_notifier(struct notifier_block *nb) {
+int panel_unregister_notifier(struct notifier_block *nb) {
     return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);
 }
 EXPORT_SYMBOL(panel_unregister_notifier);
 
-__weak void touch_set_state(int state) { 
+void touch_set_state(int state) { 
     return; 
 }
 EXPORT_SYMBOL(touch_set_state);
 /* --- Fin Patch Tactile Adapté --- */
 TOUCH_PATCH_EOF
         
-        echo "✅ Patch tactile appliqué avec succès"
+        echo "✅ Patch tactile appliqué"
     else
-        echo "⚠️ Le patch tactile est déjà présent"
+        echo "⚠️ Patch tactile déjà présent"
     fi
-else
-    echo "❌ techpack/display/msm/msm_drv.c introuvable"
 fi
 
 # 🛡️ STUB SÉCURISÉ POUR dsi_freq_head
@@ -347,7 +348,6 @@ __attribute__((weak)) struct blocking_notifier_head dsi_freq_head;
 DSI_STUB_EOF
 fi
 
-# Neutralisation vérification modules
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
 # ==================== 9. COMPILATION ====================
