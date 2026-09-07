@@ -534,7 +534,7 @@ fi
 
 # ==================== 8. PATCH SIGNATURES ====================
 echo "=== Neutralisation de la vérification de version des modules ==="
-sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g) kernel/module.c
+sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
 # NOTE : Le stub dsi_freq_head n'est plus nécessaire car CONFIG_DRM_MSM_DSI=y
 # force la compilation de dsi_panel.c qui contient la vraie définition.
