@@ -410,6 +410,9 @@ fi
 # ==================== 8. PATCH SIGNATURES ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
+# Correctif pour l'appel strnstr dans msm_drv.c
+sed -i 's/strnstr(dev_name(dev), "mdp")/strnstr(dev_name(dev), "mdp", strlen("mdp"))/' drivers/gpu/drm/msm/msm_drv.c
+
 # ==================== 9. COMPILATION ====================
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
     -j$(nproc) scripts
