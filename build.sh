@@ -315,33 +315,35 @@ KCONFIG_EOF
     fi
 fi
 
-# ==================== 6.5 FIX INCLUDE DRM PANEL DANS TOUCHSCREEN_MMI (CORRIGÉ 4.19) ====================
-TOUCH_PANEL_C="drivers/input/touchscreen/touchscreen_mmi/touchscreen_mmi_panel.c"
-if [ -f "$TOUCH_PANEL_C" ]; then
-    python3 - << 'PYEOF'
-path = "drivers/input/touchscreen/touchscreen_mmi/touchscreen_mmi_panel.c"
-with open(path, 'r') as f:
-    content = f.read()
+# ==================== 6.5 & 6.6 BALAYAGE AUTOMATIQUE DRM PANEL DANS TOUCHSCREEN_MMI ====================
+echo "=== Injection automatique de <drm/drm_panel.h> dans touchscreen_mmi ==="
+for f in drivers/input/touchscreen/touchscreen_mmi/*.c drivers/input/touchscreen/touchscreen_mmi/*.h; do
+    if [ -f "$f" ]; then
+        python3 - "$f" << 'PYEOF'
+import sys
+path = sys.argv[1]
+with open(path, 'r') as file:
+    content = file.read()
 
 # Nettoyage des anciennes tentatives erronées (corruptions et chemins incorrects)
 content = content.replace("module.h>/module.h>", "module.h>")
 content = content.replace("#include <linux/drm/drm_panel.h>\n", "")
 content = content.replace("#include <drm/drm_panel.h>\n", "")
 
-header_to_add = "#include <drm/drm_panel.h>\n"
-if header_to_add not in content:
+# Si le fichier manipule des panels ou le drm sans inclure l'en-tête
+if ("panel" in content or "drm" in content) and "#include <drm/drm_panel.h>" not in content:
+    header_to_add = "#include <drm/drm_panel.h>\n"
     if "#include <linux/module.h>" in content:
         content = content.replace("#include <linux/module.h>", "#include <linux/module.h>\n" + header_to_add.strip(), 1)
     else:
         content = header_to_add + content
         
-    with open(path, 'w') as f:
-        f.write(content)
-    print("[+] Include <drm/drm_panel.h> ajouté proprement.")
-else:
-    print("[+] Include <drm/drm_panel.h> déjà présent.")
+    with open(path, 'w') as file:
+        file.write(content)
+    print(f"[+] <drm/drm_panel.h> injecté proprement dans {path}")
 PYEOF
-fi
+    fi
+done
 
 # ==================== 7. CONFIGURATION ====================
 export ARCH=arm64
