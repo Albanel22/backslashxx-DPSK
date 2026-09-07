@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD SECURISE : KernelSU + SuSFS + Fix strnstr msm_drv + Nettoyage complet ==="
+echo "=== BUILD SECURISE v2 : KernelSU + SuSFS + Modules tactiles forcés + Nettoyage complet ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -363,7 +363,7 @@ cargo build --release --target aarch64-linux-android
 cp "$GITHUB_WORKSPACE/ksud-src/target/aarch64-linux-android/release/ksud" "$GITHUB_WORKSPACE/ksud"
 chmod 755 "$GITHUB_WORKSPACE/ksud"
 
-# ==================== 11. REPACK ====================
+# ==================== 11. REPACK AMÉLIORÉ AVEC MODULES TACTILES ====================
 cd "$GITHUB_WORKSPACE"
 curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/${NIGHTLY_DATE_COMPACT}/boot.img"
 curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/${NIGHTLY_DATE_COMPACT}/dtbo.img"
@@ -379,17 +379,66 @@ if [ -f "boot-stock.img" ]; then
   ./magiskboot unpack boot.img
   if [ ! -f "kernel" ] || [ ! -f "ramdisk.cpio" ]; then echo "❌ Échec du unpack"; exit 1; fi
   
+  # Remplacer le noyau
   cp "$GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image" kernel
   
+  # 🆕 EXTRAIRE LE RAMDISK POUR MODIFICATION
+  mkdir -p ramdisk_extracted
+  cd ramdisk_extracted
+  ../magiskboot cpio ../ramdisk.cpio extract
+  
+  # 🆕 CRÉER LA STRUCTURE POUR LES MODULES TACTILES
+  mkdir -p vendor/lib/modules
+  
+  # 🆕 COPIER LES MODULES TACTILES CRITIQUES DEPUIS LE NOYAU COMPILÉ
+  MODULES_SOURCE="$GITHUB_WORKSPACE/kernel_sources/out"
+  
+  # Chercher et copier les modules tactiles
+  find "$MODULES_SOURCE" -name "touchscreen_mmi.ko" -exec cp {} vendor/lib/modules/ \; 2>/dev/null || echo "touchscreen_mmi.ko non trouvé"
+  find "$MODULES_SOURCE" -name "focaltech_0flash_mmi.ko" -exec cp {} vendor/lib/modules/ \; 2>/dev/null || echo "focaltech_0flash_mmi.ko non trouvé"
+  find "$MODULES_SOURCE" -name "sensors_class.ko" -exec cp {} vendor/lib/modules/ \; 2>/dev/null || echo "sensors_class.ko non trouvé"
+  find "$MODULES_SOURCE" -name "mmi_relay.ko" -exec cp {} vendor/lib/modules/ \; 2>/dev/null || echo "mmi_relay.ko non trouvé"
+  
+  echo "✅ Modules tactiles copiés:"
+  ls -lh vendor/lib/modules/ || echo "Aucun module copié"
+  
+  # 🆕 CRÉER/MODIFIER modules.load POUR FORCER LE CHARGEMENT
+  cat > vendor/lib/modules/modules.load << 'MODULES_LOAD_EOF'
+touchscreen_mmi.ko
+focaltech_0flash_mmi.ko
+sensors_class.ko
+mmi_relay.ko
+MODULES_LOAD_EOF
+  
+  echo "✅ modules.load créé avec les modules tactiles"
+  
+  # 🆕 S'ASSURER QUE KSUD ET SU SONT BIEN PLACÉS
+  mkdir -p data/adb/ksud
+  cp "$GITHUB_WORKSPACE/ksud" data/adb/ksud/ksud
+  chmod 755 data/adb/ksud/ksud
+  
+  # Créer le binaire su
+  cp "$GITHUB_WORKSPACE/ksud" system/bin/su
+  chmod 06755 system/bin/su
+  
+  echo "✅ ksud et su installés dans le ramdisk"
+  
+  # 🆕 REPACKAGER LE RAMDISK MODIFIÉ
+  cd ..
   ./magiskboot cpio ramdisk.cpio \
-    "mkdir 0755 data" \
-    "mkdir 0755 data/adb" \
+    "add 0755 vendor/lib/modules/touchscreen_mmi.ko ramdisk_extracted/vendor/lib/modules/touchscreen_mmi.ko" \
+    "add 0755 vendor/lib/modules/focaltech_0flash_mmi.ko ramdisk_extracted/vendor/lib/modules/focaltech_0flash_mmi.ko" \
+    "add 0755 vendor/lib/modules/sensors_class.ko ramdisk_extracted/vendor/lib/modules/sensors_class.ko" \
+    "add 0755 vendor/lib/modules/mmi_relay.ko ramdisk_extracted/vendor/lib/modules/mmi_relay.ko" \
+    "add 0644 vendor/lib/modules/modules.load ramdisk_extracted/vendor/lib/modules/modules.load" \
     "mkdir 0755 data/adb/ksud" \
     "add 0755 data/adb/ksud/ksud $GITHUB_WORKSPACE/ksud" \
-    "mkdir 0755 system" \
     "mkdir 0755 system/bin" \
     "add 06755 system/bin/su $GITHUB_WORKSPACE/ksud"
-    
+  
+  # Nettoyer
+  rm -rf ramdisk_extracted
+  
   ./magiskboot repack boot.img new-boot.img || { echo "❌ Échec du repack"; exit 1; }
   mv new-boot.img ../final_boot.img
   cd ..
