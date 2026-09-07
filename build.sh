@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD FINAL 18 : KernelSU + SuSFS + FocalTech 0flash + Stub faible + Correctif Synaptics ==="
+echo "=== BUILD FINAL 20 : KernelSU + SuSFS + FocalTech 0flash + Stub faible sécurisé ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -405,8 +405,21 @@ if ! grep -q "CONFIG_SENSORS_CLASS=y" out/.config; then
     exit 1
 fi
 
-# ==================== 8. PATCH SIGNATURES ====================
+# ==================== 8. PATCH SIGNATURES + STUB FAIBLE ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
+
+# Stub sécurisé pour dsi_freq_head
+if ! grep -q "dsi_freq_head" fs/susfs.c; then
+    cat >> fs/susfs.c << 'DSI_STUB_EOF'
+
+#include <linux/notifier.h>
+__attribute__((weak)) struct blocking_notifier_head dsi_freq_head;
+
+DSI_STUB_EOF
+    echo "✅ Stub sécurisé dsi_freq_head ajouté dans fs/susfs.c"
+else
+    echo "✅ dsi_freq_head déjà présent dans fs/susfs.c"
+fi
 
 # Correctif pour l'appel strnstr dans msm_drv.c (au cas où)
 sed -i 's/strnstr(dev_name(dev), "mdp")/strnstr(dev_name(dev), "mdp", strlen("mdp"))/' drivers/gpu/drm/msm/msm_drv.c 2>/dev/null || true
