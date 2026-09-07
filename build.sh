@@ -25,7 +25,6 @@ echo "Commit pour nightly du $NIGHTLY_DATE : $COMMIT_HASH"
 
 # ==================== 1. CLONAGE DU NOYAU ====================
 echo "=== Clonage du kernel Motorola sm8250 (commit synchronisé) ==="
-# Suppression de --depth=1 pour garantir que le commit historique soit accessible
 git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git \
     -b lineage-23.2 kernel_sources
 cd kernel_sources
@@ -532,9 +531,18 @@ if ! grep -q "CONFIG_SENSORS_CLASS=y" out/.config; then
     exit 1
 fi
 
-# ==================== 8. PATCH SIGNATURES ====================
+# ==================== 8. PATCH SIGNATURES + CORRECTIONS MSM ====================
 echo "=== Neutralisation de la vérification de version des modules ==="
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
+
+# === Correction bug strnstr dans msm_drv.c ===
+echo "=== Correction de l'appel strnstr() dans msm_drv.c ==="
+if [ -f "drivers/gpu/drm/msm/msm_drv.c" ]; then
+    # Remplace strnstr(dev_name(dev), "mdp") par strstr(dev_name(dev), "mdp")
+    # car strnstr dans le noyau attend 3 arguments (avec la taille max)
+    sed -i 's/strnstr(dev_name(dev), "mdp")/strstr(dev_name(dev), "mdp")/g' drivers/gpu/drm/msm/msm_drv.c
+    echo "✅ strnstr remplacé par strstr dans msm_drv.c"
+fi
 
 # NOTE : Le stub dsi_freq_head n'est plus nécessaire car CONFIG_DRM_MSM_DSI=y
 # force la compilation de dsi_panel.c qui contient la vraie définition.
