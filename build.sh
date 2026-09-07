@@ -412,20 +412,8 @@ if ! grep -q "CONFIG_SENSORS_CLASS=y" out/.config; then
     exit 1
 fi
 
-# ==================== 8. PATCH SIGNATURES + STUB dsi_freq_head ====================
+# ==================== 8. PATCH SIGNATURES ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
-
-# Stub dsi_freq_head (car le vrai symbole n'est pas compilé sans DRM_MSM)
-if ! grep -q "struct blocking_notifier_head dsi_freq_head" fs/susfs.c; then
-    cat >> fs/susfs.c << 'EOF'
-
-struct blocking_notifier_head dsi_freq_head = BLOCKING_NOTIFIER_INIT(dsi_freq_head);
-EXPORT_SYMBOL_GPL(dsi_freq_head);
-EOF
-    echo "✅ Stub dsi_freq_head ajouté dans fs/susfs.c"
-else
-    echo "✅ dsi_freq_head déjà présent dans fs/susfs.c"
-fi
 
 # ==================== 9. COMPILATION ====================
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
