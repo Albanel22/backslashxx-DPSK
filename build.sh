@@ -6,19 +6,7 @@ WORKSPACE_DIR="$(pwd)"
 echo "=== BUILD WINNER : KernelSU v3.2.5-76+ (0b138d6a) + SuSFS + fix UAPI + sys_reboot ==="
 df -h
 
-# ==================== ENVIRONNEMENT ====================
-sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
-sudo apt-get clean
-sudo sed -i 's/azure.archive.ubuntu.com/archive.ubuntu.com/g' /etc/apt/sources.list 2>/dev/null || true
-
-sudo apt-get update
-sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf-dev \
-    libssl-dev libncurses-dev gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
-    clang llvm lld device-tree-compiler zip unzip curl git python3 mkbootimg perl
-
-cd "$GITHUB_WORKSPACE"
-
-echo "=== Clonage du kernel Motorola sm8250 (LineageOS, commit 29 août 2026) ==="
+echo "=== Clonage du kernel Motorola sm8250 (LineageOS, commit 7b7869e) ==="
 git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git kernel_sources
 cd kernel_sources
 
