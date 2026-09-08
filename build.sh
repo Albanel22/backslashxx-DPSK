@@ -6,11 +6,11 @@ WORKSPACE_DIR="$(pwd)"
 echo "=== BUILD WINNER : KernelSU v3.2.5-76+ (0b138d6a) + SuSFS + fix UAPI + sys_reboot ==="
 df -h
 
-echo "=== Clonage du kernel Motorola sm8250 (LineageOS, commit 7b7869e) ==="
+echo "=== 1.Clonage du kernel Motorola sm8250 (LineageOS, commit a49e1899) ==="
 git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git kernel_sources
 cd kernel_sources
 
-KERNEL_COMMIT="${KERNEL_COMMIT:-7b7869eefb3059e1c3e1083bc65eb011b8dbb3ae}"
+KERNEL_COMMIT="${KERNEL_COMMIT:-a49e18994c494d71647f675df48e5c7349580747}"
 echo "=== Utilisation du commit figé : $KERNEL_COMMIT ==="
 git fetch --depth=1 origin "$KERNEL_COMMIT"
 git checkout "$KERNEL_COMMIT"
