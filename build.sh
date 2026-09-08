@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD SECURISE v3 : KernelSU + SuSFS + Patch Tactile + Fix strnstr + Nettoyage ==="
+echo "=== BUILD v3 : Tactile en BUILT-IN + KernelSU + SuSFS ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -24,7 +24,7 @@ COMMIT_HASH=$(curl -s "https://api.github.com/repos/LineageOS/android_kernel_mot
 echo "Commit pour nightly du $NIGHTLY_DATE : $COMMIT_HASH"
 
 # ==================== 1. CLONAGE DU NOYAU ====================
-echo "=== Clonage du kernel Motorola sm8250 (commit synchronisé) ==="
+echo "=== Clonage du kernel Motorola sm8250 ==="
 rm -rf kernel_sources
 git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git \
     -b lineage-23.2 kernel_sources
@@ -37,8 +37,8 @@ cd ..
 
 cd kernel_sources
 
-# ==================== 2. CLONE KERNELSU (COMMIT EXACT) ====================
-echo "=== Intégration KernelSU (0b138d6a) ==="
+# ==================== 2. CLONE KERNELSU ====================
+echo "=== Intégration KernelSU ==="
 rm -rf drivers/kernelsu KernelSU susfs4ksu /tmp/KernelSU || true
 
 KSU_COMMIT="0b138d6a9cfe4dc163aa05c21b1e6a14ff868230"
@@ -55,7 +55,7 @@ ln -sf /tmp/KernelSU/kernel drivers/kernelsu
 printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> drivers/Makefile
 sed -i "/endmenu/i\source \"drivers/kernelsu/Kconfig\"" drivers/Kconfig
 
-# ==================== 2c. FIX KSU_VERSION GLOBAL ====================
+# ==================== 2c. FIX KSU_VERSION ====================
 KSU_VER=$(grep -oP '(?<=-DKSU_VERSION=)[0-9]+' drivers/kernelsu/Makefile | head -1)
 if [ -z "$KSU_VER" ]; then KSU_VER="32601"; fi
 
@@ -101,7 +101,7 @@ fi
 
 if [ "$HOOKS_FAILED" -eq 1 ]; then echo "❌ Échec des hooks KernelSU"; exit 1; fi
 
-# ==================== 4. TÉLÉCHARGEMENT DU VRAI SUSFS ====================
+# ==================== 4. SUSFS ====================
 JACK_COMMIT="6eae2b587750336507096469fee74a2173e14bf6"
 rm -rf /tmp/jack_repo
 git clone https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd.git /tmp/jack_repo
@@ -109,10 +109,10 @@ cd /tmp/jack_repo && git checkout "$JACK_COMMIT" && cd "$GITHUB_WORKSPACE/kernel
 
 SUSFS_PATCH="/tmp/jack_repo/Patches/Patch/susfs_patch_to_4.19.patch"
 
-# ==================== 5. APPLICATION DU PATCH SUSFS + CORRECTIONS AUTO ====================
+# ==================== 5. APPLICATION PATCH SUSFS ====================
 patch -p1 < "$SUSFS_PATCH" 2>&1 | tee /tmp/susfs_patch.log || true
 
-# Correction auto task_mmu.c
+# Corrections auto (même code que avant)
 if [ -f "fs/proc/task_mmu.c.rej" ]; then
     python3 - << 'PYEOF'
 import re, os
@@ -129,7 +129,6 @@ PYEOF
     rm -f fs/proc/task_mmu.c.rej
 fi
 
-# Correction auto namespace.c
 if [ -f "fs/namespace.c.rej" ] && grep -q "vfs_kern_mount" "fs/namespace.c.rej"; then
     python3 - << 'PYEOF'
 import re, os
@@ -157,12 +156,9 @@ PYEOF
 fi
 
 if find . -name "*.rej" -type f | grep -q .; then
-    echo "❌ Échec critique : Des rejets de patch (.rej) persistent."
-    find . -name "*.rej" -type f -exec cat {} \;
-    exit 1
+    echo "❌ Rejets persistants"; exit 1
 fi
 
-# ==================== 5b. CORRECTION FS/MAKEFILE & NAMESPACE ====================
 if [ -f "fs/Makefile" ] && ! grep -q "susfs.o" fs/Makefile; then
     echo "obj-\$(CONFIG_KSU_SUSFS) += susfs.o" >> fs/Makefile
 fi
@@ -239,15 +235,13 @@ endif
 KCONFIG_EOF
 fi
 
-# ==================== 7. CONFIGURATION + CORRECTIONS ====================
+# ==================== 7. CONFIGURATION - TACTILE EN BUILT-IN ====================
 export ARCH=arm64
 export SUBARCH=arm64
 export CROSS_COMPILE=aarch64-linux-gnu-
 export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
 mkdir -p out
-
-# 🚨 NETTOYAGE RADICAL OBLIGATOIRE POUR ÉVITER LES PANICS 🚨
 make O=out mrproper
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
@@ -258,9 +252,28 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
     arch/arm64/configs/vendor/ext_config/moto-lito.config \
     arch/arm64/configs/vendor/ext_config/kiev-default.config
 
-./scripts/config --file out/.config --enable INPUT_TOUCHSCREEN_MMI
-./scripts/config --file out/.config --enable BOARD_USES_DOUBLE_TAP_CTRL
+# 🆕 FORCER LE TACTILE EN BUILT-IN (pas en modules)
+echo "=== Configuration tactile en BUILT-IN ==="
 
+# Trouver et modifier le Kconfig du tactile pour le forcer en bool
+MMI_KCONFIG=$(grep -Rl "config INPUT_TOUCHSCREEN_MMI" drivers/input/touchscreen/ | head -1)
+if [ -n "$MMI_KCONFIG" ]; then
+    sed -i '/config INPUT_TOUCHSCREEN_MMI/,/^$/ s/tristate/bool/' "$MMI_KCONFIG"
+    sed -i '/config INPUT_TOUCHSCREEN_MMI/,/^$/ s/default n/default y/' "$MMI_KCONFIG"
+fi
+
+# Activer tous les pilotes tactiles en built-in
+./scripts/config --file out/.config \
+    --set-val INPUT_TOUCHSCREEN_MMI y \
+    --set-val INPUT_FOCALTECH_0FLASH_MMI y \
+    --set-val INPUT_FOCALTECH_0FLASH_MMI_ENABLE_DOUBLE_TAP y \
+    --set-val INPUT_FOCALTECH_0FLASH_MMI_ENABLE_ESD y \
+    --set-val TOUCHCLASS_MMI_GESTURE_POISON_EVENT y \
+    --set-val BOARD_USES_DOUBLE_TAP_CTRL y \
+    --set-val SENSORS_CLASS y \
+    --set-val MMI_RELAY y
+
+# KernelSU et SuSFS
 ./scripts/config --file out/.config \
     --enable KSU \
     --enable KSU_MANUAL_HOOK \
@@ -280,73 +293,25 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
     --enable THREAD_INFO_IN_TASK
 
 ./scripts/config --file out/.config --disable LTO_CLANG --disable CFI_CLANG
-./scripts/config --file out/.config --enable MMI_RELAY
 ./scripts/config --file out/.config --enable DRM_DYNAMIC_REFRESH_RATE
-./scripts/config --file out/.config --enable SENSORS_CLASS
-
-echo "CONFIG_MMI_RELAY=y" >> out/.config
-echo "CONFIG_DRM_DYNAMIC_REFRESH_RATE=y" >> out/.config
-echo "CONFIG_SENSORS_CLASS=y" >> out/.config
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-# ==================== 8. PATCH SIGNATURES + TACTILE (CONDITIONNEL) ====================
-echo "=== Application des correctifs de compilation ==="
+# 🆕 VÉRIFIER CE QUI EST VRAIMENT COMPILÉ
+echo "=== Vérification de la configuration tactile ==="
+grep -E "(INPUT_TOUCHSCREEN_MMI|INPUT_FOCALTECH|SENSORS_CLASS|MMI_RELAY)" out/.config || echo "⚠️ Options tactiles non trouvées"
 
-# 🛠️ FIX CRITIQUE : strnstr attend 3 arguments
+# ==================== 8. FIX COMPILATION ====================
 if [ -f "drivers/gpu/drm/msm/msm_drv.c" ]; then
     sed -i 's/strnstr(dev_name(dev), "mdp")/strnstr(dev_name(dev), "mdp", strlen(dev_name(dev)))/g' drivers/gpu/drm/msm/msm_drv.c
-    echo "✅ Correction strnstr appliquée"
 fi
 
-# 📱 PATCH TACTILE MOTOROLA (seulement si les fonctions n'existent pas déjà)
-if [ -f "techpack/display/msm/msm_drv.c" ]; then
-    # Vérifier si panel_notifier.o existe (signe que les fonctions sont déjà là)
-    if [ -f "drivers/video/panel_notifier.c" ] || grep -q "panel_register_notifier" drivers/video/*.c 2>/dev/null; then
-        echo "⚠️ Les fonctions tactiles existent déjà dans panel_notifier.o - patch non nécessaire"
-    elif ! grep -q "motorola_panel_notifier_list" techpack/display/msm/msm_drv.c; then
-        echo "🔧 Application du patch tactile Motorola..."
-        
-        cat >> techpack/display/msm/msm_drv.c << 'TOUCH_PATCH_EOF'
-
-/* --- Début Patch Tactile Adapté --- */
-#include <linux/notifier.h>
-#include <linux/module.h>
-
-static BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);
-
-int panel_register_notifier(struct notifier_block *nb) {
-    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);
-}
-EXPORT_SYMBOL(panel_register_notifier);
-
-int panel_unregister_notifier(struct notifier_block *nb) {
-    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);
-}
-EXPORT_SYMBOL(panel_unregister_notifier);
-
-void touch_set_state(int state) { 
-    return; 
-}
-EXPORT_SYMBOL(touch_set_state);
-/* --- Fin Patch Tactile Adapté --- */
-TOUCH_PATCH_EOF
-        
-        echo "✅ Patch tactile appliqué"
-    else
-        echo "⚠️ Patch tactile déjà présent"
-    fi
-fi
-
-# 🛡️ STUB SÉCURISÉ POUR dsi_freq_head
-if ! grep -q "dsi_freq_head" fs/susfs.c; then
-    cat >> fs/susfs.c << 'DSI_STUB_EOF'
+cat >> fs/susfs.c << 'DSI_STUB_EOF'
 
 #include <linux/notifier.h>
 __attribute__((weak)) struct blocking_notifier_head dsi_freq_head;
 
 DSI_STUB_EOF
-fi
 
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
@@ -355,7 +320,7 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
     -j$(nproc) scripts
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
-    -j$(nproc) Image modules
+    -j$(nproc) Image
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
     HOSTCC=gcc HOSTRANDOM=no DTC_EXT=$(pwd)/out/scripts/dtc/dtc dtbs 2>&1 | tee -a build.log
@@ -368,7 +333,7 @@ fi
 
 echo "✅ Compilation réussie"
 
-# ==================== 10. COMPILATION KSUD ====================
+# ==================== 10. KSUD ====================
 cd "$GITHUB_WORKSPACE"
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 source "$HOME/.cargo/env"
@@ -403,7 +368,7 @@ cargo build --release --target aarch64-linux-android
 cp "$GITHUB_WORKSPACE/ksud-src/target/aarch64-linux-android/release/ksud" "$GITHUB_WORKSPACE/ksud"
 chmod 755 "$GITHUB_WORKSPACE/ksud"
 
-# ==================== 11. REPACK ====================
+# ==================== 11. REPACK SIMPLIFIÉ ====================
 cd "$GITHUB_WORKSPACE"
 curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/${NIGHTLY_DATE_COMPACT}/boot.img"
 curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/${NIGHTLY_DATE_COMPACT}/dtbo.img"
@@ -417,8 +382,6 @@ if [ -f "boot-stock.img" ]; then
   cd repack
   
   ./magiskboot unpack boot.img
-  if [ ! -f "kernel" ] || [ ! -f "ramdisk.cpio" ]; then echo "❌ Échec du unpack"; exit 1; fi
-  
   cp "$GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image" kernel
   
   ./magiskboot cpio ramdisk.cpio \
@@ -441,5 +404,5 @@ cp dtbo-stock.img output/dtbo.img 2>/dev/null || true
 cp kernel_sources/build.log output/
 cp "$GITHUB_WORKSPACE/ksud" output/ksud 2>/dev/null || true
 
-echo "=== BUILD TERMINÉ AVEC SUCCÈS ==="
+echo "=== BUILD TERMINÉ ==="
 ls -lh output/
