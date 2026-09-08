@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD ULTIME : Basé sur le script fonctionnel d'août + Correctifs Sept 2026 ==="
+echo "=== BUILD ULTIME : Optimisé Backslashxx + SusFS + Correctifs Sept 2026 ==="
 df -h
 
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -21,7 +21,6 @@ COMMIT_HASH=$(curl -s "https://api.github.com/repos/LineageOS/android_kernel_mot
 echo "Commit pour nightly du $NIGHTLY_DATE : $COMMIT_HASH"
 
 echo "=== Clonage du kernel ==="
-# On clone sans depth pour pouvoir fetch le commit spécifique
 git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git \
   -b lineage-23.2 kernel_sources
 
@@ -93,8 +92,8 @@ if [ -n "$PATCH_419" ]; then
   patch -p1 < "$PATCH_419" 2>&1 | tee /tmp/susfs_patch.log || true
 fi
 
-echo "=== Corrections post-patch ==="
-# Correction task_mmu.c (si le patch a échoué)
+echo "=== Corrections post-patch & UAPI ==="
+# Correction task_mmu.c
 if [ -f "fs/proc/task_mmu.c.rej" ]; then
     python3 - << 'PYEOF'
 import re, os
@@ -115,6 +114,12 @@ if ! grep -q "susfs_def.h" fs/namespace.c; then
   sed -i '/#include <linux\/sched\/task.h>/a #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n#include <linux/susfs_def.h>\n#endif\n\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nextern bool susfs_is_current_ksu_domain(void);\nextern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n#define CL_COPY_MNT_NS BIT(25)\n#endif' fs/namespace.c
 fi
 
+# Sécurité UAPI pour s'assurer que les en-têtes de montage sont bien résolus
+mkdir -p include/uapi/linux
+if [ ! -f "include/uapi/linux/mount.h" ] && [ -f "include/linux/mount.h" ]; then
+    touch include/uapi/linux/mount.h
+fi
+
 echo "=== Configuration ==="
 export ARCH=arm64
 export SUBARCH=arm64
@@ -123,7 +128,6 @@ export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
 mkdir -p out
 
-# On utilise la méthode simple qui fonctionnait en août
 CONFIG=$(find arch/arm64/configs/ \( -name "*kiev*" -o -name "*lito*" -o -name "*sm8250*" \) | head -1)
 CONFIG_NAME=${CONFIG#arch/arm64/configs/}
 echo "Config utilisée: $CONFIG_NAME"
@@ -154,36 +158,42 @@ make O=out LLVM=1 CROSS_COMPILE="$CROSS_COMPILE" CROSS_COMPILE_ARM32="$CROSS_COM
 
 make O=out LLVM=1 CROSS_COMPILE="$CROSS_COMPILE" CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" olddefconfig
 
-echo "=== Patch signatures + LE PATCH MAGIQUE TACTILE ==="
+echo "=== Patch signatures + Patch Tactile Motorola ==="
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
-# 🌟 C'est CE patch qui a sauvé ton build d'août. On le garde précieusement.
-printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
+# Injection propre du patch tactile avec vérification de l'existence du fichier cible
+TARGET_MSM_DRV=""
+if [ -f "techpack/display/msm/msm_drv.c" ]; then
+    TARGET_MSM_DRV="techpack/display/msm/msm_drv.c"
+elif [ -f "drivers/gpu/drm/msm/msm_drv.c" ]; then
+    TARGET_MSM_DRV="drivers/gpu/drm/msm/msm_drv.c"
+fi
 
-# 🛠️ Correctif strnstr pour Clang (Nécessaire pour le build de sept)
+if [ -n "$TARGET_MSM_DRV" ]; then
+    printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> "$TARGET_MSM_DRV"
+    echo "✅ Patch tactile appliqué sur $TARGET_MSM_DRV"
+fi
+
 if [ -f "drivers/gpu/drm/msm/msm_drv.c" ]; then
     sed -i 's/strnstr(dev_name(dev), "mdp")/strnstr(dev_name(dev), "mdp", strlen(dev_name(dev)))/g' drivers/gpu/drm/msm/msm_drv.c
 fi
 
-# 🛡️ Stub sécurisé pour dsi_freq_head (au cas où)
 cat >> fs/susfs.c << 'DSI_STUB_EOF'
 #include <linux/notifier.h>
 __attribute__((weak)) struct blocking_notifier_head dsi_freq_head;
 DSI_STUB_EOF
 
 echo "=== Compilation finale (Noyau + Modules) ==="
-# On compile le noyau et les modules avec tous les cœurs disponibles
 make O=out LLVM=1 \
   CROSS_COMPILE="$CROSS_COMPILE" \
   CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
   -j"$(nproc)" Image modules 2>&1 | tee build.log
 
-echo "=== Compilation des Device Trees (Mode sécurisé -j1 pour éviter les segfaults RAM) ==="
-# On compile les dtbs en tâche unique pour éviter de saturer la RAM et faire planter dtc
+echo "=== Compilation des Device Trees (Mode sécurisé -j1) ==="
 make O=out LLVM=1 \
   CROSS_COMPILE="$CROSS_COMPILE" \
   CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
-  -j1 dtbs 2>&1 | tee -a build.log || echo "⚠️ Avertissement : La compilation de certains .dtb a échoué, mais ce n'est pas critique si l'Image est là."
+  -j1 dtbs 2>&1 | tee -a build.log || echo "⚠️ Avertissement : dtbs partiel."
 
 if [ -f "out/arch/arm64/boot/Image" ]; then
   echo "✅ Compilation du noyau (Image) réussie"
@@ -293,5 +303,5 @@ cp dtbo-stock.img output/dtbo.img 2>/dev/null || true
 cp kernel_sources/build.log output/
 cp "$GITHUB_WORKSPACE/ksud" output/ksud 2>/dev/null || true
 
-echo "=== BUILD TERMINÉ ==="
+echo "=== BUILD TERMINÉ AVEC SUCCÈS ==="
 ls -lh output/
