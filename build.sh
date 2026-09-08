@@ -93,7 +93,6 @@ if [ -n "$PATCH_419" ]; then
 fi
 
 echo "=== Corrections post-patch & UAPI ==="
-# Correction task_mmu.c
 if [ -f "fs/proc/task_mmu.c.rej" ]; then
     python3 - << 'PYEOF'
 import re, os
@@ -114,7 +113,6 @@ if ! grep -q "susfs_def.h" fs/namespace.c; then
   sed -i '/#include <linux\/sched\/task.h>/a #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n#include <linux/susfs_def.h>\n#endif\n\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nextern bool susfs_is_current_ksu_domain(void);\nextern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n#define CL_COPY_MNT_NS BIT(25)\n#endif' fs/namespace.c
 fi
 
-# Sécurité UAPI pour s'assurer que les en-têtes de montage sont bien résolus
 mkdir -p include/uapi/linux
 if [ ! -f "include/uapi/linux/mount.h" ] && [ -f "include/linux/mount.h" ]; then
     touch include/uapi/linux/mount.h
@@ -154,14 +152,33 @@ make O=out LLVM=1 CROSS_COMPILE="$CROSS_COMPILE" CROSS_COMPILE_ARM32="$CROSS_COM
   echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y"
   echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y"
   echo "CONFIG_KSU_SUSFS_SUS_MAP=y"
+  # === FORÇAGE TACTILE EN BUILT-IN (=y) POUR KIEV ===
+  echo "CONFIG_INPUT_TOUCHSCREEN_MMI=y"
+  echo "CONFIG_INPUT_FOCALTECH_0FLASH_MMI=y"
+  echo "CONFIG_MMI_RELAY=y"
+  echo "CONFIG_DRM=y"
+  echo "CONFIG_DRM_PANEL=y"
+  echo "CONFIG_DRM_PANEL_NOTIFICATIONS=y"
+  echo "CONFIG_DRM_PANEL_EVENT_NOTIFICATIONS=y"
+  echo "CONFIG_TOUCH_PANEL_NOTIFICATIONS=y"
+  echo "CONFIG_SENSORS_CORE=y"
 } >> out/.config
 
 make O=out LLVM=1 CROSS_COMPILE="$CROSS_COMPILE" CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" olddefconfig
 
+# Sécurité supplémentaire pour écraser tout blocage potentiel du defconfig
+if [ -f "out/.config" ]; then
+    sed -i 's/# CONFIG_INPUT_TOUCHSCREEN_MMI is not set/CONFIG_INPUT_TOUCHSCREEN_MMI=y/g' out/.config
+    sed -i 's/CONFIG_INPUT_TOUCHSCREEN_MMI=m/CONFIG_INPUT_TOUCHSCREEN_MMI=y/g' out/.config
+    sed -i 's/# CONFIG_INPUT_FOCALTECH_0FLASH_MMI is not set/CONFIG_INPUT_FOCALTECH_0FLASH_MMI=y/g' out/.config
+    sed -i 's/CONFIG_INPUT_FOCALTECH_0FLASH_MMI=m/CONFIG_INPUT_FOCALTECH_0FLASH_MMI=y/g' out/.config
+    sed -i 's/# CONFIG_MMI_RELAY is not set/CONFIG_MMI_RELAY=y/g' out/.config
+    sed -i 's/CONFIG_MMI_RELAY=m/CONFIG_MMI_RELAY=y/g' out/.config
+fi
+
 echo "=== Patch signatures + Patch Tactile Motorola ==="
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
-# Injection propre du patch tactile avec vérification de l'existence du fichier cible
 TARGET_MSM_DRV=""
 if [ -f "techpack/display/msm/msm_drv.c" ]; then
     TARGET_MSM_DRV="techpack/display/msm/msm_drv.c"
