@@ -20,14 +20,17 @@ echo "Nightly: $NIGHTLY_DATE"
 COMMIT_HASH=$(curl -s "https://api.github.com/repos/LineageOS/android_kernel_motorola_sm8250/commits?sha=lineage-23.2&until=${NIGHTLY_DATE}T23:59:59Z&per_page=1" | grep -oP '"sha": "\K[0-9a-f]+' | head -1)
 echo "Commit pour nightly du $NIGHTLY_DATE : $COMMIT_HASH"
 
-echo "=== Clonage du kernel ==="
-git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git \
-  -b lineage-23.2 kernel_sources
-
+# ==================== 1. CLONAGE DU NOYAU ====================
+echo "=== Clonage du kernel Motorola sm8250 ==="
+git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git kernel_sources
 cd kernel_sources
-if [ -n "$COMMIT_HASH" ]; then
-    git fetch origin "$COMMIT_HASH"
-    git checkout "$COMMIT_HASH"
+
+if [ -n "$KERNEL_COMMIT" ]; then
+    echo "=== Utilisation du commit figé : $KERNEL_COMMIT ==="
+    git checkout "$KERNEL_COMMIT"
+else
+    echo "=== Avertissement : Aucun commit figé spécifié, utilisation de la branche par défaut ==="
+    git checkout lineage-23.2
 fi
 
 echo "=== Intégration Backslashxx KernelSU (Commit spécifique) ==="
