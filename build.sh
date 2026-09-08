@@ -39,6 +39,8 @@ git checkout "$KSU_COMMIT"
 cd "$GITHUB_WORKSPACE/kernel_sources"
 
 # ==================== 2b. SYMLINK DRIVER ====================
+cd "$GITHUB_WORKSPACE/kernel_sources"
+
 ln -sf /tmp/KernelSU/kernel drivers/kernelsu
 
 if [ -d "drivers/kernelsu" ]; then
