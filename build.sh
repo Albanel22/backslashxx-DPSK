@@ -29,7 +29,7 @@ cd "$GITHUB_WORKSPACE"
 
 # ==================== 2. CLONE KERNELSU (COMMIT EXACT) ====================
 echo "=== Intégration KernelSU (0b138d6a) ==="
-rm -rf drivers/kernelsu KernelSU susfs4ksu /tmp/KernelSU || true
+rm -rf /tmp/KernelSU || true
 
 KSU_COMMIT="0b138d6a9cfe4dc163aa05c21b1e6a14ff868230"
 
@@ -37,10 +37,12 @@ git clone --depth=1 https://github.com/backslashxx/KernelSU.git /tmp/KernelSU
 cd /tmp/KernelSU
 git fetch --depth=1 origin "$KSU_COMMIT"
 git checkout "$KSU_COMMIT"
-cd "$GITHUB_WORKSPACE/kernel_sources"
 
 # ==================== 2b. SYMLINK DRIVER ====================
+# On se place explicitement dans le dossier du noyau avant de créer le lien
 cd "$GITHUB_WORKSPACE/kernel_sources"
+
+rm -rf drivers/kernelsu
 ln -sf /tmp/KernelSU/kernel drivers/kernelsu
 
 if [ -d "drivers/kernelsu" ]; then
