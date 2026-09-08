@@ -398,8 +398,8 @@ echo "✅ ksud compilé"
 # ==================== 12. REPACK ====================
 cd "$GITHUB_WORKSPACE"
 
-curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260809/boot.img" 2>/dev/null || true
-curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260809/dtbo.img" 2>/dev/null || true
+curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260823/boot.img" 2>/dev/null || true
+curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260823/dtbo.img" 2>/dev/null || true
 
 if [ -f "boot-stock.img" ]; then
   mkdir -p repack
