@@ -13,7 +13,7 @@ jobs:
       - name: Run build script
         run: bash build.sh
         env:
-          KERNEL_COMMIT: "085f3aff23bc67a15507f06310e633205bb924f7"
+          KERNEL_COMMIT: "a49e18994c494d71647f675df48e5c7349580747"
       - name: Upload results
         uses: actions/upload-artifact@v4
         with:
