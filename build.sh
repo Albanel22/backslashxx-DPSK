@@ -1,6 +1,8 @@
 #!/bin/bash
 set -e
 
+WORKSPACE_DIR="$(pwd)"
+
 echo "=== BUILD WINNER : KernelSU v3.2.5-76+ (0b138d6a) + SuSFS + fix UAPI + sys_reboot ==="
 df -h
 
@@ -39,9 +41,7 @@ git fetch --depth=1 origin "$KSU_COMMIT"
 git checkout "$KSU_COMMIT"
 
 # ==================== 2b. SYMLINK DRIVER ====================
-# On retourne explicitement dans le dossier kernel_sources via un chemin relatif sûr depuis la racine
-cd ../..
-cd kernel_sources
+cd "$WORKSPACE_DIR/kernel_sources"
 
 rm -rf drivers/kernelsu
 ln -sf /tmp/KernelSU/kernel drivers/kernelsu
