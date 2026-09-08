@@ -39,8 +39,13 @@ git fetch --depth=1 origin "$KSU_COMMIT"
 git checkout "$KSU_COMMIT"
 
 # ==================== 2b. SYMLINK DRIVER ====================
-# On se place explicitement dans le dossier du noyau avant de créer le lien
-cd "$GITHUB_WORKSPACE/kernel_sources"
+# Retour sécurisé absolu dans le dossier du noyau source
+if [ -d "$GITHUB_WORKSPACE/kernel_sources" ]; then
+    cd "$GITHUB_WORKSPACE/kernel_sources"
+else
+    echo "❌ Erreur critique : Le dossier kernel_sources est introuvable."
+    exit 1
+fi
 
 rm -rf drivers/kernelsu
 ln -sf /tmp/KernelSU/kernel drivers/kernelsu
