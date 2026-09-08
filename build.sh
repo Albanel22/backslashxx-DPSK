@@ -18,13 +18,13 @@ sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf
 
 cd "$GITHUB_WORKSPACE"
 
-# ==================== 1. CLONAGE DU NOYAU (DÉPÔT & COMMIT FIGÉ) ====================
-echo "=== Clonage du kernel Motorola sm8250 (Dépôt personnel) ==="
-git clone https://github.com/Albanel22/backslashxx-DPSK.git kernel_sources
+echo "=== Clonage du kernel Motorola sm8250 (LineageOS, commit 29 août 2026) ==="
+git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git kernel_sources
 cd kernel_sources
 
-KERNEL_COMMIT="${KERNEL_COMMIT:-085f3aff23bc67a15507f06310e633205bb924f7}"
+KERNEL_COMMIT="${KERNEL_COMMIT:-7b7869eefb3059e1c3e1083bc65eb011b8dbb3ae}"
 echo "=== Utilisation du commit figé : $KERNEL_COMMIT ==="
+git fetch --depth=1 origin "$KERNEL_COMMIT"
 git checkout "$KERNEL_COMMIT"
 
 cd "$GITHUB_WORKSPACE"
