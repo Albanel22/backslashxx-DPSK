@@ -152,7 +152,6 @@ make O=out LLVM=1 CROSS_COMPILE="$CROSS_COMPILE" CROSS_COMPILE_ARM32="$CROSS_COM
   echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y"
   echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y"
   echo "CONFIG_KSU_SUSFS_SUS_MAP=y"
-  # === FORÇAGE TACTILE EN BUILT-IN (=y) POUR KIEV ===
   echo "CONFIG_INPUT_TOUCHSCREEN_MMI=y"
   echo "CONFIG_INPUT_FOCALTECH_0FLASH_MMI=y"
   echo "CONFIG_MMI_RELAY=y"
@@ -166,7 +165,6 @@ make O=out LLVM=1 CROSS_COMPILE="$CROSS_COMPILE" CROSS_COMPILE_ARM32="$CROSS_COM
 
 make O=out LLVM=1 CROSS_COMPILE="$CROSS_COMPILE" CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" olddefconfig
 
-# Sécurité supplémentaire pour écraser tout blocage potentiel du defconfig
 if [ -f "out/.config" ]; then
     sed -i 's/# CONFIG_INPUT_TOUCHSCREEN_MMI is not set/CONFIG_INPUT_TOUCHSCREEN_MMI=y/g' out/.config
     sed -i 's/CONFIG_INPUT_TOUCHSCREEN_MMI=m/CONFIG_INPUT_TOUCHSCREEN_MMI=y/g' out/.config
@@ -199,6 +197,24 @@ cat >> fs/susfs.c << 'DSI_STUB_EOF'
 #include <linux/notifier.h>
 __attribute__((weak)) struct blocking_notifier_head dsi_freq_head;
 DSI_STUB_EOF
+
+echo "=== Création du header manquant panel_event_notifier.h ==="
+mkdir -p include/linux/soc/qcom
+cat << 'EOF' > include/linux/soc/qcom/panel_event_notifier.h
+#ifndef __PANEL_EVENT_NOTIFIER_H
+#define __PANEL_EVENT_NOTIFIER_H
+#include <linux/notifier.h>
+enum panel_event_notifier_tag {
+    PANEL_EVENT_NOTIFIER_BLANK = 0,
+};
+struct panel_event_notification {
+    int notif_type;
+    int *data;
+};
+static inline void *panel_event_notifier_register(int n, struct notifier_block *nb) { return (void *)1; }
+static inline int panel_event_notifier_unregister(void *p, struct notifier_block *nb) { return 0; }
+#endif
+EOF
 
 echo "=== Compilation finale (Noyau + Modules) ==="
 make O=out LLVM=1 \
