@@ -171,13 +171,24 @@ cat >> fs/susfs.c << 'DSI_STUB_EOF'
 __attribute__((weak)) struct blocking_notifier_head dsi_freq_head;
 DSI_STUB_EOF
 
-echo "=== Compilation finale ==="
-make O=out LLVM=1 CROSS_COMPILE="$CROSS_COMPILE" CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" -j"$(nproc)" Image modules dtbs 2>&1 | tee build.log
+echo "=== Compilation finale (Noyau + Modules) ==="
+# On compile le noyau et les modules avec tous les cœurs disponibles
+make O=out LLVM=1 \
+  CROSS_COMPILE="$CROSS_COMPILE" \
+  CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
+  -j"$(nproc)" Image modules 2>&1 | tee build.log
+
+echo "=== Compilation des Device Trees (Mode sécurisé -j1 pour éviter les segfaults RAM) ==="
+# On compile les dtbs en tâche unique pour éviter de saturer la RAM et faire planter dtc
+make O=out LLVM=1 \
+  CROSS_COMPILE="$CROSS_COMPILE" \
+  CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
+  -j1 dtbs 2>&1 | tee -a build.log || echo "⚠️ Avertissement : La compilation de certains .dtb a échoué, mais ce n'est pas critique si l'Image est là."
 
 if [ -f "out/arch/arm64/boot/Image" ]; then
-  echo "✅ Compilation réussie"
+  echo "✅ Compilation du noyau (Image) réussie"
 else
-  echo "❌ BUILD FAILED"
+  echo "❌ BUILD FAILED : L'image du noyau n'a pas été générée."
   grep -i "error:" build.log | head -20
   exit 1
 fi
