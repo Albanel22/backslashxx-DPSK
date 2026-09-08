@@ -436,6 +436,16 @@ else
     echo "✅ Déjà présent dans saipdispconf.h"
 fi
 
+echo "=== Vérification isolée : flags de compilation de touchscreen_mmi_notif.o ==="
+make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
+    V=1 drivers/input/touchscreen/touchscreen_mmi/touchscreen_mmi_notif.o 2>&1 | tee /tmp/mmi_notif_compile.log
+
+echo "=== Flags -include trouvés dans cette compilation ==="
+grep -o -- '-include [^ ]*' /tmp/mmi_notif_compile.log || echo "AUCUN flag -include trouvé !"
+
+echo "=== Contenu réel de saipdispconf.h (vérification finale) ==="
+cat techpack/display/config/saipdispconf.h
+
 # ==================== 8. PATCH SIGNATURES ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
