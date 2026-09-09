@@ -21,9 +21,6 @@ fi
 
 cd "$GITHUB_WORKSPACE"
 
-# Nettoyage des éventuels caractères invisibles (sécurité)
-sed -i 's/\xC2\xA0/ /g' "$0" 2>/dev/null || true
-
 # ==================== 1. CLONAGE DU NOYAU DEPUIS TON FORK ====================
 echo "=== Clonage du kernel depuis le fork Albanel22 (branche kiev-kernelsu-susfs) ==="
 git clone --depth=1 --branch kiev-kernelsu-susfs https://github.com/Albanel22/android_kernel_motorola_sm8250.git kernel_sources
@@ -187,23 +184,7 @@ fi
 
 echo "✅ Hooks KernelSU en place"
 
-# ==================== 3b. NETTOYAGE ANCIENS HOOKS INCOMPATIBLES ====================
-cd "$GITHUB_WORKSPACE/kernel_sources"
-echo "=== Neutralisation des anciens hooks KernelSU orphelins ==="
-
-# Commenter les appels aux fonctions absentes dans le driver backslashxx
-sed -i '/ksu_handle_setresuid/s/^/\/\//' kernel/sys.c 2>/dev/null || true
-sed -i '/ksu_handle_sys_read/s/^/\/\//' fs/read_write.c 2>/dev/null || true
-sed -i '/ksu_hide_setprocattr/s/^/\/\//' security/selinux/hooks.c 2>/dev/null || true
-sed -i '/ksu_handle_input_handle_event/s/^/\/\//' drivers/input/input.c 2>/dev/null || true
-
-# Remplacer les flags init_rc et input_hook obsolètes par 0
-find . -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's/ksu_is_init_rc_hook_enabled/0/g' {} + 2>/dev/null || true
-find . -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's/ksu_is_input_hook_enabled/0/g' {} + 2>/dev/null || true
-
-echo "✅ Anciens hooks neutralisés"
-
-# ==================== 4. TÉLÉCHARGEMENT ET APPLICATION SUSFS ====================
+# ==================== 4. TÉLÉCHARGEMENT DU VRAI SUSFS (cyberc3dr 2.3.0) ====================
 cd "$GITHUB_WORKSPACE"
 echo "=== Téléchargement du SuSFS depuis cyberc3dr/nGKI_Kernel_Build (branche rebase) ==="
 
@@ -213,42 +194,66 @@ git clone --depth=1 --branch rebase https://github.com/cyberc3dr/nGKI_Kernel_Bui
 if [ -f "/tmp/cyber_repo/Patches/Patch/xxksu_fix_compat.patch" ]; then
     echo "=== Application du patch de compatibilité backslashxx ==="
     cd "$GITHUB_WORKSPACE/kernel_sources"
-    patch -p1 --forward --batch < "/tmp/cyber_repo/Patches/Patch/xxksu_fix_compat.patch" || true
+    patch -p1 < "/tmp/cyber_repo/Patches/Patch/xxksu_fix_compat.patch" || true
     cd "$GITHUB_WORKSPACE"
-    echo "✅ Patch xxksu_fix_compat traité"
+    echo "✅ Patch xxksu_fix_compat appliqué"
+else
+    echo "⚠️ Patch xxksu_fix_compat introuvable"
 fi
 
-# Appliquer le patch principal SuSFS 4.19
+# Patch principal SuSFS 4.19
 SUSFS_PATCH="/tmp/cyber_repo/Patches/Patch/susfs_patch_to_4.19.patch"
-if [ -f "$SUSFS_PATCH" ]; then
-    echo "=== Application du patch SuSFS 4.19 ==="
-    cd "$GITHUB_WORKSPACE/kernel_sources"
-    patch -p1 --forward --batch < "$SUSFS_PATCH" || true
-    cd "$GITHUB_WORKSPACE"
-    echo "✅ Patch SuSFS 4.19 traité"
-else
+if [ ! -f "$SUSFS_PATCH" ]; then
     echo "❌ Patch SuSFS 4.19 non trouvé !"
+    find /tmp/cyber_repo/Patches -name "*.patch" | sort
     exit 1
 fi
+echo "✅ Patch SuSFS trouvé : $(wc -l < $SUSFS_PATCH) lignes"
 
-# Copier tous les fichiers source et d'en-tête SuSFS
 cd "$GITHUB_WORKSPACE/kernel_sources"
+patch -p1 < "$SUSFS_PATCH" 2>&1 | tee /tmp/susfs_patch.log || true
+
+# Copier les fichiers SuSFS complets si besoin
 if [ -d "/tmp/cyber_repo/Patches/fs" ]; then
-    cp -rn /tmp/cyber_repo/Patches/fs/* fs/ 2>/dev/null || true
+    cp -r /tmp/cyber_repo/Patches/fs/* fs/ 2>/dev/null || true
 fi
 if [ -d "/tmp/cyber_repo/Patches/include/linux" ]; then
-    cp -rn /tmp/cyber_repo/Patches/include/linux/* include/linux/ 2>/dev/null || true
+    cp -r /tmp/cyber_repo/Patches/include/linux/* include/linux/ 2>/dev/null || true
 fi
 
-# Nettoyage des éventuels fichiers de conflit générés par patch
-find . -type f \( -name "*.rej" -o -name "*.orig" \) -delete 2>/dev/null || true
+# Appliquer le backport
+if [ -f "/tmp/cyber_repo/Patches/backport_patches.sh" ]; then
+    echo "=== Application du backport SuSFS ==="
+    bash /tmp/cyber_repo/Patches/backport_patches.sh || true
+fi
 
-# Vérification de la présence de susfs.h
+# Appliquer les hooks inline
+if [ -f "/tmp/cyber_repo/Patches/susfs_inline_hook_patches.sh" ]; then
+    echo "=== Application des hooks inline SuSFS ==="
+    bash /tmp/cyber_repo/Patches/susfs_inline_hook_patches.sh || true
+fi
+
+# Appliquer les hooks syscall
+if [ -f "/tmp/cyber_repo/Patches/syscall_hook_patches.sh" ]; then
+    echo "=== Application des hooks syscall SuSFS ==="
+    bash /tmp/cyber_repo/Patches/syscall_hook_patches.sh || true
+fi
+
+# Vérifier les fichiers .rej
+REJ_FILES=$(find . -name "*.rej" -type f)
+if [ -n "$REJ_FILES" ]; then
+    echo "⚠️ Fichiers .rej trouvés, suppression..."
+    echo "$REJ_FILES"
+    find . -name "*.rej" -type f -delete
+    find . -name "*.orig" -type f -delete
+else
+    echo "✅ Aucun fichier .rej détecté"
+fi
+
+# Vérifier la version SuSFS
 if [ -f "include/linux/susfs.h" ]; then
     SUSFS_VERSION_DETECTED=$(grep -oP 'SUSFS_VERSION "\K[^"]+' include/linux/susfs.h | head -1)
     echo "✅ SuSFS version détectée : $SUSFS_VERSION_DETECTED"
-else
-    echo "⚠️ include/linux/susfs.h non trouvé"
 fi
 
 # ==================== 5b. CORRECTION FS/MAKEFILE ====================
@@ -371,12 +376,6 @@ echo "Config utilisée: $CONFIG_NAME"
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 $CONFIG_NAME
 
-# Forcer l'activation de KernelSU et SuSFS directement dans le fichier config source et le fichier out/.config
-./scripts/config --file arch/arm64/configs/$CONFIG_NAME \
-    --enable KSU \
-    --enable KSU_MANUAL_HOOK \
-    --enable KSU_SUSFS
-
 ./scripts/config --file out/.config \
     --enable KSU \
     --enable KSU_MANUAL_HOOK \
@@ -400,9 +399,7 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 # Forcer CONFIG_KSU=y de manière agressive
 ./scripts/config --file out/.config --enable KSU
-./scripts/config --file out/.config --enable KSU_MANUAL_HOOK
 echo "CONFIG_KSU=y" >> out/.config
-echo "CONFIG_KSU_MANUAL_HOOK=y" >> out/.config
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
 # Vérification finale de CONFIG_KSU
@@ -425,6 +422,20 @@ echo "✅ CONFIG_KSU=y confirmé"
     echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y"
     echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y"
 } >> out/.config
+
+echo "=== DIAGNOSTIC KERNELSU ==="
+# Vérifier la valeur de CONFIG_KSU
+grep "CONFIG_KSU=" out/.config
+
+# Vérifier le Makefile de drivers/kernelsu
+echo "Contenu du Makefile de drivers/kernelsu :"
+cat drivers/kernelsu/Makefile | head -30
+
+# Vérifier si le dossier est bien inclus dans drivers/Makefile
+grep -n "kernelsu" drivers/Makefile
+
+# Lister les fichiers dans drivers/kernelsu
+ls -l drivers/kernelsu/
 
 # ==================== 8. PATCH SIGNATURES ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
