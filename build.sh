@@ -394,10 +394,21 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
     --enable KSU_SUSFS_OPEN_REDIRECT \
     --enable THREAD_INFO_IN_TASK
 
+# Premier olddefconfig
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-# Forcer CONFIG_KSU=y
+# Forcer CONFIG_KSU=y de manière agressive
+./scripts/config --file out/.config --enable KSU
 echo "CONFIG_KSU=y" >> out/.config
+make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
+
+# Vérification finale de CONFIG_KSU
+if ! grep -q "CONFIG_KSU=y" out/.config; then
+    echo "❌ CONFIG_KSU n'est toujours pas y !"
+    grep "CONFIG_KSU" out/.config
+    exit 1
+fi
+echo "✅ CONFIG_KSU=y confirmé"
 
 {
     echo "CONFIG_KSU_SUSFS=y"
