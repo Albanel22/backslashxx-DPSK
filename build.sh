@@ -59,6 +59,15 @@ sed -i "/endmenu/i\source \"drivers/kernelsu/Kconfig\"" drivers/Kconfig
 
 echo "✅ KernelSU intégré avec le commit $KSU_COMMIT"
 
+# ==================== 2b2. EXÉCUTER LE SCRIPT D'INSTALLATION KERNELSU ====================
+echo "=== Application des hooks KernelSU via setup.sh ==="
+if [ -f "/tmp/KernelSU/kernel/setup.sh" ]; then
+    bash /tmp/KernelSU/kernel/setup.sh
+else
+    echo "❌ setup.sh introuvable dans /tmp/KernelSU/kernel/"
+    exit 1
+fi
+
 # ==================== 2c. FIX KSU_VERSION GLOBAL ====================
 echo "=== Fix KSU_VERSION global ==="
 
@@ -102,76 +111,19 @@ fi
 
 grep -n "uapi_version\|ksuver_override\|cmd = { .version" "$DISPATCH_FILE" 2>/dev/null || true
 
-# ==================== 3. HOOKS MANUELS KERNELSU ====================
-cd "$GITHUB_WORKSPACE/kernel_sources"
-echo "=== Hooks manuels KernelSU ==="
-
-hook_insert() {
-    local file="$1" sig_re="$2" extern_block="$3" call_line="$4"
-    
-    if [ ! -f "$file" ]; then
-        echo "❌ $file introuvable."
-        return 1
-    fi
-    
-    if ! grep -Pzo "$sig_re" "$file" > /dev/null 2>&1; then
-        echo "❌ Signature non trouvée dans $file"
-        return 1
-    fi
-    
-    perl -0777 -i -pe "s/($sig_re)/${extern_block}\$1\n#ifdef CONFIG_KSU\n#pragma GCC diagnostic ignored \x22-Wdeclaration-after-statement\x22\n${call_line}\n#endif\n/s" "$file"
-    echo "✅ Hook inséré dans $file"
-    return 0
-}
-
-# fs/exec.c
-hook_insert "fs/exec.c" \
-    '(?s)static int do_execveat_common\(.*?int flags\)\s*\n\{' \
-    '#ifdef CONFIG_KSU\nextern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,\n\t\t\t\t\t void *envp, int *flags);\n#endif\n' \
-    'ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);' \
-    || true
-
-# fs/open.c
-if grep -Pzo 'long do_faccessat\(int dfd, const char __user \*filename, int mode\)\s*\n\{' fs/open.c > /dev/null 2>&1; then
-    hook_insert "fs/open.c" \
-        'long do_faccessat\(int dfd, const char __user \*filename, int mode\)\s*\n\{' \
-        '#ifdef CONFIG_KSU\nextern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode,\n\t\t\t\t int *flags);\n#endif\n' \
-        'ksu_handle_faccessat(&dfd, &filename, &mode, NULL);' \
-        || true
-elif grep -Pzo 'SYSCALL_DEFINE3\(faccessat, int, dfd, const char __user \*, filename, int, mode\)\s*\n\{' fs/open.c > /dev/null 2>&1; then
-    hook_insert "fs/open.c" \
-        'SYSCALL_DEFINE3\(faccessat, int, dfd, const char __user \*, filename, int, mode\)\s*\n\{' \
-        '#ifdef CONFIG_KSU\nextern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode,\n\t\t\t\t int *flags);\n#endif\n' \
-        'ksu_handle_faccessat(&dfd, &filename, &mode, NULL);' \
-        || true
-fi
-
-# fs/stat.c
-if grep -Pzo 'int vfs_statx\(int dfd, const char __user \*filename, int flags,' fs/stat.c > /dev/null 2>&1; then
-    hook_insert "fs/stat.c" \
-        'int vfs_statx\(int dfd, const char __user \*filename, int flags,[^{]*\{' \
-        '#ifdef CONFIG_KSU\nextern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\n#endif\n' \
-        'ksu_handle_stat(&dfd, &filename, &flags);' \
-        || true
-elif grep -Pzo 'int vfs_fstatat\(int dfd, const char __user \*filename, struct kstat \*stat,\s*\n\s*int flag\)\s*\n\{' fs/stat.c > /dev/null 2>&1; then
-    hook_insert "fs/stat.c" \
-        'int vfs_fstatat\(int dfd, const char __user \*filename, struct kstat \*stat,\s*\n\s*int flag\)\s*\n\{' \
-        '#ifdef CONFIG_KSU\nextern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\n#endif\n' \
-        'ksu_handle_stat(&dfd, &filename, &flag);' \
-        || true
-fi
-
-# Hook sys_reboot
+# ==================== 3. HOOK SYSCALL MANUEL SUPPRIMÉ (setup.sh fait le travail) ====================
+# On garde uniquement sys_reboot si nécessaire
 if ! grep -q "ksu_handle_sys_reboot" kernel/reboot.c; then
-  sed -i '/SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,/i\
+    sed -i '/SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,/i\
 #if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD)\
 extern int ksu_handle_sys_reboot(int, int, unsigned int, void __user **);\
 #endif' kernel/reboot.c
 
-  sed -i '/int ret = 0;/a\
+    sed -i '/int ret = 0;/a\
 #if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD)\
 \tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\
 #endif' kernel/reboot.c
+    echo "[+] Hook sys_reboot ajouté"
 fi
 
 echo "✅ Hooks KernelSU en place"
