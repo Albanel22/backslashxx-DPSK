@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD FINAL : KernelSU + SuSFS 2.3.0 + hooks manuels + FocalTech + Fork Albanel22 ==="
+echo "=== BUILD FINAL : KernelSU + SuSFS 2.3.0 + xxksu fix + hooks manuels + FocalTech + Fork Albanel22 ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -110,7 +110,7 @@ fi
 
 grep -n "uapi_version\|ksuver_override\|cmd = { .version" "$DISPATCH_FILE" 2>/dev/null || true
 
-# ==================== 3. HOOKS MANUELS KERNELSU (en plus de setup.sh) ====================
+# ==================== 3. HOOKS MANUELS KERNELSU ====================
 cd "$GITHUB_WORKSPACE/kernel_sources"
 echo "=== Hooks manuels KernelSU ==="
 
@@ -189,6 +189,17 @@ cd "$GITHUB_WORKSPACE"
 echo "=== Téléchargement du SuSFS depuis cyberc3dr/nGKI_Kernel_Build (branche rebase) ==="
 
 git clone --depth=1 --branch rebase https://github.com/cyberc3dr/nGKI_Kernel_Build.git /tmp/cyber_repo
+
+# Patch de compatibilité backslashxx (xxksu)
+if [ -f "/tmp/cyber_repo/Patches/Patch/xxksu_fix_compat.patch" ]; then
+    echo "=== Application du patch de compatibilité backslashxx ==="
+    cd "$GITHUB_WORKSPACE/kernel_sources"
+    patch -p1 < "/tmp/cyber_repo/Patches/Patch/xxksu_fix_compat.patch" || true
+    cd "$GITHUB_WORKSPACE"
+    echo "✅ Patch xxksu_fix_compat appliqué"
+else
+    echo "⚠️ Patch xxksu_fix_compat introuvable"
+fi
 
 # Patch principal SuSFS 4.19
 SUSFS_PATCH="/tmp/cyber_repo/Patches/Patch/susfs_patch_to_4.19.patch"
