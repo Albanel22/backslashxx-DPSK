@@ -46,6 +46,19 @@ rm -rf drivers/kernelsu
 mkdir -p drivers/kernelsu
 cp -r /tmp/KernelSU/kernel/* drivers/kernelsu/
 
+# Télécharger ksu.c si absent
+if [ ! -f drivers/kernelsu/ksu.c ]; then
+    echo "ksu.c absent, téléchargement depuis GitHub..."
+    wget -O drivers/kernelsu/ksu.c \
+        https://raw.githubusercontent.com/backslashxx/KernelSU/master/kernel/ksu.c
+    if [ -f drivers/kernelsu/ksu.c ]; then
+        echo "✅ ksu.c téléchargé"
+    else
+        echo "❌ Échec du téléchargement de ksu.c"
+        exit 1
+    fi
+fi
+
 # Vérifier que le fichier ksu.c est présent
 if [ -f drivers/kernelsu/ksu.c ]; then
     echo "✅ ksu.c présent"
