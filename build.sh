@@ -1,8 +1,7 @@
 #!/bin/bash
-
 set -e
 
-echo "=== BUILD FINAL : KernelSU + SuSFS 2.3.0 + xxksu fix + hooks manuels + FocalTech + Fork Albanel22 ==="
+echo "=== BUILD FINAL : KernelSU (KSU_HOOK_MODE=manual) + SuSFS 2.3.0 + hooks manuels + FocalTech + Fork Albanel22 ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -22,6 +21,9 @@ fi
 
 cd "$GITHUB_WORKSPACE"
 
+# Nettoyage des éventuels caractères invisibles (sécurité)
+sed -i 's/\xC2\xA0/ /g' "$0" 2>/dev/null || true
+
 # ==================== 1. CLONAGE DU NOYAU DEPUIS TON FORK ====================
 echo "=== Clonage du kernel depuis le fork Albanel22 (branche kiev-kernelsu-susfs) ==="
 git clone --depth=1 --branch kiev-kernelsu-susfs https://github.com/Albanel22/android_kernel_motorola_sm8250.git kernel_sources
@@ -40,32 +42,17 @@ cd /tmp/KernelSU
 git fetch --depth=1 origin "$KSU_COMMIT"
 git checkout "$KSU_COMMIT"
 
-# ==================== 2b. COPIE DIRECTE DU DRIVER KERNELSU ====================
+# ==================== 2b. SYMLINK DRIVER ====================
 cd "$GITHUB_WORKSPACE/kernel_sources"
 
 rm -rf drivers/kernelsu
-mkdir -p drivers/kernelsu
-cp -r /tmp/KernelSU/kernel/* drivers/kernelsu/
+ln -sf /tmp/KernelSU/kernel drivers/kernelsu
 
-# Télécharger ksu.c si absent
-if [ ! -f drivers/kernelsu/ksu.c ]; then
-    echo "ksu.c absent, téléchargement depuis GitHub..."
-    wget -O drivers/kernelsu/ksu.c \
-        https://raw.githubusercontent.com/backslashxx/KernelSU/master/kernel/ksu.c
-    if [ -f drivers/kernelsu/ksu.c ]; then
-        echo "✅ ksu.c téléchargé"
-    else
-        echo "❌ Échec du téléchargement de ksu.c"
-        exit 1
-    fi
-fi
-
-# Vérifier que le fichier ksu.c est présent
-if [ -f drivers/kernelsu/ksu.c ]; then
-    echo "✅ ksu.c présent"
-    ls -l drivers/kernelsu/ | head -10
+if [ -d "drivers/kernelsu" ]; then
+    echo "✅ Symlink OK"
+    ls drivers/kernelsu/ | head -5
 else
-    echo "❌ ksu.c introuvable !"
+    echo "❌ Symlink ÉCHOUÉ"
     exit 1
 fi
 
@@ -74,10 +61,10 @@ sed -i "/endmenu/i\source \"drivers/kernelsu/Kconfig\"" drivers/Kconfig
 
 echo "✅ KernelSU intégré avec le commit $KSU_COMMIT"
 
-# ==================== 2b2. EXÉCUTER setup.sh POUR LES HOOKS ====================
-echo "=== Application de setup.sh KernelSU ==="
-if [ -f "drivers/kernelsu/setup.sh" ]; then
-    bash drivers/kernelsu/setup.sh
+# ==================== 2b2. EXÉCUTER setup.sh POUR LES HOOKS (mode manual forcé) ====================
+echo "=== Application de setup.sh KernelSU (KSU_HOOK_MODE=manual, kernel 4.19) ==="
+if [ -f "/tmp/KernelSU/kernel/setup.sh" ]; then
+    KSU_HOOK_MODE=manual bash /tmp/KernelSU/kernel/setup.sh
 else
     echo "❌ setup.sh introuvable"
     exit 1
@@ -126,9 +113,9 @@ fi
 
 grep -n "uapi_version\|ksuver_override\|cmd = { .version" "$DISPATCH_FILE" 2>/dev/null || true
 
-# ==================== 3. HOOKS MANUELS KERNELSU ====================
+# ==================== 3. HOOKS MANUELS KERNELSU (syscalls complémentaires) ====================
 cd "$GITHUB_WORKSPACE/kernel_sources"
-echo "=== Hooks manuels KernelSU ==="
+echo "=== Hooks manuels KernelSU (exec/faccessat/stat/reboot) ==="
 
 hook_insert() {
     local file="$1" sig_re="$2" extern_block="$3" call_line="$4"
@@ -200,7 +187,17 @@ fi
 
 echo "✅ Hooks KernelSU en place"
 
-# ==================== 4. TÉLÉCHARGEMENT DU VRAI SUSFS (cyberc3dr 2.3.0) ====================
+# NOTE: la section "3b. NETTOYAGE ANCIENS HOOKS INCOMPATIBLES" a été retirée.
+# Elle commentait/neutralisait ksu_handle_setresuid, ksu_handle_sys_read,
+# ksu_hide_setprocattr, ksu_handle_input_handle_event et les flags
+# ksu_is_init_rc_hook_enabled / ksu_is_input_hook_enabled dans tout l'arbre
+# source, ce qui faisait compiler le kernel mais désactivait une bonne partie
+# du vrai mécanisme de hooks KernelSU (dont SusFS dépend, notamment sus_su et
+# le masquage). Avec KSU_HOOK_MODE=manual passé à setup.sh, ces symboles
+# doivent être correctement fournis dès l'insertion des hooks, sans neutraliser
+# quoi que ce soit après coup.
+
+# ==================== 4. TÉLÉCHARGEMENT ET APPLICATION SUSFS ====================
 cd "$GITHUB_WORKSPACE"
 echo "=== Téléchargement du SuSFS depuis cyberc3dr/nGKI_Kernel_Build (branche rebase) ==="
 
@@ -210,66 +207,42 @@ git clone --depth=1 --branch rebase https://github.com/cyberc3dr/nGKI_Kernel_Bui
 if [ -f "/tmp/cyber_repo/Patches/Patch/xxksu_fix_compat.patch" ]; then
     echo "=== Application du patch de compatibilité backslashxx ==="
     cd "$GITHUB_WORKSPACE/kernel_sources"
-    patch -p1 < "/tmp/cyber_repo/Patches/Patch/xxksu_fix_compat.patch" || true
+    patch -p1 --forward --batch < "/tmp/cyber_repo/Patches/Patch/xxksu_fix_compat.patch" || true
     cd "$GITHUB_WORKSPACE"
-    echo "✅ Patch xxksu_fix_compat appliqué"
-else
-    echo "⚠️ Patch xxksu_fix_compat introuvable"
+    echo "✅ Patch xxksu_fix_compat traité"
 fi
 
-# Patch principal SuSFS 4.19
+# Appliquer le patch principal SuSFS 4.19
 SUSFS_PATCH="/tmp/cyber_repo/Patches/Patch/susfs_patch_to_4.19.patch"
-if [ ! -f "$SUSFS_PATCH" ]; then
+if [ -f "$SUSFS_PATCH" ]; then
+    echo "=== Application du patch SuSFS 4.19 ==="
+    cd "$GITHUB_WORKSPACE/kernel_sources"
+    patch -p1 --forward --batch < "$SUSFS_PATCH" || true
+    cd "$GITHUB_WORKSPACE"
+    echo "✅ Patch SuSFS 4.19 traité"
+else
     echo "❌ Patch SuSFS 4.19 non trouvé !"
-    find /tmp/cyber_repo/Patches -name "*.patch" | sort
     exit 1
 fi
-echo "✅ Patch SuSFS trouvé : $(wc -l < $SUSFS_PATCH) lignes"
 
+# Copier tous les fichiers source et d'en-tête SuSFS
 cd "$GITHUB_WORKSPACE/kernel_sources"
-patch -p1 < "$SUSFS_PATCH" 2>&1 | tee /tmp/susfs_patch.log || true
-
-# Copier les fichiers SuSFS complets si besoin
 if [ -d "/tmp/cyber_repo/Patches/fs" ]; then
-    cp -r /tmp/cyber_repo/Patches/fs/* fs/ 2>/dev/null || true
+    cp -rn /tmp/cyber_repo/Patches/fs/* fs/ 2>/dev/null || true
 fi
 if [ -d "/tmp/cyber_repo/Patches/include/linux" ]; then
-    cp -r /tmp/cyber_repo/Patches/include/linux/* include/linux/ 2>/dev/null || true
+    cp -rn /tmp/cyber_repo/Patches/include/linux/* include/linux/ 2>/dev/null || true
 fi
 
-# Appliquer le backport
-if [ -f "/tmp/cyber_repo/Patches/backport_patches.sh" ]; then
-    echo "=== Application du backport SuSFS ==="
-    bash /tmp/cyber_repo/Patches/backport_patches.sh || true
-fi
+# Nettoyage des éventuels fichiers de conflit générés par patch
+find . -type f \( -name "*.rej" -o -name "*.orig" \) -delete 2>/dev/null || true
 
-# Appliquer les hooks inline
-if [ -f "/tmp/cyber_repo/Patches/susfs_inline_hook_patches.sh" ]; then
-    echo "=== Application des hooks inline SuSFS ==="
-    bash /tmp/cyber_repo/Patches/susfs_inline_hook_patches.sh || true
-fi
-
-# Appliquer les hooks syscall
-if [ -f "/tmp/cyber_repo/Patches/syscall_hook_patches.sh" ]; then
-    echo "=== Application des hooks syscall SuSFS ==="
-    bash /tmp/cyber_repo/Patches/syscall_hook_patches.sh || true
-fi
-
-# Vérifier les fichiers .rej
-REJ_FILES=$(find . -name "*.rej" -type f)
-if [ -n "$REJ_FILES" ]; then
-    echo "⚠️ Fichiers .rej trouvés, suppression..."
-    echo "$REJ_FILES"
-    find . -name "*.rej" -type f -delete
-    find . -name "*.orig" -type f -delete
-else
-    echo "✅ Aucun fichier .rej détecté"
-fi
-
-# Vérifier la version SuSFS
+# Vérification de la présence de susfs.h
 if [ -f "include/linux/susfs.h" ]; then
     SUSFS_VERSION_DETECTED=$(grep -oP 'SUSFS_VERSION "\K[^"]+' include/linux/susfs.h | head -1)
     echo "✅ SuSFS version détectée : $SUSFS_VERSION_DETECTED"
+else
+    echo "⚠️ include/linux/susfs.h non trouvé"
 fi
 
 # ==================== 5b. CORRECTION FS/MAKEFILE ====================
@@ -392,6 +365,12 @@ echo "Config utilisée: $CONFIG_NAME"
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 $CONFIG_NAME
 
+# Forcer l'activation de KernelSU et SuSFS directement dans le fichier config source et le fichier out/.config
+./scripts/config --file arch/arm64/configs/$CONFIG_NAME \
+    --enable KSU \
+    --enable KSU_MANUAL_HOOK \
+    --enable KSU_SUSFS
+
 ./scripts/config --file out/.config \
     --enable KSU \
     --enable KSU_MANUAL_HOOK \
@@ -410,19 +389,36 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
     --enable KSU_SUSFS_OPEN_REDIRECT \
     --enable THREAD_INFO_IN_TASK
 
+# Premier olddefconfig
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-# Forcer CONFIG_KSU=y
+# Forcer CONFIG_KSU=y de manière agressive
 ./scripts/config --file out/.config --enable KSU
+./scripts/config --file out/.config --enable KSU_MANUAL_HOOK
 echo "CONFIG_KSU=y" >> out/.config
+echo "CONFIG_KSU_MANUAL_HOOK=y" >> out/.config
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
+# Vérification finale de CONFIG_KSU
 if ! grep -q "CONFIG_KSU=y" out/.config; then
     echo "❌ CONFIG_KSU n'est toujours pas y !"
     grep "CONFIG_KSU" out/.config
     exit 1
 fi
 echo "✅ CONFIG_KSU=y confirmé"
+
+{
+    echo "CONFIG_KSU_SUSFS=y"
+    echo "CONFIG_KSU_SUSFS_SUS_PATH=y"
+    echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y"
+    echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y"
+    echo "CONFIG_KSU_SUSFS_SUS_MAP=y"
+    echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y"
+    echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y"
+    echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y"
+    echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y"
+    echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y"
+} >> out/.config
 
 # ==================== 8. PATCH SIGNATURES ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
