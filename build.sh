@@ -58,6 +58,15 @@ sed -i "/endmenu/i\source \"drivers/kernelsu/Kconfig\"" drivers/Kconfig
 
 echo "✅ KernelSU intégré avec le commit $KSU_COMMIT"
 
+# ==================== 2b2. EXÉCUTER setup.sh POUR LES HOOKS ====================
+echo "=== Application de setup.sh KernelSU ==="
+if [ -f "/tmp/KernelSU/kernel/setup.sh" ]; then
+    bash /tmp/KernelSU/kernel/setup.sh
+else
+    echo "❌ setup.sh introuvable"
+    exit 1
+fi
+
 # ==================== 2c. FIX KSU_VERSION GLOBAL ====================
 echo "=== Fix KSU_VERSION global ==="
 
@@ -101,7 +110,7 @@ fi
 
 grep -n "uapi_version\|ksuver_override\|cmd = { .version" "$DISPATCH_FILE" 2>/dev/null || true
 
-# ==================== 3. HOOKS MANUELS KERNELSU (comme le script victorieux) ====================
+# ==================== 3. HOOKS MANUELS KERNELSU (en plus de setup.sh) ====================
 cd "$GITHUB_WORKSPACE/kernel_sources"
 echo "=== Hooks manuels KernelSU ==="
 
@@ -181,6 +190,7 @@ echo "=== Téléchargement du SuSFS depuis cyberc3dr/nGKI_Kernel_Build (branche 
 
 git clone --depth=1 --branch rebase https://github.com/cyberc3dr/nGKI_Kernel_Build.git /tmp/cyber_repo
 
+# Patch principal SuSFS 4.19
 SUSFS_PATCH="/tmp/cyber_repo/Patches/Patch/susfs_patch_to_4.19.patch"
 if [ ! -f "$SUSFS_PATCH" ]; then
     echo "❌ Patch SuSFS 4.19 non trouvé !"
@@ -192,6 +202,7 @@ echo "✅ Patch SuSFS trouvé : $(wc -l < $SUSFS_PATCH) lignes"
 cd "$GITHUB_WORKSPACE/kernel_sources"
 patch -p1 < "$SUSFS_PATCH" 2>&1 | tee /tmp/susfs_patch.log || true
 
+# Copier les fichiers SuSFS complets si besoin
 if [ -d "/tmp/cyber_repo/Patches/fs" ]; then
     cp -r /tmp/cyber_repo/Patches/fs/* fs/ 2>/dev/null || true
 fi
@@ -199,28 +210,40 @@ if [ -d "/tmp/cyber_repo/Patches/include/linux" ]; then
     cp -r /tmp/cyber_repo/Patches/include/linux/* include/linux/ 2>/dev/null || true
 fi
 
+# Appliquer le backport
 if [ -f "/tmp/cyber_repo/Patches/backport_patches.sh" ]; then
-    echo "=== Application des backports SuSFS ==="
+    echo "=== Application du backport SuSFS ==="
     bash /tmp/cyber_repo/Patches/backport_patches.sh || true
 fi
 
+# Appliquer les hooks inline
 if [ -f "/tmp/cyber_repo/Patches/susfs_inline_hook_patches.sh" ]; then
     echo "=== Application des hooks inline SuSFS ==="
     bash /tmp/cyber_repo/Patches/susfs_inline_hook_patches.sh || true
 fi
 
+# Appliquer les hooks syscall
 if [ -f "/tmp/cyber_repo/Patches/syscall_hook_patches.sh" ]; then
     echo "=== Application des hooks syscall SuSFS ==="
     bash /tmp/cyber_repo/Patches/syscall_hook_patches.sh || true
 fi
 
+# Vérifier les fichiers .rej
+REJ_FILES=$(find . -name "*.rej" -type f)
+if [ -n "$REJ_FILES" ]; then
+    echo "⚠️ Fichiers .rej trouvés, suppression..."
+    echo "$REJ_FILES"
+    find . -name "*.rej" -type f -delete
+    find . -name "*.orig" -type f -delete
+else
+    echo "✅ Aucun fichier .rej détecté"
+fi
+
+# Vérifier la version SuSFS
 if [ -f "include/linux/susfs.h" ]; then
     SUSFS_VERSION_DETECTED=$(grep -oP 'SUSFS_VERSION "\K[^"]+' include/linux/susfs.h | head -1)
     echo "✅ SuSFS version détectée : $SUSFS_VERSION_DETECTED"
 fi
-
-find . -name "*.rej" -type f -delete 2>/dev/null || true
-find . -name "*.orig" -type f -delete 2>/dev/null || true
 
 # ==================== 5b. CORRECTION FS/MAKEFILE ====================
 if [ -f "fs/Makefile" ]; then
@@ -360,17 +383,10 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
     --enable KSU_SUSFS_OPEN_REDIRECT \
     --enable THREAD_INFO_IN_TASK
 
-# Forcer KSU en built-in (et non en module)
-echo "CONFIG_KSU=y" >> out/.config
-
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-# Vérification finale de KSU
-if ! grep -q "CONFIG_KSU=y" out/.config; then
-    echo "❌ CONFIG_KSU n'est pas y !"
-    grep "CONFIG_KSU" out/.config
-    exit 1
-fi
+# Forcer CONFIG_KSU=y
+echo "CONFIG_KSU=y" >> out/.config
 
 {
     echo "CONFIG_KSU_SUSFS=y"
