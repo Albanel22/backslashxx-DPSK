@@ -21,6 +21,9 @@ fi
 
 cd "$GITHUB_WORKSPACE"
 
+# Nettoyage des éventuels caractères invisibles (sécurité)
+sed -i 's/\xC2\xA0/ /g' "$0" 2>/dev/null || true
+
 # ==================== 1. CLONAGE DU NOYAU DEPUIS TON FORK ====================
 echo "=== Clonage du kernel depuis le fork Albanel22 (branche kiev-kernelsu-susfs) ==="
 git clone --depth=1 --branch kiev-kernelsu-susfs https://github.com/Albanel22/android_kernel_motorola_sm8250.git kernel_sources
@@ -376,6 +379,12 @@ echo "Config utilisée: $CONFIG_NAME"
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 $CONFIG_NAME
 
+# Forcer l'activation de KernelSU et SuSFS directement dans le fichier config source et le fichier out/.config
+./scripts/config --file arch/arm64/configs/$CONFIG_NAME \
+    --enable KSU \
+    --enable KSU_MANUAL_HOOK \
+    --enable KSU_SUSFS
+
 ./scripts/config --file out/.config \
     --enable KSU \
     --enable KSU_MANUAL_HOOK \
@@ -399,7 +408,9 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 # Forcer CONFIG_KSU=y de manière agressive
 ./scripts/config --file out/.config --enable KSU
+./scripts/config --file out/.config --enable KSU_MANUAL_HOOK
 echo "CONFIG_KSU=y" >> out/.config
+echo "CONFIG_KSU_MANUAL_HOOK=y" >> out/.config
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
 # Vérification finale de CONFIG_KSU
