@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD FINAL : KernelSU + SuSFS 2.3.0 + backports + hooks + FocalTech + Fork Albanel22 ==="
+echo "=== BUILD FINAL : KernelSU + SuSFS 2.3.0 + hooks manuels + FocalTech + Fork Albanel22 ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -14,7 +14,6 @@ sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf
     libssl-dev libncurses-dev gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
     clang llvm lld device-tree-compiler zip unzip curl git python3 mkbootimg perl
 
-# S'assurer que ld.lld est disponible
 if [ ! -f /usr/bin/ld.lld ]; then
     sudo apt-get install -y lld
     sudo ln -sf /usr/bin/ld.lld-15 /usr/bin/ld.lld
@@ -59,15 +58,6 @@ sed -i "/endmenu/i\source \"drivers/kernelsu/Kconfig\"" drivers/Kconfig
 
 echo "✅ KernelSU intégré avec le commit $KSU_COMMIT"
 
-# ==================== 2b2. EXÉCUTER LE SCRIPT D'INSTALLATION KERNELSU ====================
-echo "=== Application des hooks KernelSU via setup.sh ==="
-if [ -f "/tmp/KernelSU/kernel/setup.sh" ]; then
-    bash /tmp/KernelSU/kernel/setup.sh
-else
-    echo "❌ setup.sh introuvable dans /tmp/KernelSU/kernel/"
-    exit 1
-fi
-
 # ==================== 2c. FIX KSU_VERSION GLOBAL ====================
 echo "=== Fix KSU_VERSION global ==="
 
@@ -111,8 +101,66 @@ fi
 
 grep -n "uapi_version\|ksuver_override\|cmd = { .version" "$DISPATCH_FILE" 2>/dev/null || true
 
-# ==================== 3. HOOK SYSCALL MANUEL SUPPRIMÉ (setup.sh fait le travail) ====================
-# On garde uniquement sys_reboot si nécessaire
+# ==================== 3. HOOKS MANUELS KERNELSU (comme le script victorieux) ====================
+cd "$GITHUB_WORKSPACE/kernel_sources"
+echo "=== Hooks manuels KernelSU ==="
+
+hook_insert() {
+    local file="$1" sig_re="$2" extern_block="$3" call_line="$4"
+    
+    if [ ! -f "$file" ]; then
+        echo "❌ $file introuvable."
+        return 1
+    fi
+    
+    if ! grep -Pzo "$sig_re" "$file" > /dev/null 2>&1; then
+        echo "❌ Signature non trouvée dans $file"
+        return 1
+    fi
+    
+    perl -0777 -i -pe "s/($sig_re)/${extern_block}\$1\n#ifdef CONFIG_KSU\n#pragma GCC diagnostic ignored \x22-Wdeclaration-after-statement\x22\n${call_line}\n#endif\n/s" "$file"
+    echo "✅ Hook inséré dans $file"
+    return 0
+}
+
+# fs/exec.c
+hook_insert "fs/exec.c" \
+    '(?s)static int do_execveat_common\(.*?int flags\)\s*\n\{' \
+    '#ifdef CONFIG_KSU\nextern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,\n\t\t\t\t\t void *envp, int *flags);\n#endif\n' \
+    'ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);' \
+    || true
+
+# fs/open.c
+if grep -Pzo 'long do_faccessat\(int dfd, const char __user \*filename, int mode\)\s*\n\{' fs/open.c > /dev/null 2>&1; then
+    hook_insert "fs/open.c" \
+        'long do_faccessat\(int dfd, const char __user \*filename, int mode\)\s*\n\{' \
+        '#ifdef CONFIG_KSU\nextern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode,\n\t\t\t\t int *flags);\n#endif\n' \
+        'ksu_handle_faccessat(&dfd, &filename, &mode, NULL);' \
+        || true
+elif grep -Pzo 'SYSCALL_DEFINE3\(faccessat, int, dfd, const char __user \*, filename, int, mode\)\s*\n\{' fs/open.c > /dev/null 2>&1; then
+    hook_insert "fs/open.c" \
+        'SYSCALL_DEFINE3\(faccessat, int, dfd, const char __user \*, filename, int, mode\)\s*\n\{' \
+        '#ifdef CONFIG_KSU\nextern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode,\n\t\t\t\t int *flags);\n#endif\n' \
+        'ksu_handle_faccessat(&dfd, &filename, &mode, NULL);' \
+        || true
+fi
+
+# fs/stat.c
+if grep -Pzo 'int vfs_statx\(int dfd, const char __user \*filename, int flags,' fs/stat.c > /dev/null 2>&1; then
+    hook_insert "fs/stat.c" \
+        'int vfs_statx\(int dfd, const char __user \*filename, int flags,[^{]*\{' \
+        '#ifdef CONFIG_KSU\nextern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\n#endif\n' \
+        'ksu_handle_stat(&dfd, &filename, &flags);' \
+        || true
+elif grep -Pzo 'int vfs_fstatat\(int dfd, const char __user \*filename, struct kstat \*stat,\s*\n\s*int flag\)\s*\n\{' fs/stat.c > /dev/null 2>&1; then
+    hook_insert "fs/stat.c" \
+        'int vfs_fstatat\(int dfd, const char __user \*filename, struct kstat \*stat,\s*\n\s*int flag\)\s*\n\{' \
+        '#ifdef CONFIG_KSU\nextern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\n#endif\n' \
+        'ksu_handle_stat(&dfd, &filename, &flag);' \
+        || true
+fi
+
+# Hook sys_reboot
 if ! grep -q "ksu_handle_sys_reboot" kernel/reboot.c; then
     sed -i '/SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,/i\
 #if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD)\
@@ -123,7 +171,6 @@ extern int ksu_handle_sys_reboot(int, int, unsigned int, void __user **);\
 #if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD)\
 \tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\
 #endif' kernel/reboot.c
-    echo "[+] Hook sys_reboot ajouté"
 fi
 
 echo "✅ Hooks KernelSU en place"
@@ -134,7 +181,6 @@ echo "=== Téléchargement du SuSFS depuis cyberc3dr/nGKI_Kernel_Build (branche 
 
 git clone --depth=1 --branch rebase https://github.com/cyberc3dr/nGKI_Kernel_Build.git /tmp/cyber_repo
 
-# Patch principal SuSFS 4.19
 SUSFS_PATCH="/tmp/cyber_repo/Patches/Patch/susfs_patch_to_4.19.patch"
 if [ ! -f "$SUSFS_PATCH" ]; then
     echo "❌ Patch SuSFS 4.19 non trouvé !"
@@ -146,7 +192,6 @@ echo "✅ Patch SuSFS trouvé : $(wc -l < $SUSFS_PATCH) lignes"
 cd "$GITHUB_WORKSPACE/kernel_sources"
 patch -p1 < "$SUSFS_PATCH" 2>&1 | tee /tmp/susfs_patch.log || true
 
-# Copier les fichiers SuSFS complets si besoin
 if [ -d "/tmp/cyber_repo/Patches/fs" ]; then
     cp -r /tmp/cyber_repo/Patches/fs/* fs/ 2>/dev/null || true
 fi
@@ -154,25 +199,21 @@ if [ -d "/tmp/cyber_repo/Patches/include/linux" ]; then
     cp -r /tmp/cyber_repo/Patches/include/linux/* include/linux/ 2>/dev/null || true
 fi
 
-# Appliquer les backports
 if [ -f "/tmp/cyber_repo/Patches/backport_patches.sh" ]; then
     echo "=== Application des backports SuSFS ==="
     bash /tmp/cyber_repo/Patches/backport_patches.sh || true
 fi
 
-# Appliquer les hooks inline SuSFS
 if [ -f "/tmp/cyber_repo/Patches/susfs_inline_hook_patches.sh" ]; then
     echo "=== Application des hooks inline SuSFS ==="
     bash /tmp/cyber_repo/Patches/susfs_inline_hook_patches.sh || true
 fi
 
-# Appliquer les hooks syscall SuSFS
 if [ -f "/tmp/cyber_repo/Patches/syscall_hook_patches.sh" ]; then
     echo "=== Application des hooks syscall SuSFS ==="
     bash /tmp/cyber_repo/Patches/syscall_hook_patches.sh || true
 fi
 
-# Vérifier la version SuSFS
 if [ -f "include/linux/susfs.h" ]; then
     SUSFS_VERSION_DETECTED=$(grep -oP 'SUSFS_VERSION "\K[^"]+' include/linux/susfs.h | head -1)
     echo "✅ SuSFS version détectée : $SUSFS_VERSION_DETECTED"
@@ -319,7 +360,17 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
     --enable KSU_SUSFS_OPEN_REDIRECT \
     --enable THREAD_INFO_IN_TASK
 
+# Forcer KSU en built-in (et non en module)
+echo "CONFIG_KSU=y" >> out/.config
+
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
+
+# Vérification finale de KSU
+if ! grep -q "CONFIG_KSU=y" out/.config; then
+    echo "❌ CONFIG_KSU n'est pas y !"
+    grep "CONFIG_KSU" out/.config
+    exit 1
+fi
 
 {
     echo "CONFIG_KSU_SUSFS=y"
