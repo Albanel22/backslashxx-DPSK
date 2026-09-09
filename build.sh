@@ -187,7 +187,23 @@ fi
 
 echo "✅ Hooks KernelSU en place"
 
-# ==================== 4. TÉLÉCHARGEMENT DU VRAI SUSFS (cyberc3dr 2.3.0) ====================
+# ==================== 3b. NETTOYAGE ANCIENS HOOKS INCOMPATIBLES ====================
+cd "$GITHUB_WORKSPACE/kernel_sources"
+echo "=== Neutralisation des anciens hooks KernelSU orphelins ==="
+
+# Commenter les appels aux fonctions absentes dans le driver backslashxx
+sed -i '/ksu_handle_setresuid/s/^/\/\//' kernel/sys.c 2>/dev/null || true
+sed -i '/ksu_handle_sys_read/s/^/\/\//' fs/read_write.c 2>/dev/null || true
+sed -i '/ksu_hide_setprocattr/s/^/\/\//' security/selinux/hooks.c 2>/dev/null || true
+sed -i '/ksu_handle_input_handle_event/s/^/\/\//' drivers/input/input.c 2>/dev/null || true
+
+# Remplacer les flags init_rc et input_hook obsolètes par 0
+find . -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's/ksu_is_init_rc_hook_enabled/0/g' {} + 2>/dev/null || true
+find . -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's/ksu_is_input_hook_enabled/0/g' {} + 2>/dev/null || true
+
+echo "✅ Anciens hooks neutralisés"
+
+# ==================== 4. TÉLÉCHARGEMENT ET APPLICATION SUSFS ====================
 cd "$GITHUB_WORKSPACE"
 echo "=== Téléchargement du SuSFS depuis cyberc3dr/nGKI_Kernel_Build (branche rebase) ==="
 
@@ -197,66 +213,42 @@ git clone --depth=1 --branch rebase https://github.com/cyberc3dr/nGKI_Kernel_Bui
 if [ -f "/tmp/cyber_repo/Patches/Patch/xxksu_fix_compat.patch" ]; then
     echo "=== Application du patch de compatibilité backslashxx ==="
     cd "$GITHUB_WORKSPACE/kernel_sources"
-    patch -p1 < "/tmp/cyber_repo/Patches/Patch/xxksu_fix_compat.patch" || true
+    patch -p1 --forward --batch < "/tmp/cyber_repo/Patches/Patch/xxksu_fix_compat.patch" || true
     cd "$GITHUB_WORKSPACE"
-    echo "✅ Patch xxksu_fix_compat appliqué"
-else
-    echo "⚠️ Patch xxksu_fix_compat introuvable"
+    echo "✅ Patch xxksu_fix_compat traité"
 fi
 
-# Patch principal SuSFS 4.19
+# Appliquer le patch principal SuSFS 4.19
 SUSFS_PATCH="/tmp/cyber_repo/Patches/Patch/susfs_patch_to_4.19.patch"
-if [ ! -f "$SUSFS_PATCH" ]; then
+if [ -f "$SUSFS_PATCH" ]; then
+    echo "=== Application du patch SuSFS 4.19 ==="
+    cd "$GITHUB_WORKSPACE/kernel_sources"
+    patch -p1 --forward --batch < "$SUSFS_PATCH" || true
+    cd "$GITHUB_WORKSPACE"
+    echo "✅ Patch SuSFS 4.19 traité"
+else
     echo "❌ Patch SuSFS 4.19 non trouvé !"
-    find /tmp/cyber_repo/Patches -name "*.patch" | sort
     exit 1
 fi
-echo "✅ Patch SuSFS trouvé : $(wc -l < $SUSFS_PATCH) lignes"
 
+# Copier tous les fichiers source et d'en-tête SuSFS
 cd "$GITHUB_WORKSPACE/kernel_sources"
-patch -p1 < "$SUSFS_PATCH" 2>&1 | tee /tmp/susfs_patch.log || true
-
-# Copier les fichiers SuSFS complets si besoin
 if [ -d "/tmp/cyber_repo/Patches/fs" ]; then
-    cp -r /tmp/cyber_repo/Patches/fs/* fs/ 2>/dev/null || true
+    cp -rn /tmp/cyber_repo/Patches/fs/* fs/ 2>/dev/null || true
 fi
 if [ -d "/tmp/cyber_repo/Patches/include/linux" ]; then
-    cp -r /tmp/cyber_repo/Patches/include/linux/* include/linux/ 2>/dev/null || true
+    cp -rn /tmp/cyber_repo/Patches/include/linux/* include/linux/ 2>/dev/null || true
 fi
 
-# Appliquer le backport
-if [ -f "/tmp/cyber_repo/Patches/backport_patches.sh" ]; then
-    echo "=== Application du backport SuSFS ==="
-    bash /tmp/cyber_repo/Patches/backport_patches.sh || true
-fi
+# Nettoyage des éventuels fichiers de conflit générés par patch
+find . -type f \( -name "*.rej" -o -name "*.orig" \) -delete 2>/dev/null || true
 
-# Appliquer les hooks inline
-if [ -f "/tmp/cyber_repo/Patches/susfs_inline_hook_patches.sh" ]; then
-    echo "=== Application des hooks inline SuSFS ==="
-    bash /tmp/cyber_repo/Patches/susfs_inline_hook_patches.sh || true
-fi
-
-# Appliquer les hooks syscall
-if [ -f "/tmp/cyber_repo/Patches/syscall_hook_patches.sh" ]; then
-    echo "=== Application des hooks syscall SuSFS ==="
-    bash /tmp/cyber_repo/Patches/syscall_hook_patches.sh || true
-fi
-
-# Vérifier les fichiers .rej
-REJ_FILES=$(find . -name "*.rej" -type f)
-if [ -n "$REJ_FILES" ]; then
-    echo "⚠️ Fichiers .rej trouvés, suppression..."
-    echo "$REJ_FILES"
-    find . -name "*.rej" -type f -delete
-    find . -name "*.orig" -type f -delete
-else
-    echo "✅ Aucun fichier .rej détecté"
-fi
-
-# Vérifier la version SuSFS
+# Vérification de la présence de susfs.h
 if [ -f "include/linux/susfs.h" ]; then
     SUSFS_VERSION_DETECTED=$(grep -oP 'SUSFS_VERSION "\K[^"]+' include/linux/susfs.h | head -1)
     echo "✅ SuSFS version détectée : $SUSFS_VERSION_DETECTED"
+else
+    echo "⚠️ include/linux/susfs.h non trouvé"
 fi
 
 # ==================== 5b. CORRECTION FS/MAKEFILE ====================
