@@ -39,17 +39,19 @@ cd /tmp/KernelSU
 git fetch --depth=1 origin "$KSU_COMMIT"
 git checkout "$KSU_COMMIT"
 
-# ==================== 2b. SYMLINK DRIVER ====================
+# ==================== 2b. COPIE DIRECTE DU DRIVER KERNELSU ====================
 cd "$GITHUB_WORKSPACE/kernel_sources"
 
 rm -rf drivers/kernelsu
-ln -sf /tmp/KernelSU/kernel drivers/kernelsu
+mkdir -p drivers/kernelsu
+cp -r /tmp/KernelSU/kernel/* drivers/kernelsu/
 
-if [ -d "drivers/kernelsu" ]; then
-    echo "✅ Symlink OK"
-    ls drivers/kernelsu/ | head -5
+# Vérifier que le fichier ksu.c est présent
+if [ -f drivers/kernelsu/ksu.c ]; then
+    echo "✅ ksu.c présent"
+    ls -l drivers/kernelsu/ | head -10
 else
-    echo "❌ Symlink ÉCHOUÉ"
+    echo "❌ ksu.c introuvable !"
     exit 1
 fi
 
@@ -60,8 +62,8 @@ echo "✅ KernelSU intégré avec le commit $KSU_COMMIT"
 
 # ==================== 2b2. EXÉCUTER setup.sh POUR LES HOOKS ====================
 echo "=== Application de setup.sh KernelSU ==="
-if [ -f "/tmp/KernelSU/kernel/setup.sh" ]; then
-    bash /tmp/KernelSU/kernel/setup.sh
+if [ -f "drivers/kernelsu/setup.sh" ]; then
+    bash drivers/kernelsu/setup.sh
 else
     echo "❌ setup.sh introuvable"
     exit 1
@@ -394,48 +396,19 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
     --enable KSU_SUSFS_OPEN_REDIRECT \
     --enable THREAD_INFO_IN_TASK
 
-# Premier olddefconfig
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-# Forcer CONFIG_KSU=y de manière agressive
+# Forcer CONFIG_KSU=y
 ./scripts/config --file out/.config --enable KSU
 echo "CONFIG_KSU=y" >> out/.config
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
-# Vérification finale de CONFIG_KSU
 if ! grep -q "CONFIG_KSU=y" out/.config; then
     echo "❌ CONFIG_KSU n'est toujours pas y !"
     grep "CONFIG_KSU" out/.config
     exit 1
 fi
 echo "✅ CONFIG_KSU=y confirmé"
-
-{
-    echo "CONFIG_KSU_SUSFS=y"
-    echo "CONFIG_KSU_SUSFS_SUS_PATH=y"
-    echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y"
-    echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y"
-    echo "CONFIG_KSU_SUSFS_SUS_MAP=y"
-    echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y"
-    echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y"
-    echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y"
-    echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y"
-    echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y"
-} >> out/.config
-
-echo "=== DIAGNOSTIC KERNELSU ==="
-# Vérifier la valeur de CONFIG_KSU
-grep "CONFIG_KSU=" out/.config
-
-# Vérifier le Makefile de drivers/kernelsu
-echo "Contenu du Makefile de drivers/kernelsu :"
-cat drivers/kernelsu/Makefile | head -30
-
-# Vérifier si le dossier est bien inclus dans drivers/Makefile
-grep -n "kernelsu" drivers/Makefile
-
-# Lister les fichiers dans drivers/kernelsu
-ls -l drivers/kernelsu/
 
 # ==================== 8. PATCH SIGNATURES ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
