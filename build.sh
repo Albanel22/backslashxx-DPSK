@@ -138,19 +138,46 @@ else
     exit 1
 fi
 
-# Fix KSU_VERSION
+# 🚨 CORRECTION CRITIQUE : setup.sh clone le DERNIER commit (32628)
+# mais notre code compilé utilise le commit 0b138d6a (32601, UAPI 2)
+# Il faut synchroniser les deux pour que les hooks correspondent au code
+echo "=== Synchronisation KernelSU vers le commit 0b138d6a (v32601, UAPI 2) ==="
+KSU_COMMIT="0b138d6a9cfe4dc163aa05c21b1e6a14ff868230"
+
+if [ -d "KernelSU" ]; then
+    cd KernelSU
+    git fetch --depth=1 origin "$KSU_COMMIT"
+    git checkout "$KSU_COMMIT"
+    cd "$GITHUB_WORKSPACE/kernel_sources"
+    echo "✅ KernelSU synchronisé au commit $KSU_COMMIT"
+else
+    echo "❌ Dossier KernelSU non trouvé après setup.sh"
+    exit 1
+fi
+
+# Réappliquer les hooks sur le bon commit
+echo "=== Réapplication des hooks sur le bon commit ==="
+if [ -f "KernelSU/kernel/setup.sh" ]; then
+    KSU_HOOK_MODE=manual bash KernelSU/kernel/setup.sh
+fi
+
+# Fix UAPI sur le bon dossier KernelSU (pas /tmp/KernelSU)
+echo "=== Application des fixes UAPI sur KernelSU synchronisé ==="
+if [ -f "KernelSU/uapi/supercall.h" ]; then
+    sed -i 's/static const __u32 KERNEL_SU_UAPI_VERSION = [0-9]*;/static const __u32 KERNEL_SU_UAPI_VERSION = 2;/' KernelSU/uapi/supercall.h
+    sed -i 's/#define KERNEL_SU_UAPI_VERSION [0-9]*/#define KERNEL_SU_UAPI_VERSION 2/' KernelSU/uapi/supercall.h
+    echo "✅ UAPI_VERSION forcé à 2"
+fi
+if [ -f "KernelSU/uapi/ksu.h" ]; then
+    sed -i 's/#define KERNEL_SU_VERSION KSU_VERSION/#define KERNEL_SU_VERSION 32601/' KernelSU/uapi/ksu.h
+    echo "✅ KSU_VERSION forcé à 32601"
+fi
+
+# Fix version dans Makefile
 KSU_VER=$(grep -oP '(?<=-DKSU_VERSION=)[0-9]+' drivers/kernelsu/Makefile | head -1)
 [ -z "$KSU_VER" ] && KSU_VER="32601"
 if ! grep -q "ccflags-y += -DKSU_VERSION=" drivers/kernelsu/Makefile; then
     echo "ccflags-y += -DKSU_VERSION=${KSU_VER}" >> drivers/kernelsu/Makefile
-fi
-
-if [ -f "/tmp/KernelSU/uapi/supercall.h" ]; then
-    sed -i 's/static const __u32 KERNEL_SU_UAPI_VERSION = [0-9]*;/static const __u32 KERNEL_SU_UAPI_VERSION = 2;/' /tmp/KernelSU/uapi/supercall.h
-    sed -i 's/#define KERNEL_SU_UAPI_VERSION [0-9]*/#define KERNEL_SU_UAPI_VERSION 2/' /tmp/KernelSU/uapi/supercall.h
-fi
-if [ -f "/tmp/KernelSU/uapi/ksu.h" ]; then
-    sed -i 's/#define KERNEL_SU_VERSION KSU_VERSION/#define KERNEL_SU_VERSION 32601/' /tmp/KernelSU/uapi/ksu.h
 fi
 
 # ==================== 5b. CORRECTION FS/MAKEFILE ====================
