@@ -32,8 +32,8 @@ cd kernel_sources
 git log --oneline -1
 cd "$GITHUB_WORKSPACE"
 
-# ==================== 2. KERNELSU ====================
-echo "=== Intégration KernelSU (0b138d6a) ==="
+# ==================== 2. CLONAGE KERNELSU ====================
+echo "=== Préparation KernelSU (0b138d6a) ==="
 rm -rf /tmp/KernelSU || true
 KSU_COMMIT="0b138d6a9cfe4dc163aa05c21b1e6a14ff868230"
 
@@ -49,54 +49,7 @@ ln -sf /tmp/KernelSU/kernel drivers/kernelsu
 printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> drivers/Makefile
 sed -i "/endmenu/i\source \"drivers/kernelsu/Kconfig\"" drivers/Kconfig
 
-echo "=== Application de setup.sh KernelSU (mode manual) ==="
-if [ -f "/tmp/KernelSU/kernel/setup.sh" ]; then
-    KSU_HOOK_MODE=manual bash /tmp/KernelSU/kernel/setup.sh
-else
-    echo "❌ setup.sh introuvable"
-    exit 1
-fi
-
-# Fix KSU_VERSION
-KSU_VER=$(grep -oP '(?<=-DKSU_VERSION=)[0-9]+' drivers/kernelsu/Makefile | head -1)
-[ -z "$KSU_VER" ] && KSU_VER="32601"
-if ! grep -q "ccflags-y += -DKSU_VERSION=" drivers/kernelsu/Makefile; then
-    echo "ccflags-y += -DKSU_VERSION=${KSU_VER}" >> drivers/kernelsu/Makefile
-fi
-
-if [ -f "/tmp/KernelSU/uapi/supercall.h" ]; then
-    sed -i 's/static const __u32 KERNEL_SU_UAPI_VERSION = [0-9]*;/static const __u32 KERNEL_SU_UAPI_VERSION = 2;/' /tmp/KernelSU/uapi/supercall.h
-    sed -i 's/#define KERNEL_SU_UAPI_VERSION [0-9]*/#define KERNEL_SU_UAPI_VERSION 2/' /tmp/KernelSU/uapi/supercall.h
-fi
-if [ -f "/tmp/KernelSU/uapi/ksu.h" ]; then
-    sed -i 's/#define KERNEL_SU_VERSION KSU_VERSION/#define KERNEL_SU_VERSION 32601/' /tmp/KernelSU/uapi/ksu.h
-fi
-
-# ==================== 3. HOOKS MANUELS KERNELSU ====================
-echo "=== Hooks manuels KernelSU ==="
-hook_insert() {
-    local file="$1" sig_re="$2" extern_block="$3" call_line="$4"
-    [ ! -f "$file" ] && return 1
-    if ! grep -Pzo "$sig_re" "$file" > /dev/null 2>&1; then
-        echo "⚠️ Signature non trouvée dans $file (peut être déjà patché ou différent)"
-        return 1
-    fi
-    perl -0777 -i -pe "s/($sig_re)/${extern_block}\$1\n#ifdef CONFIG_KSU\n#pragma GCC diagnostic ignored \x22-Wdeclaration-after-statement\x22\n${call_line}\n#endif\n/s" "$file"
-    echo "✅ Hook inséré dans $file"
-    return 0
-}
-
-hook_insert "fs/exec.c" '(?s)static int do_execveat_common\(.*?int flags\)\s*\n\{' '#ifdef CONFIG_KSU\nextern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,\n\t\t\t\t\t void *envp, int *flags);\n#endif\n' 'ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);' || true
-
-if grep -Pzo 'long do_faccessat\(int dfd, const char __user \*filename, int mode\)\s*\n\{' fs/open.c > /dev/null 2>&1; then
-    hook_insert "fs/open.c" 'long do_faccessat\(int dfd, const char __user \*filename, int mode\)\s*\n\{' '#ifdef CONFIG_KSU\nextern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode,\n\t\t\t\t int *flags);\n#endif\n' 'ksu_handle_faccessat(&dfd, &filename, &mode, NULL);' || true
-fi
-
-if grep -Pzo 'int vfs_statx\(int dfd, const char __user \*filename, int flags,' fs/stat.c > /dev/null 2>&1; then
-    hook_insert "fs/stat.c" 'int vfs_statx\(int dfd, const char __user \*filename, int flags,[^{]*\{' '#ifdef CONFIG_KSU\nextern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\n#endif\n' 'ksu_handle_stat(&dfd, &filename, &flags);' || true
-fi
-
-# ==================== 4. TÉLÉCHARGEMENT ET APPLICATION SUSFS ====================
+# ==================== 3. APPLICATION SUSFS EN PREMIER (CRUCIAL) ====================
 cd "$GITHUB_WORKSPACE"
 echo "=== Téléchargement du SuSFS depuis cyberc3dr ==="
 rm -rf /tmp/cyber_repo
@@ -110,12 +63,12 @@ if [ -f "/tmp/cyber_repo/Patches/Patch/xxksu_fix_compat.patch" ]; then
     patch -p1 --forward --batch < "/tmp/cyber_repo/Patches/Patch/xxksu_fix_compat.patch" || true
 fi
 
-# 2. Patch principal SuSFS 4.19 (SANS || true pour détecter les échecs)
+# 2. Patch principal SuSFS 4.19 (SUR NOYAU PROPRE)
 SUSFS_PATCH="/tmp/cyber_repo/Patches/Patch/susfs_patch_to_4.19.patch"
 echo "=== Application du patch SuSFS 4.19 ==="
-patch -p1 --forward --batch < "$SUSFS_PATCH" 2>&1 | tee /tmp/susfs_patch.log || true
+patch -p1 --forward --batch < "$SUSFS_PATCH" 2>&1 | tee /tmp/susfs_patch.log
 
-# 3. CORRECTION AUTOMATIQUE DES REJETS CONNUS (Crucial pour ne pas "compiler du vent")
+# 3. CORRECTION AUTOMATIQUE DES REJETS CONNUS (Indispensable)
 if [ -f "fs/proc/task_mmu.c.rej" ]; then
     echo "⚠️ Rejet détecté dans task_mmu.c. Correction automatique..."
     python3 - << 'PYEOF'
@@ -160,14 +113,15 @@ PYEOF
     rm -f fs/namespace.c.rej
 fi
 
-# 4. VÉRIFICATION STRICTE DES REJETS (Empêche de "compiler du vent")
+# 4. VÉRIFICATION STRICTE : Interdiction de continuer s'il reste des .rej
 if find . -name "*.rej" -type f | grep -q .; then
-    echo "❌ ÉCHEC CRITIQUE : Des rejets de patch (.rej) persistent. SuSFS ne sera pas fonctionnel."
+    echo "❌ ÉCHEC CRITIQUE : Des rejets de patch SuSFS persistent. SuSFS ne sera PAS fonctionnel."
     find . -name "*.rej" -type f -exec echo "=== {} ===" \; -exec cat {} \;
     exit 1
 fi
+echo "✅ Patch SuSFS appliqué avec succès (aucun rejet)."
 
-# 5. Copie des fichiers source SuSFS (seulement si le patch a réussi ou été corrigé)
+# 5. Copie des fichiers source SuSFS
 if [ -d "/tmp/cyber_repo/Patches/fs" ]; then
     cp -rn /tmp/cyber_repo/Patches/fs/* fs/ 2>/dev/null || true
 fi
@@ -175,9 +129,28 @@ if [ -d "/tmp/cyber_repo/Patches/include/linux" ]; then
     cp -rn /tmp/cyber_repo/Patches/include/linux/* include/linux/ 2>/dev/null || true
 fi
 
-if [ -f "include/linux/susfs.h" ]; then
-    SUSFS_VERSION_DETECTED=$(grep -oP 'SUSFS_VERSION "\K[^"]+' include/linux/susfs.h | head -1)
-    echo "✅ SuSFS version détectée : $SUSFS_VERSION_DETECTED"
+# ==================== 4. HOOKS KERNELSU (APRÈS SUSFS) ====================
+echo "=== Application des hooks KernelSU (setup.sh) ==="
+if [ -f "/tmp/KernelSU/kernel/setup.sh" ]; then
+    KSU_HOOK_MODE=manual bash /tmp/KernelSU/kernel/setup.sh
+else
+    echo "❌ setup.sh introuvable"
+    exit 1
+fi
+
+# Fix KSU_VERSION
+KSU_VER=$(grep -oP '(?<=-DKSU_VERSION=)[0-9]+' drivers/kernelsu/Makefile | head -1)
+[ -z "$KSU_VER" ] && KSU_VER="32601"
+if ! grep -q "ccflags-y += -DKSU_VERSION=" drivers/kernelsu/Makefile; then
+    echo "ccflags-y += -DKSU_VERSION=${KSU_VER}" >> drivers/kernelsu/Makefile
+fi
+
+if [ -f "/tmp/KernelSU/uapi/supercall.h" ]; then
+    sed -i 's/static const __u32 KERNEL_SU_UAPI_VERSION = [0-9]*;/static const __u32 KERNEL_SU_UAPI_VERSION = 2;/' /tmp/KernelSU/uapi/supercall.h
+    sed -i 's/#define KERNEL_SU_UAPI_VERSION [0-9]*/#define KERNEL_SU_UAPI_VERSION 2/' /tmp/KernelSU/uapi/supercall.h
+fi
+if [ -f "/tmp/KernelSU/uapi/ksu.h" ]; then
+    sed -i 's/#define KERNEL_SU_VERSION KSU_VERSION/#define KERNEL_SU_VERSION 32601/' /tmp/KernelSU/uapi/ksu.h
 fi
 
 # ==================== 5b. CORRECTION FS/MAKEFILE ====================
