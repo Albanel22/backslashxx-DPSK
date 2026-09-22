@@ -637,6 +637,68 @@ git clone --depth=1 https://github.com/backslashxx/KernelSU.git "$GITHUB_WORKSPA
 cd "$GITHUB_WORKSPACE/ksud-src"
 git fetch --depth=1 origin "$KSU_COMMIT"
 git checkout "$KSU_COMMIT"
+
+# ==================== 11b. FIX ADB_CLIENT REVISION MANQUANTE ====================
+# La revision d97a9664 n'existe plus dans Kernel-SU/adb_client (force-push ou suppression).
+# On remplace la dépendance git par la version publiée sur crates.io (compatible API 3.x).
+
+echo "=== Correction dépendance adb_client (revision d97a9664 disparue) ==="
+
+CARGO_TOML="userspace/ksud/Cargo.toml"
+
+if [ -f "$CARGO_TOML" ]; then
+    # Sauvegarde
+    cp "$CARGO_TOML" "${CARGO_TOML}.bak"
+
+    # Remplacer la ligne git par la version crates.io
+    # Pattern: adb_client = { git = "https://github.com/Kernel-SU/adb_client", rev = "d97a9664..." }
+    # Ou : adb_client = { git = "https://github.com/Kernel-SU/adb_client.git", rev = "d97a9664..." }
+    sed -i 's|^adb_client\s*=\s*{.*git.*Kernel-SU/adb_client.*}.*|adb_client = { version = "3.1.1", default-features = false }|' "$CARGO_TOML"
+
+    # Si le pattern n'a pas matché (format différent), on tente une approche plus large
+    if grep -q "Kernel-SU/adb_client" "$CARGO_TOML"; then
+        echo "[!] Pattern principal non trouvé, tentative secondaire..."
+        python3 - << 'PYEOF'
+import re
+path = 'userspace/ksud/Cargo.toml'
+with open(path, 'r') as f:
+    content = f.read()
+
+# Remplace toute ligne contenant adb_client avec git+Kernel-SU
+new_content = re.sub(
+    r'^adb_client\s*=\s*\{[^}]*Kernel-SU/adb_client[^}]*\}.*$',
+    'adb_client = { version = "3.1.1", default-features = false }',
+    content,
+    flags=re.MULTILINE
+)
+
+if new_content == content:
+    # Essai avec la ligne entière sur plusieurs lignes
+    new_content = re.sub(
+        r'adb_client\s*=\s*\{[^}]*?\}',
+        'adb_client = { version = "3.1.1", default-features = false }',
+        content,
+        count=1
+    )
+
+with open(path, 'w') as f:
+    f.write(new_content)
+print("[+] Cargo.toml patché (méthode Python)")
+PYEOF
+    fi
+
+    echo "=== Cargo.toml après patch ==="
+    grep -n "adb_client" "$CARGO_TOML" || echo "(adb_client non trouvé)"
+
+    # Supprimer Cargo.lock pour forcer la résolution fraîche avec la nouvelle source
+    rm -f Cargo.lock
+    echo "[+] Cargo.lock supprimé pour forcer la résolution"
+else
+    echo "❌ $CARGO_TOML introuvable"
+    exit 1
+fi
+
+# ==================== 11c. COMPILATION KSUD ====================
 cd userspace/ksud
 
 mkdir -p .cargo
