@@ -231,8 +231,9 @@ fi
 
 # ==================== 5c. CORRECTION GENERIQUE DES FICHIERS PATCHES PAR SUSFS ====================
 # Le patch SuSFS oublie régulièrement d'ajouter les #include <linux/susfs.h> et
-# <linux/susfs_def.h> dans les fichiers où il insère du code. On détecte tout
-# fichier .c/.h contenant un symbole SuSFS et on injecte les includes + externs.
+# <linux/susfs_def.h> dans les fichiers où il insère du code. De plus, la constante
+# CL_COPY_MNT_NS n'existe pas sur les noyaux 4.19 (upstream 5.x+) — il faut la définir
+# manuellement dans chaque fichier qui l'utilise.
 
 echo "=== Correction générique des fichiers patchés par SuSFS ==="
 
@@ -255,10 +256,12 @@ EXTERN_SYMBOLS = [
     'susfs_is_sdcard_android_data_not_decrypted',
 ]
 
-MARKER = '/* __SUSFS_EXTERNS_INJECTED__ */'
+MARKER        = '/* __SUSFS_EXTERNS_INJECTED__ */'
+MARKER_INC    = '/* __SUSFS_INCLUDES_INJECTED__ */'
+MARKER_CCMNS  = '/* __SUSFS_CL_COPY_MNT_NS_INJECTED__ */'
 
 INCLUDE_BLOCK = (
-    '\n/* __SUSFS_INCLUDES_INJECTED__ */\n'
+    '\n' + MARKER_INC + '\n'
     '#ifdef CONFIG_KSU_SUSFS\n'
     '#include <linux/susfs.h>\n'
     '#endif\n'
@@ -275,11 +278,28 @@ EXTERN_BLOCK = (
     '#endif\n'
 )
 
+CL_COPY_BLOCK = (
+    '\n' + MARKER_CCMNS + '\n'
+    '#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n'
+    '#ifndef CL_COPY_MNT_NS\n'
+    '#define CL_COPY_MNT_NS BIT(25)\n'
+    '#endif\n'
+    '#endif\n'
+)
+
 def has_extern_decl(content, symbol):
-    return bool(re.search(
+    patterns = [
         r'(extern|static|DEFINE_STATIC_KEY|EXPORT_SYMBOL)\s*[^;\n]*' + re.escape(symbol),
-        content
-    ))
+        r'#\s*define\s+' + re.escape(symbol) + r'\b',
+    ]
+    return any(re.search(p, content) for p in patterns)
+
+def inject_after_last_include(content, block):
+    m = list(re.finditer(r'^#include\s+[<"][^>"]+[>"]\s*$', content, re.MULTILINE))
+    if m:
+        pos = m[-1].end()
+        return content[:pos] + block + content[pos:]
+    return content
 
 def list_kernel_sources():
     files = []
@@ -309,7 +329,7 @@ def fix_file(path):
     original = content
     changed = False
 
-    # Nettoyage des "n" parasites en début de ligne
+    # 1) Nettoyage des "n" parasites en début de ligne (bug du patch)
     new_content = re.sub(
         r'^\s*n(?=#ifdef|#endif|#include|#define|extern)',
         '',
@@ -320,15 +340,13 @@ def fix_file(path):
         content = new_content
         changed = True
 
-    # Injecter includes si absents
-    if '#include <linux/susfs.h>' not in content and '#include <linux/susfs_def.h>' not in content:
-        m = list(re.finditer(r'^#include\s+[<"][^>"]+[>"]\s*$', content, re.MULTILINE))
-        if m:
-            pos = m[-1].end()
-            content = content[:pos] + INCLUDE_BLOCK + content[pos:]
-            changed = True
+    # 2) Injecter les includes SuSFS si absents
+    if ('#include <linux/susfs.h>' not in content
+            and '#include <linux/susfs_def.h>' not in content):
+        content = inject_after_last_include(content, INCLUDE_BLOCK)
+        changed = True
 
-    # Injecter externs si nécessaire
+    # 3) Injecter les externs si l'un des symboles est utilisé sans déclaration
     need_externs = False
     for sym in EXTERN_SYMBOLS:
         if sym in content and not has_extern_decl(content, sym):
@@ -351,14 +369,32 @@ def fix_file(path):
                 inserted = True
                 changed = True
                 break
-
         if not inserted:
-            m = list(re.finditer(r'^#include\s+[<"][^>"]+[>"]\s*$',
-                                 content, re.MULTILINE))
-            if m:
-                pos = m[-1].end()
-                content = content[:pos] + '\n' + EXTERN_BLOCK + content[pos:]
+            content = inject_after_last_include(content, EXTERN_BLOCK)
+            changed = True
+
+    # 4) Injecter CL_COPY_MNT_NS si utilisé mais non défini
+    uses_ccmns = 'CL_COPY_MNT_NS' in content
+    already_defined = bool(re.search(
+        r'#\s*define\s+CL_COPY_MNT_NS\b', content
+    ))
+    if uses_ccmns and not already_defined and MARKER_CCMNS not in content:
+        anchors = [
+            '#include <linux/susfs_def.h>',
+            '#include <linux/susfs.h>',
+            '#include "pnode.h"',
+            '#include <linux/fs.h>',
+        ]
+        inserted = False
+        for anchor in anchors:
+            if anchor in content:
+                content = content.replace(anchor, anchor + '\n' + CL_COPY_BLOCK, 1)
+                inserted = True
                 changed = True
+                break
+        if not inserted:
+            content = inject_after_last_include(content, CL_COPY_BLOCK)
+            changed = True
 
     if changed and content != original:
         with open(path, 'w', encoding='utf-8') as f:
@@ -381,14 +417,14 @@ print(f"[+] Corrections génériques SuSFS terminées ({fixed_count} fichiers co
 PYEOF
 
 # Vérifications ciblées
+echo "=== Vérification fs/namespace.c ==="
+grep -n "__SUSFS_INCLUDES_INJECTED__\|__SUSFS_EXTERNS_INJECTED__\|__SUSFS_CL_COPY_MNT_NS_INJECTED__\|susfs.h\|susfs_def.h\|CL_COPY_MNT_NS" fs/namespace.c | head -20
+
 echo "=== Vérification fs/stat.c ==="
 grep -n "__SUSFS_INCLUDES_INJECTED__\|__SUSFS_EXTERNS_INJECTED__\|susfs.h\|susfs_def.h" fs/stat.c | head -10
 
 echo "=== Vérification fs/super.c ==="
 grep -n "__SUSFS_INCLUDES_INJECTED__\|__SUSFS_EXTERNS_INJECTED__\|susfs.h\|susfs_def.h\|susfs_is_current_ksu_domain\|susfs_is_sdcard_android_data_not_decrypted" fs/super.c | head -15
-
-echo "=== Vérification fs/namespace.c ==="
-grep -n "__SUSFS_INCLUDES_INJECTED__\|__SUSFS_EXTERNS_INJECTED__\|susfs.h\|susfs_def.h" fs/namespace.c | head -10
 
 # ==================== 5d. CORRECTION TASK_MMU.C ====================
 if [ -f "fs/proc/task_mmu.c" ]; then
@@ -448,10 +484,15 @@ echo "=== Sanity check final des includes SuSFS ==="
 for f in fs/stat.c fs/super.c fs/namespace.c fs/namei.c fs/open.c fs/exec.c fs/readdir.c fs/d_path.c fs/proc/task_mmu.c fs/proc/base.c fs/proc/fd.c fs/mount.h; do
   [ -f "$f" ] || continue
   if grep -qE 'susfs_|SUSFS_|STATX_SUS_|CL_COPY_MNT_NS|DEFAULT_KSU_MNT_MINOR_DEV' "$f"; then
-    if grep -qE '#include <linux/(susfs|susfs_def)\.h>' "$f"; then
+    ok=1
+    grep -qE '#include <linux/(susfs|susfs_def)\.h>' "$f" || ok=0
+    if grep -q 'CL_COPY_MNT_NS' "$f"; then
+      grep -qE '#\s*define\s+CL_COPY_MNT_NS|__SUSFS_CL_COPY_MNT_NS_INJECTED__' "$f" || ok=0
+    fi
+    if [ "$ok" = "1" ]; then
       echo "  ✅ $f"
     else
-      echo "  ❌ $f : INCLUDE MANQUANT — le build va échouer"
+      echo "  ❌ $f : include/définition manquant — le build va échouer"
     fi
   fi
 done
