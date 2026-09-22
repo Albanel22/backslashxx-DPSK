@@ -230,9 +230,9 @@ if [ -f "fs/Makefile" ]; then
 fi
 
 # ==================== 5c. CORRECTION GENERIQUE DES FICHIERS PATCHES PAR SUSFS ====================
-# Le patch SuSFS insère du code dans plusieurs fichiers qui utilisent des symboles
-# définis dans fs/susfs.c. On injecte les externs + include de manière idempotente
-# grâce à un marqueur unique (commentaire) qu'on est seuls à écrire.
+# Le patch SuSFS oublie régulièrement d'ajouter les #include <linux/susfs.h> et
+# <linux/susfs_def.h> dans les fichiers où il insère du code. On détecte tout
+# fichier .c/.h contenant un symbole SuSFS et on injecte les includes + externs.
 
 echo "=== Correction générique des fichiers patchés par SuSFS ==="
 
@@ -240,22 +240,32 @@ python3 - << 'PYEOF'
 import re
 import os
 
-TARGET_FILES = [
-    'fs/namespace.c',
-    'fs/super.c',
-    'fs/namei.c',
-    'fs/proc/task_mmu.c',
-    'fs/proc/base.c',
-    'fs/proc/fd.c',
-    'fs/readdir.c',
-    'fs/stat.c',
-    'fs/open.c',
-    'fs/d_path.c',
-    'fs/mount.h',
-    'fs/exec.c',
+PATTERN_SUSFS = re.compile(
+    r'\b('
+    r'susfs_[a-zA-Z0-9_]+'
+    r'|SUSFS_[A-Z0-9_]+'
+    r'|STATX_SUS_[A-Z0-9_]+'
+    r'|DEFAULT_KSU_MNT_MINOR_DEV'
+    r'|CL_COPY_MNT_NS'
+    r')\b'
+)
+
+EXTERN_SYMBOLS = [
+    'susfs_is_current_ksu_domain',
+    'susfs_is_sdcard_android_data_not_decrypted',
 ]
 
 MARKER = '/* __SUSFS_EXTERNS_INJECTED__ */'
+
+INCLUDE_BLOCK = (
+    '\n/* __SUSFS_INCLUDES_INJECTED__ */\n'
+    '#ifdef CONFIG_KSU_SUSFS\n'
+    '#include <linux/susfs.h>\n'
+    '#endif\n'
+    '#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n'
+    '#include <linux/susfs_def.h>\n'
+    '#endif\n'
+)
 
 EXTERN_BLOCK = (
     '\n' + MARKER + '\n'
@@ -265,20 +275,36 @@ EXTERN_BLOCK = (
     '#endif\n'
 )
 
-def needs_extern(content, symbol):
-    if symbol not in content:
-        return False
-    # Déjà déclaré/defini ?
-    if re.search(r'(extern|static|DEFINE_STATIC_KEY|EXPORT_SYMBOL)\s*[^;\n]*' + re.escape(symbol), content):
-        return False
-    return True
+def has_extern_decl(content, symbol):
+    return bool(re.search(
+        r'(extern|static|DEFINE_STATIC_KEY|EXPORT_SYMBOL)\s*[^;\n]*' + re.escape(symbol),
+        content
+    ))
+
+def list_kernel_sources():
+    files = []
+    for root, dirs, filenames in os.walk('.'):
+        dirs[:] = [d for d in dirs if d not in (
+            'out', '.git', 'drivers/kernelsu', 'include/generated',
+            'include/config', 'scripts', 'tools', 'Documentation'
+        )]
+        for fn in filenames:
+            if fn.endswith(('.c', '.h')):
+                files.append(os.path.join(root, fn))
+    return files
 
 def fix_file(path):
-    if not os.path.isfile(path):
-        return ('absent', False)
+    try:
+        with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read()
+    except Exception:
+        return None
 
-    with open(path, 'r') as f:
-        content = f.read()
+    if not PATTERN_SUSFS.search(content):
+        return None
+
+    if path.endswith(('susfs.h', 'susfs_def.h')):
+        return None
 
     original = content
     changed = False
@@ -294,74 +320,75 @@ def fix_file(path):
         content = new_content
         changed = True
 
-    uses_ksu_domain = needs_extern(content, 'susfs_is_current_ksu_domain')
-    uses_sdcard    = needs_extern(content, 'susfs_is_sdcard_android_data_not_decrypted')
-    uses_minor     = 'DEFAULT_KSU_MNT_MINOR_DEV' in content
+    # Injecter includes si absents
+    if '#include <linux/susfs.h>' not in content and '#include <linux/susfs_def.h>' not in content:
+        m = list(re.finditer(r'^#include\s+[<"][^>"]+[>"]\s*$', content, re.MULTILINE))
+        if m:
+            pos = m[-1].end()
+            content = content[:pos] + INCLUDE_BLOCK + content[pos:]
+            changed = True
 
-    uses_susfs = uses_ksu_domain or uses_sdcard or uses_minor
+    # Injecter externs si nécessaire
+    need_externs = False
+    for sym in EXTERN_SYMBOLS:
+        if sym in content and not has_extern_decl(content, sym):
+            need_externs = True
+            break
 
-    if uses_susfs:
-        # Include susfs_def.h (nécessaire pour DEFAULT_KSU_MNT_MINOR_DEV, CL_COPY_MNT_NS…)
-        if uses_minor and '#include <linux/susfs_def.h>' not in content:
-            m = re.search(r'^#include\s+<linux/[^>]+>\s*$', content, re.MULTILINE)
-            include_block = (
-                '\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n'
-                '#include <linux/susfs_def.h>\n'
-                '#endif'
-            )
+    if need_externs and MARKER not in content:
+        anchors = [
+            '#include "pnode.h"',
+            '#include "internal.h"',
+            '#include "mount.h"',
+            '#include <linux/susfs.h>',
+            '#include <linux/susfs_def.h>',
+            '#include <linux/fs.h>',
+        ]
+        inserted = False
+        for anchor in anchors:
+            if anchor in content:
+                content = content.replace(anchor, anchor + '\n' + EXTERN_BLOCK, 1)
+                inserted = True
+                changed = True
+                break
+
+        if not inserted:
+            m = list(re.finditer(r'^#include\s+[<"][^>"]+[>"]\s*$',
+                                 content, re.MULTILINE))
             if m:
-                content = content[:m.end()] + include_block + content[m.end():]
+                pos = m[-1].end()
+                content = content[:pos] + '\n' + EXTERN_BLOCK + content[pos:]
                 changed = True
 
-        need_externs = (uses_ksu_domain or uses_sdcard) and (MARKER not in content)
-
-        if need_externs:
-            anchors = [
-                '#include "pnode.h"',
-                '#include "internal.h"',
-                '#include "mount.h"',
-                '#include <linux/fs.h>',
-                '#include <linux/susfs_def.h>',
-            ]
-            inserted = False
-            for anchor in anchors:
-                if anchor in content:
-                    content = content.replace(anchor, anchor + '\n' + EXTERN_BLOCK, 1)
-                    inserted = True
-                    changed = True
-                    break
-
-            if not inserted:
-                m = list(re.finditer(r'^#include\s+[<"][^>"]+[>"]\s*$',
-                                     content, re.MULTILINE))
-                if m:
-                    pos = m[-1].end()
-                    content = content[:pos] + '\n' + EXTERN_BLOCK + content[pos:]
-                    changed = True
-
     if changed and content != original:
-        with open(path, 'w') as f:
+        with open(path, 'w', encoding='utf-8') as f:
             f.write(content)
-        return ('fixed', True)
-    return ('ok', False)
+        return 'fixed'
+    return None
 
-for f in TARGET_FILES:
-    status, changed = fix_file(f)
-    if status == 'fixed':
+print("[*] Scan des fichiers source du kernel...")
+all_files = list_kernel_sources()
+print(f"[*] {len(all_files)} fichiers .c/.h scannés")
+
+fixed_count = 0
+for f in all_files:
+    result = fix_file(f)
+    if result == 'fixed':
         print(f"[+] Corrigé : {f}")
-    elif status == 'ok':
-        print(f"[=] OK (rien à faire) : {f}")
-    else:
-        print(f"[!] Absent : {f}")
+        fixed_count += 1
 
-print("[+] Corrections génériques SuSFS terminées")
+print(f"[+] Corrections génériques SuSFS terminées ({fixed_count} fichiers corrigés)")
 PYEOF
 
+# Vérifications ciblées
+echo "=== Vérification fs/stat.c ==="
+grep -n "__SUSFS_INCLUDES_INJECTED__\|__SUSFS_EXTERNS_INJECTED__\|susfs.h\|susfs_def.h" fs/stat.c | head -10
+
 echo "=== Vérification fs/super.c ==="
-grep -n "__SUSFS_EXTERNS_INJECTED__\|susfs_def.h\|susfs_is_current_ksu_domain\|susfs_is_sdcard_android_data_not_decrypted\|DEFAULT_KSU_MNT_MINOR_DEV" fs/super.c || true
+grep -n "__SUSFS_INCLUDES_INJECTED__\|__SUSFS_EXTERNS_INJECTED__\|susfs.h\|susfs_def.h\|susfs_is_current_ksu_domain\|susfs_is_sdcard_android_data_not_decrypted" fs/super.c | head -15
 
 echo "=== Vérification fs/namespace.c ==="
-grep -n "__SUSFS_EXTERNS_INJECTED__\|susfs_def.h\|susfs_is_current_ksu_domain\|susfs_is_sdcard_android_data_not_decrypted" fs/namespace.c || true
+grep -n "__SUSFS_INCLUDES_INJECTED__\|__SUSFS_EXTERNS_INJECTED__\|susfs.h\|susfs_def.h" fs/namespace.c | head -10
 
 # ==================== 5d. CORRECTION TASK_MMU.C ====================
 if [ -f "fs/proc/task_mmu.c" ]; then
@@ -416,20 +443,17 @@ fi
 echo "=== Symboles SuSFS exportés ==="
 grep -n "EXPORT_SYMBOL(susfs_" fs/susfs.c | head -20
 
-# ==================== 5f. VERIFICATION FINALE DES DECLARATIONS ====================
-echo "=== Vérification finale : chaque symbole utilisé est déclaré ==="
-for sym in susfs_is_current_ksu_domain susfs_is_sdcard_android_data_not_decrypted; do
-    echo "--- $sym ---"
-    for f in fs/super.c fs/namespace.c fs/namei.c; do
-        [ -f "$f" ] || continue
-        if grep -q "$sym" "$f"; then
-            if grep -qE "(extern|static|DEFINE_STATIC_KEY|EXPORT_SYMBOL).*$sym|__SUSFS_EXTERNS_INJECTED__" "$f"; then
-                echo "  ✅ $f : déclaré/utilisé correctement"
-            else
-                echo "  ❌ $f : UTILISÉ MAIS NON DÉCLARÉ"
-            fi
-        fi
-    done
+# ==================== 5f. SANITY CHECK FINAL ====================
+echo "=== Sanity check final des includes SuSFS ==="
+for f in fs/stat.c fs/super.c fs/namespace.c fs/namei.c fs/open.c fs/exec.c fs/readdir.c fs/d_path.c fs/proc/task_mmu.c fs/proc/base.c fs/proc/fd.c fs/mount.h; do
+  [ -f "$f" ] || continue
+  if grep -qE 'susfs_|SUSFS_|STATX_SUS_|CL_COPY_MNT_NS|DEFAULT_KSU_MNT_MINOR_DEV' "$f"; then
+    if grep -qE '#include <linux/(susfs|susfs_def)\.h>' "$f"; then
+      echo "  ✅ $f"
+    else
+      echo "  ❌ $f : INCLUDE MANQUANT — le build va échouer"
+    fi
+  fi
 done
 
 # ==================== 6. KCONFIG SUSFS ====================
