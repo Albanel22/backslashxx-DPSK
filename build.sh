@@ -615,6 +615,35 @@ sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 # ==================== 9. PATCH TACTILE ====================
 printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
 
+- name: Debug namespace.c + config + patch
+  run: |
+    cd kernel_sources
+    echo "════════════════════════════════════════════════════════"
+    echo "=== 1. CONFIG KSU_SUSFS dans out/.config ==="
+    echo "════════════════════════════════════════════════════════"
+    grep "CONFIG_KSU_SUSFS" out/.config || echo "❌ AUCUNE CONFIG KSU_SUSFS TROUVÉE"
+    echo ""
+    echo "════════════════════════════════════════════════════════"
+    echo "=== 2. namespace.c : includes + CL_COPY_MNT_NS ==="
+    echo "════════════════════════════════════════════════════════"
+    grep -n "susfs_def.h\|susfs.h\|CL_COPY_MNT_NS\|susfs_is_current_ksu_domain\|susfs_is_sdcard" fs/namespace.c | head -30
+    echo ""
+    echo "════════════════════════════════════════════════════════"
+    echo "=== 3. super.c : includes + externs ==="
+    echo "════════════════════════════════════════════════════════"
+    grep -n "susfs_def.h\|susfs.h\|susfs_is_current_ksu_domain\|susfs_is_sdcard" fs/super.c | head -30
+    echo ""
+    echo "════════════════════════════════════════════════════════"
+    echo "=== 4. Fichiers .rej (rejets du patch SuSFS) ==="
+    echo "════════════════════════════════════════════════════════"
+    find . -name "*.rej" 2>/dev/null | head -20
+    echo "(fin .rej)"
+    echo ""
+    echo "════════════════════════════════════════════════════════"
+    echo "=== 5. Log du patch SuSFS (30 dernières lignes) ==="
+    echo "════════════════════════════════════════════════════════"
+    tail -30 /tmp/susfs_patch.log
+	
 # ==================== 10. COMPILATION ====================
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image 2>&1 | tee build.log
 
