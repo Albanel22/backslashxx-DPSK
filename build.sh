@@ -685,6 +685,13 @@ export AARCH64_CLANGXX_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x8
 export AR_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
 export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot -I$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/aarch64-linux-android"
 
+# Config Cargo globale : git CLI au lieu de lib interne
+mkdir -p "$HOME/.cargo"
+cat > "$HOME/.cargo/config.toml" << 'CARGOEOF'
+[net]
+git-fetch-with-cli = true
+CARGOEOF
+
 rm -rf "$GITHUB_WORKSPACE/ksud-src"
 git clone --depth=1 https://github.com/backslashxx/KernelSU.git "$GITHUB_WORKSPACE/ksud-src"
 cd "$GITHUB_WORKSPACE/ksud-src"
@@ -702,13 +709,56 @@ CC_aarch64_linux_android = "$AARCH64_CLANG_PATH"
 CXX_aarch64_linux_android = "$AARCH64_CLANGXX_PATH"
 AR_aarch64_linux_android = "$AR_PATH"
 BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android = "$BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android"
+
+[net]
+git-fetch-with-cli = true
 EOF
 
-cargo build --release --target aarch64-linux-android
+# ===== PATCH Cargo.toml : Kernel-SU -> KernelSU2 =====
+echo "=== Patch Cargo.toml pour aligner sur Cargo.lock (KernelSU2) ==="
+
+python3 - << 'PYEOF'
+import re, os
+
+path = 'Cargo.toml'
+if not os.path.isfile(path):
+    print("[!] Cargo.toml introuvable")
+    exit(0)
+
+with open(path) as f:
+    c = f.read()
+
+original = c
+
+c = re.sub(r'git\s*=\s*"https://github\.com/Kernel-SU/adb_client"',
+           'git = "https://github.com/KernelSU2/adb_client"', c)
+c = re.sub(r'git\s*=\s*"https://github\.com/Kernel-SU/java-properties"',
+           'git = "https://github.com/KernelSU2/java-properties"', c)
+c = re.sub(r'git\s*=\s*"https://github\.com/Kernel-SU/ksu_props"',
+           'git = "https://github.com/KernelSU2/ksu_props"', c)
+c = re.sub(r'git\s*=\s*"https://github\.com/Kernel-SU/rustix"',
+           'git = "https://github.com/KernelSU2/rustix"', c)
+
+if c != original:
+    with open(path, 'w') as f:
+        f.write(c)
+    print("[+] Cargo.toml patche : Kernel-SU -> KernelSU2")
+else:
+    print("[=] Cargo.toml deja sur KernelSU2 (ou patterns non trouves)")
+
+print("[*] Lignes contenant 'KernelSU' ou 'Kernel-SU' :")
+for line in c.splitlines():
+    if 'KernelSU' in line or 'Kernel-SU' in line:
+        print('    ' + line.strip())
+PYEOF
+
+# ===== BUILD =====
+echo "=== cargo build ==="
+cargo build --release --target aarch64-linux-android 2>&1 | tail -100
 
 KSUD_BINARY="$GITHUB_WORKSPACE/ksud-src/target/aarch64-linux-android/release/ksud"
 if [ ! -f "$KSUD_BINARY" ]; then
-    echo "ERREUR: ksud introuvable"
+    echo "ERREUR: ksud introuvable apres build"
     exit 1
 fi
 
