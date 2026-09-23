@@ -89,21 +89,32 @@ export CROSS_COMPILE=aarch64-linux-gnu-
 export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
 mkdir -p out
-CONFIG=$(find arch/arm64/configs/ -name "*kiev*" -o -name "*sm8250*" | head -1)
+CONFIG=$(find arch/arm64/configs/ -name "*kiev*" -o -name "*lito*" | head -1)
 CONFIG_NAME=${CONFIG#arch/arm64/configs/}
 echo "Config utilisée: $CONFIG_NAME"
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 $CONFIG_NAME
 
-# Configuration KernelSU uniquement (sans SuSFS pour l'instant)
+# Désactiver set -e pour les commandes de config qui peuvent renvoyer 1
+set +e
+
 ./scripts/config --file out/.config \
     --enable KSU \
     --enable KSU_MANUAL_HOOK \
     --disable KPROBES \
     --disable HAVE_KPROBES \
     --disable KPROBE_EVENTS \
-    --enable THREAD_INFO_IN_TASK
+    --enable THREAD_INFO_IN_TASK \
+    --disable CC_WERROR
 
+# Réactiver set -e pour le reste du script
+set -e
+
+# Vérifier que les options sont bien là
+echo "=== Vérification de la config KernelSU ==="
+grep "CONFIG_KSU" out/.config
+
+# Régénérer le .config proprement avec ces nouvelles options
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
 grep "CONFIG_KSU" out/.config
