@@ -714,7 +714,7 @@ BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android = "$BINDGEN_EXTRA_CLANG_ARGS_aarc
 git-fetch-with-cli = true
 EOF
 
-# ===== PATCH Cargo.toml : Kernel-SU -> KernelSU2 =====
+# ===== PATCH Cargo.toml : Kernel-SU -> KernelSU2 (avec ou sans .git) =====
 echo "=== Patch Cargo.toml pour aligner sur Cargo.lock (KernelSU2) ==="
 
 python3 - << 'PYEOF'
@@ -730,14 +730,20 @@ with open(path) as f:
 
 original = c
 
-c = re.sub(r'git\s*=\s*"https://github\.com/Kernel-SU/adb_client"',
-           'git = "https://github.com/KernelSU2/adb_client"', c)
-c = re.sub(r'git\s*=\s*"https://github\.com/Kernel-SU/java-properties"',
-           'git = "https://github.com/KernelSU2/java-properties"', c)
-c = re.sub(r'git\s*=\s*"https://github\.com/Kernel-SU/ksu_props"',
-           'git = "https://github.com/KernelSU2/ksu_props"', c)
-c = re.sub(r'git\s*=\s*"https://github\.com/Kernel-SU/rustix"',
-           'git = "https://github.com/KernelSU2/rustix"', c)
+# Patch Kernel-SU -> KernelSU2, avec ou sans .git
+for crate in ['adb_client', 'java-properties', 'ksu_props', 'rustix']:
+    # Forme avec .git
+    c = re.sub(
+        r'https://github\.com/Kernel-SU/' + re.escape(crate) + r'\.git',
+        'https://github.com/KernelSU2/' + crate + '.git',
+        c
+    )
+    # Forme sans .git (lookahead negatif pour ne pas matcher .git)
+    c = re.sub(
+        r'https://github\.com/Kernel-SU/' + re.escape(crate) + r'(?!\.)',
+        'https://github.com/KernelSU2/' + crate,
+        c
+    )
 
 if c != original:
     with open(path, 'w') as f:
