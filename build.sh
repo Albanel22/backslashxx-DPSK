@@ -24,7 +24,7 @@ cd kernel_sources
 git log --oneline -1
 
 # ==================== 2. CLONE KERNELSU (COMMIT EXACT) ====================
-echo "=== Intégration KernelSU (0b138d6a) ==="
+echo "=== Integration KernelSU (0b138d6a) ==="
 rm -rf drivers/kernelsu KernelSU susfs4ksu /tmp/KernelSU || true
 
 KSU_COMMIT="0b138d6a9cfe4dc163aa05c21b1e6a14ff868230"
@@ -39,17 +39,17 @@ cd "$GITHUB_WORKSPACE/kernel_sources"
 ln -sf /tmp/KernelSU/kernel drivers/kernelsu
 
 if [ -d "drivers/kernelsu" ]; then
-    echo "Symlink OK"
+    echo "[+] Symlink OK"
     ls drivers/kernelsu/ | head -5
 else
-    echo "Symlink ECHOUE"
+    echo "ERREUR: Symlink echoue"
     exit 1
 fi
 
 printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> drivers/Makefile
 sed -i "/endmenu/i\source \"drivers/kernelsu/Kconfig\"" drivers/Kconfig
 
-echo "KernelSU integre avec le commit $KSU_COMMIT"
+echo "[+] KernelSU integre avec le commit $KSU_COMMIT"
 
 # ==================== 2c. FIX KSU_VERSION GLOBAL ====================
 echo "=== Fix KSU_VERSION global ==="
@@ -177,7 +177,7 @@ else
   echo "[+] Hook sys_reboot deja present"
 fi
 
-echo "Hooks KernelSU en place"
+echo "[+] Hooks KernelSU en place"
 
 # ==================== 4. TELECHARGEMENT DU VRAI SUSFS ====================
 echo "=== Telechargement du VRAI SuSFS (JackA1ltman) ==="
@@ -380,7 +380,7 @@ echo "=== Verification fs/super.c ==="
 grep -n "__SUSFS_INCLUDES_INJECTED__\|__SUSFS_EXTERNS_INJECTED__\|susfs.h\|susfs_def.h\|susfs_is_current_ksu_domain\|susfs_is_sdcard_android_data_not_decrypted" fs/super.c | head -15 || true
 
 echo "=== Verification fs/namespace.c ==="
-grep -n "__SUSFS_INCLUDES_INJECTED__\|__SUSFS_EXTERNS_INJECTED__\|susfs.h\|susfs_def.h" fs/namespace.c | head -10 || true
+grep -n "__SUSFS_INCLUDES_INJECTED__\|__SUSFS_EXTERNS_INJECTED__\|susfs.h\|susfs_def.h\|CL_COPY_MNT_NS" fs/namespace.c | head -15 || true
 
 # ==================== 5d. CORRECTION TASK_MMU.C ====================
 if [ -f "fs/proc/task_mmu.c" ]; then
@@ -444,6 +444,48 @@ for f in fs/stat.c fs/super.c fs/namespace.c fs/namei.c fs/open.c fs/exec.c fs/r
     fi
   fi
 done
+
+# ==================== 5g. RUSTINE CL_COPY_MNT_NS ====================
+echo "=== Rustine CL_COPY_MNT_NS ==="
+
+if grep -q "CL_COPY_MNT_NS" fs/namespace.c; then
+    if ! grep -q "define CL_COPY_MNT_NS" fs/namespace.c; then
+        echo "[!] CL_COPY_MNT_NS utilise mais non defini -> injection"
+        python3 - << 'PYEOF'
+import re
+
+path = 'fs/namespace.c'
+with open(path) as f:
+    c = f.read()
+
+if 'define CL_COPY_MNT_NS' not in c:
+    define_block = (
+        '\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n'
+        '#define CL_COPY_MNT_NS BIT(25) /* used by copy_mnt_ns() */\n'
+        '#endif\n'
+    )
+    m = list(re.finditer(r'^#include\s+[<"][^>"]+[>"]\s*$', c, re.MULTILINE))
+    if m:
+        pos = m[-1].end()
+        c = c[:pos] + define_block + c[pos:]
+    else:
+        c = define_block + c
+
+    with open(path, 'w') as f:
+        f.write(c)
+    print("[+] CL_COPY_MNT_NS defini dans fs/namespace.c")
+else:
+    print("[=] CL_COPY_MNT_NS deja defini")
+PYEOF
+    else
+        echo "[+] CL_COPY_MNT_NS deja defini dans namespace.c"
+    fi
+else
+    echo "[=] CL_COPY_MNT_NS non utilise dans namespace.c"
+fi
+
+echo "--- Verification CL_COPY_MNT_NS ---"
+grep -n "CL_COPY_MNT_NS" fs/namespace.c | head -10 || true
 
 # ==================== 6. KCONFIG SUSFS ====================
 if [ -f "drivers/kernelsu/Kconfig" ]; then
