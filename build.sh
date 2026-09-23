@@ -714,48 +714,62 @@ BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android = "$BINDGEN_EXTRA_CLANG_ARGS_aarc
 git-fetch-with-cli = true
 EOF
 
-# ===== PATCH Cargo.toml : Kernel-SU -> KernelSU2 (avec ou sans .git) =====
-echo "=== Patch Cargo.toml pour aligner sur Cargo.lock (KernelSU2) ==="
+# ===== PATCH TOUS LES Cargo.toml : Kernel-SU -> KernelSU2 =====
+echo "=== Patch de TOUS les Cargo.toml (ksud + ksuinit + autres) ==="
 
 python3 - << 'PYEOF'
 import re, os
 
-path = 'Cargo.toml'
-if not os.path.isfile(path):
-    print("[!] Cargo.toml introuvable")
-    exit(0)
+# Chercher TOUS les Cargo.toml sous le repo (ksud, ksuinit, etc.)
+cargo_tomls = []
+for root, dirs, files in os.walk('.'):
+    dirs[:] = [d for d in dirs if d not in ('target', '.git', 'build', 'bin')]
+    if 'Cargo.toml' in files:
+        cargo_tomls.append(os.path.join(root, 'Cargo.toml'))
 
-with open(path) as f:
-    c = f.read()
+print(f"[*] {len(cargo_tomls)} Cargo.toml trouves :")
+for p in cargo_tomls:
+    print(f"    {p}")
 
-original = c
+patched = 0
+for path in cargo_tomls:
+    with open(path) as f:
+        c = f.read()
 
-# Patch Kernel-SU -> KernelSU2, avec ou sans .git
-for crate in ['adb_client', 'java-properties', 'ksu_props', 'rustix']:
-    # Forme avec .git
-    c = re.sub(
-        r'https://github\.com/Kernel-SU/' + re.escape(crate) + r'\.git',
-        'https://github.com/KernelSU2/' + crate + '.git',
-        c
-    )
-    # Forme sans .git (lookahead negatif pour ne pas matcher .git)
-    c = re.sub(
-        r'https://github\.com/Kernel-SU/' + re.escape(crate) + r'(?!\.)',
-        'https://github.com/KernelSU2/' + crate,
-        c
-    )
+    original = c
+    for crate in ['adb_client', 'java-properties', 'ksu_props', 'rustix']:
+        # Forme avec .git
+        c = re.sub(
+            r'https://github\.com/Kernel-SU/' + re.escape(crate) + r'\.git',
+            'https://github.com/KernelSU2/' + crate + '.git',
+            c
+        )
+        # Forme sans .git
+        c = re.sub(
+            r'https://github\.com/Kernel-SU/' + re.escape(crate) + r'(?!\.)',
+            'https://github.com/KernelSU2/' + crate,
+            c
+        )
 
-if c != original:
-    with open(path, 'w') as f:
-        f.write(c)
-    print("[+] Cargo.toml patche : Kernel-SU -> KernelSU2")
-else:
-    print("[=] Cargo.toml deja sur KernelSU2 (ou patterns non trouves)")
+    if c != original:
+        with open(path, 'w') as f:
+            f.write(c)
+        print(f"[+] Patche : {path}")
+        patched += 1
 
-print("[*] Lignes contenant 'KernelSU' ou 'Kernel-SU' :")
-for line in c.splitlines():
-    if 'KernelSU' in line or 'Kernel-SU' in line:
-        print('    ' + line.strip())
+print(f"[+] Total : {patched} Cargo.toml patches")
+
+# Verification finale : plus aucune reference Kernel-SU
+print("[*] Verification : reste-t-il des references Kernel-SU ?")
+found = False
+for path in cargo_tomls:
+    with open(path) as f:
+        for i, line in enumerate(f, 1):
+            if 'Kernel-SU' in line:
+                print(f"    ATTENTION : {path}:{i} : {line.strip()}")
+                found = True
+if not found:
+    print("    Aucune reference Kernel-SU restante")
 PYEOF
 
 # ===== BUILD =====
