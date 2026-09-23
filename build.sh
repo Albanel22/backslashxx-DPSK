@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD WINNER : KernelSU v3.2.5-76+ (0b138d6a) + SuSFS + fix UAPI + sys_reboot ==="
+echo "=== BUILD WINNER : KernelSU v3.2.5-76+ (0b138d6a) + SuSFS + fix UAPI + sys_reboot (sans patch msm_drv.c) ==="
 df -h
 
 # ==================== ENVIRONNEMENT ====================
@@ -162,19 +162,19 @@ fi
 
 # Hook sys_reboot
 if ! grep -q "ksu_handle_sys_reboot" kernel/reboot.c; then
-  sed -i '/SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,/i\
+ sed -i '/SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,/i\
 #if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD)\
 extern int ksu_handle_sys_reboot(int, int, unsigned int, void __user **);\
 #endif' kernel/reboot.c
 
-  sed -i '/int ret = 0;/a\
+ sed -i '/int ret = 0;/a\
 #if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD)\
 \tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\
 #endif' kernel/reboot.c
 
-  echo "[+] Hook sys_reboot OK"
+ echo "[+] Hook sys_reboot OK"
 else
-  echo "[+] Hook sys_reboot deja present"
+ echo "[+] Hook sys_reboot deja present"
 fi
 
 echo "[+] Hooks KernelSU en place"
@@ -653,11 +653,9 @@ grep -n "get_cred_rcu" include/linux/cred.h kernel/cred.c 2>/dev/null | head -10
 
 # ==================== 8. PATCH SIGNATURES ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
+echo "✅ Patch tactile msm_drv.c omis (les pilotes modulaires gèrent le panel)"
 
-# ==================== 9. PATCH TACTILE ====================
-printf "\n/* --- Debut Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
-
-# ==================== 10. COMPILATION ====================
+# ==================== 9. COMPILATION ====================
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image 2>&1 | tee build.log
 
 if [ ! -f "out/arch/arm64/boot/Image" ]; then
@@ -668,7 +666,7 @@ fi
 
 echo "Compilation reussie"
 
-# ==================== 11. REPACK (ksud NON compile : le Manager fournit le sien) ====================
+# ==================== 10. REPACK (ksud NON compile : le Manager fournit le sien) ====================
 cd "$GITHUB_WORKSPACE"
 
 BASE="https://mirrorbits.lineageos.org/full/kiev/20260920"
