@@ -13,6 +13,11 @@ STOCK_EXTRAVERSION="-cip136-st20"
 STOCK_LOCALVERSION="-perf-gc21b90c6860e"
 EXPECTED_RELEASE="4.19.325${STOCK_EXTRAVERSION}${STOCK_LOCALVERSION}"
 
+# 0 = les modules du vendor doivent avoir le meme module_layout que le noyau (recommande).
+# 1 = neutralise TOUS les controles de CRC (module_layout compris). A n'essayer que si le
+#     build avec 0 est toujours refuse : risque de plantage si struct module differe du stock.
+MODVERSION_BYPASS=1
+
 # ==================== ENVIRONNEMENT ====================
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
 sudo apt-get clean
@@ -585,9 +590,6 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 ./scripts/config --file out/.config \
     --enable KSU \
     --enable KSU_MANUAL_HOOK \
-    --disable KPROBES \
-    --disable HAVE_KPROBES \
-    --disable KPROBE_EVENTS \
     --enable KSU_SUSFS \
     --enable KSU_SUSFS_SUS_PATH \
     --enable KSU_SUSFS_SUS_MOUNT \
@@ -618,6 +620,9 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 } >> out/.config
 
 grep "CONFIG_KSU_SUSFS" out/.config
+echo "--- Options influencant le CRC de module_layout ---"
+grep -E "^(# )?CONFIG_(KPROBES|MODVERSIONS|MODULE_SIG|MODULE_UNLOAD|LIVEPATCH|KALLSYMS|TRACEPOINTS|EVENT_TRACING|SMP|PREEMPT|JUMP_LABEL)[ =]" out/.config || true
+grep -E "^CONFIG_KSU" out/.config || true
 
 # ==================== 7a. CHAINE DE VERSION : FORCAGE ET VERIFICATION ====================
 # La chaine est imposee directement via KERNELRELEASE (variable Kbuild qui alimente
@@ -699,6 +704,35 @@ grep -n "get_cred_rcu" include/linux/cred.h kernel/cred.c 2>/dev/null | head -10
 
 # ==================== 8. PATCH SIGNATURES ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
+
+if [ "$MODVERSION_BYPASS" = "1" ]; then
+    echo "[!] MODVERSION_BYPASS=1 : tous les controles de CRC des modules sont neutralises"
+    python3 - << 'PYEOF2'
+import re
+path = 'kernel/module.c'
+with open(path) as f:
+    c = f.read()
+# On garde l'original sous un autre nom et on definit un check_version() qui accepte tout
+# (evite un 'return' avant les declarations de variables de la fonction d'origine).
+pat = re.compile(r'static int check_version\(')
+if not pat.search(c):
+    raise SystemExit("ERREUR: check_version() introuvable dans kernel/module.c")
+stub = (
+    "static int check_version(const struct load_info *info,\n"
+    "\t\t\t const char *symname,\n"
+    "\t\t\t struct module *mod,\n"
+    "\t\t\t const s32 *crc)\n"
+    "{\n"
+    "\treturn 1; /* MODVERSION_BYPASS */\n"
+    "}\n\n"
+)
+c = pat.sub(lambda m: stub + "static int __maybe_unused check_version_orig(", c, count=1)
+with open(path, 'w') as f:
+    f.write(c)
+print("[+] check_version() remplace par une version qui accepte tout")
+PYEOF2
+    grep -n "MODVERSION_BYPASS" kernel/module.c
+fi
 echo "[i] Patch tactile msm_drv.c omis (les pilotes modulaires gerent le panel)"
 
 # ==================== 9. COMPILATION ====================
@@ -711,6 +745,8 @@ if [ ! -f "out/arch/arm64/boot/Image" ]; then
 fi
 
 echo "Compilation reussie"
+echo "--- CRC de module_layout du noyau compile ---"
+grep -a "__crc_module_layout" out/System.map || echo "[!] __crc_module_layout introuvable dans System.map"
 
 # Controle final : la chaine embarquee dans l'Image doit etre celle du stock
 if strings out/arch/arm64/boot/Image | grep -q "Linux version ${EXPECTED_RELEASE} "; then
@@ -759,6 +795,8 @@ mkdir -p output
 cp repack/new-boot.img output/Backslashxx-SusFS-boot.img
 cp dtbo-stock.img output/dtbo.img 2>/dev/null || true
 cp kernel_sources/build.log output/
+cp kernel_sources/out/System.map output/ 2>/dev/null || true
+cp kernel_sources/out/.config output/kernel.config 2>/dev/null || true
 
 echo "=== BUILD TERMINE ==="
 ls -lh output/
