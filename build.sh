@@ -17,7 +17,7 @@ EXPECTED_RELEASE="4.19.325${STOCK_EXTRAVERSION}${STOCK_LOCALVERSION}"
 # du vendor sont compiles pareil : le noyau DOIT avoir les memes options, sinon ils sont refuses
 # (module_layout) ou plantent. Le clang 14 d'Ubuntu peut ne pas les supporter.
 # 0 = clang d'Ubuntu ; 1 = telecharge proton-clang (clang 13 avec LTO/CFI pour noyaux Android)
-USE_PROTON_CLANG=0
+USE_PROTON_CLANG=1
 
 # ==================== ENVIRONNEMENT ====================
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
