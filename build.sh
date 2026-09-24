@@ -1,8 +1,22 @@
 #!/bin/bash
 set -e
 
-echo "=== BUILD WINNER : KernelSU v3.2.5-76+ (0b138d6a) + SuSFS + fix UAPI + sys_reboot ==="
+echo "=== BUILD WINNER : KernelSU v3.2.5-76+ (0b138d6a) + SuSFS + fix UAPI + sys_reboot (sans patch msm_drv.c) ==="
 df -h
+
+# ==================== PARAMETRES DU BUILD STOCK CIBLE ====================
+# Build LineageOS installe sur l'appareil et chaine de version de son noyau.
+# Les modules du vendor (tactile, etc.) ne se chargent que si la chaine du
+# noyau compile correspond exactement a celle du stock.
+STOCK_DATE="20260920"
+STOCK_EXTRAVERSION="-cip136-st20"
+STOCK_LOCALVERSION="-perf-gc21b90c6860e"
+EXPECTED_RELEASE="4.19.325${STOCK_EXTRAVERSION}${STOCK_LOCALVERSION}"
+
+# 0 = les modules du vendor doivent avoir le meme module_layout que le noyau (recommande).
+# 1 = neutralise TOUS les controles de CRC (module_layout compris). A n'essayer que si le
+#     build avec 0 est toujours refuse : risque de plantage si struct module differe du stock.
+MODVERSION_BYPASS=0
 
 # ==================== ENVIRONNEMENT ====================
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -162,22 +176,27 @@ fi
 
 # Hook sys_reboot
 if ! grep -q "ksu_handle_sys_reboot" kernel/reboot.c; then
-  sed -i '/SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,/i\
+ sed -i '/SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,/i\
 #if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD)\
 extern int ksu_handle_sys_reboot(int, int, unsigned int, void __user **);\
 #endif' kernel/reboot.c
 
-  sed -i '/int ret = 0;/a\
+ sed -i '/int ret = 0;/a\
 #if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD)\
 \tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\
 #endif' kernel/reboot.c
 
-  echo "[+] Hook sys_reboot OK"
+ echo "[+] Hook sys_reboot OK"
 else
-  echo "[+] Hook sys_reboot deja present"
+ echo "[+] Hook sys_reboot deja present"
 fi
 
 echo "[+] Hooks KernelSU en place"
+
+# Un hook manquant ne fait pas echouer le build mais empeche le root : on le signale.
+if [ "$HOOKS_FAILED" -ne 0 ]; then
+    echo "::warning::Au moins un hook KernelSU n'a pas ete insere (voir les lignes ERREUR ci-dessus) : le root risque de ne pas fonctionner"
+fi
 
 # ==================== 4. TELECHARGEMENT DU VRAI SUSFS ====================
 echo "=== Telechargement du VRAI SuSFS (JackA1ltman) ==="
@@ -540,6 +559,21 @@ KCONFIG_EOF
     fi
 fi
 
+# ==================== 6b. CHAINE DE VERSION DU NOYAU = STOCK ====================
+# release = 4.19.325 + EXTRAVERSION + fichiers localversion* + CONFIG_LOCALVERSION + (auto git)
+# On neutralise toutes les sources et on impose exactement la chaine du stock.
+echo "=== Alignement de la chaine de version sur le stock ($EXPECTED_RELEASE) ==="
+
+echo "--- Avant ---"
+grep -n "^EXTRAVERSION" Makefile || true
+ls localversion* 2>/dev/null || echo "(aucun fichier localversion* a la racine)"
+
+find . -maxdepth 1 -name 'localversion*' -type f -delete
+sed -i "s/^EXTRAVERSION[[:space:]]*=.*/EXTRAVERSION = ${STOCK_EXTRAVERSION}/" Makefile
+
+echo "--- Apres ---"
+grep -n "^EXTRAVERSION" Makefile
+
 # ==================== 7. CONFIGURATION ====================
 export ARCH=arm64
 export SUBARCH=arm64
@@ -556,9 +590,6 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 ./scripts/config --file out/.config \
     --enable KSU \
     --enable KSU_MANUAL_HOOK \
-    --disable KPROBES \
-    --disable HAVE_KPROBES \
-    --disable KPROBE_EVENTS \
     --enable KSU_SUSFS \
     --enable KSU_SUSFS_SUS_PATH \
     --enable KSU_SUSFS_SUS_MOUNT \
@@ -569,7 +600,9 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
     --enable KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
     --enable KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
     --enable KSU_SUSFS_OPEN_REDIRECT \
-    --enable THREAD_INFO_IN_TASK
+    --enable THREAD_INFO_IN_TASK \
+    --set-str LOCALVERSION "${STOCK_LOCALVERSION}" \
+    --disable LOCALVERSION_AUTO
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
@@ -587,6 +620,24 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 } >> out/.config
 
 grep "CONFIG_KSU_SUSFS" out/.config
+echo "--- Options influencant le CRC de module_layout ---"
+grep -E "^(# )?CONFIG_(KPROBES|MODVERSIONS|MODULE_SIG|MODULE_UNLOAD|LIVEPATCH|KALLSYMS|TRACEPOINTS|EVENT_TRACING|SMP|PREEMPT|JUMP_LABEL)[ =]" out/.config || true
+grep -E "^CONFIG_KSU" out/.config || true
+
+# ==================== 7a. CHAINE DE VERSION : FORCAGE ET VERIFICATION ====================
+# La chaine est imposee directement via KERNELRELEASE (variable Kbuild qui alimente
+# UTS_RELEASE, le banner "Linux version" et le vermagic des modules), sans dependre
+# de LOCALVERSION ni de git. `make kernelrelease` n'est plus utilise : sur ce noyau
+# il ne refletait pas le .config.
+echo "=== Verification de la chaine de version ==="
+grep -E "^CONFIG_LOCALVERSION|LOCALVERSION_AUTO" out/.config || true
+
+make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
+    KERNELRELEASE="$EXPECTED_RELEASE" include/generated/utsrelease.h || true
+
+echo "Release attendue : $EXPECTED_RELEASE"
+grep -n "UTS_RELEASE" out/include/generated/utsrelease.h \
+    || echo "[!] utsrelease.h non genere a ce stade (verification finale apres compilation)"
 
 # ==================== 7b. FIX get_cred_rcu (kernel 4.19) ====================
 echo "=== Fix get_cred_rcu pour kernel 4.19 ==="
@@ -654,11 +705,38 @@ grep -n "get_cred_rcu" include/linux/cred.h kernel/cred.c 2>/dev/null | head -10
 # ==================== 8. PATCH SIGNATURES ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
-# ==================== 9. PATCH TACTILE ====================
-printf "\n/* --- Debut Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
+if [ "$MODVERSION_BYPASS" = "1" ]; then
+    echo "[!] MODVERSION_BYPASS=1 : tous les controles de CRC des modules sont neutralises"
+    python3 - << 'PYEOF2'
+import re
+path = 'kernel/module.c'
+with open(path) as f:
+    c = f.read()
+# On garde l'original sous un autre nom et on definit un check_version() qui accepte tout
+# (evite un 'return' avant les declarations de variables de la fonction d'origine).
+pat = re.compile(r'static int check_version\(')
+if not pat.search(c):
+    raise SystemExit("ERREUR: check_version() introuvable dans kernel/module.c")
+stub = (
+    "static int check_version(const struct load_info *info,\n"
+    "\t\t\t const char *symname,\n"
+    "\t\t\t struct module *mod,\n"
+    "\t\t\t const s32 *crc)\n"
+    "{\n"
+    "\treturn 1; /* MODVERSION_BYPASS */\n"
+    "}\n\n"
+)
+c = pat.sub(lambda m: stub + "static int __maybe_unused check_version_orig(", c, count=1)
+with open(path, 'w') as f:
+    f.write(c)
+print("[+] check_version() remplace par une version qui accepte tout")
+PYEOF2
+    grep -n "MODVERSION_BYPASS" kernel/module.c
+fi
+echo "[i] Patch tactile msm_drv.c omis (les pilotes modulaires gerent le panel)"
 
-# ==================== 10. COMPILATION ====================
-make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image 2>&1 | tee build.log
+# ==================== 9. COMPILATION ====================
+make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 KERNELRELEASE="$EXPECTED_RELEASE" -j$(nproc) Image 2>&1 | tee build.log
 
 if [ ! -f "out/arch/arm64/boot/Image" ]; then
     echo "BUILD FAILED"
@@ -667,182 +745,58 @@ if [ ! -f "out/arch/arm64/boot/Image" ]; then
 fi
 
 echo "Compilation reussie"
+echo "--- CRC de module_layout du noyau compile ---"
+grep -a "__crc_module_layout" out/System.map || echo "[!] __crc_module_layout introuvable dans System.map"
 
-# ==================== 11. COMPILATION KSUD (MEME COMMIT) ====================
-cd "$GITHUB_WORKSPACE"
-
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-source "$HOME/.cargo/env"
-rustup target add aarch64-linux-android
-
-wget -q https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
-unzip -q android-ndk-r26d-linux.zip
-
-export ANDROID_NDK_ROOT="$GITHUB_WORKSPACE/android-ndk-r26d"
-export ANDROID_NDK_HOME="$ANDROID_NDK_ROOT"
-export AARCH64_CLANG_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
-export AARCH64_CLANGXX_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang++"
-export AR_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
-export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot -I$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/aarch64-linux-android"
-
-# Config Cargo globale : git CLI au lieu de lib interne
-mkdir -p "$HOME/.cargo"
-cat > "$HOME/.cargo/config.toml" << 'CARGOEOF'
-[net]
-git-fetch-with-cli = true
-CARGOEOF
-
-rm -rf "$GITHUB_WORKSPACE/ksud-src"
-git clone --depth=1 https://github.com/backslashxx/KernelSU.git "$GITHUB_WORKSPACE/ksud-src"
-cd "$GITHUB_WORKSPACE/ksud-src"
-git fetch --depth=1 origin "$KSU_COMMIT"
-git checkout "$KSU_COMMIT"
-cd userspace/ksud
-
-mkdir -p .cargo
-cat > .cargo/config.toml <<EOF
-[target.aarch64-linux-android]
-linker = "$AARCH64_CLANG_PATH"
-
-[env]
-CC_aarch64_linux_android = "$AARCH64_CLANG_PATH"
-CXX_aarch64_linux_android = "$AARCH64_CLANGXX_PATH"
-AR_aarch64_linux_android = "$AR_PATH"
-BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android = "$BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android"
-
-[net]
-git-fetch-with-cli = true
-EOF
-
-# ===== PATCH TOUS LES Cargo.toml : Kernel-SU -> KernelSU2 =====
-echo "=== Patch de TOUS les Cargo.toml (ksud + ksuinit + autres) ==="
-
-python3 - << 'PYEOF'
-import re, os
-
-# Chercher TOUS les Cargo.toml sous le repo (ksud, ksuinit, etc.)
-cargo_tomls = []
-for root, dirs, files in os.walk('.'):
-    dirs[:] = [d for d in dirs if d not in ('target', '.git', 'build', 'bin')]
-    if 'Cargo.toml' in files:
-        cargo_tomls.append(os.path.join(root, 'Cargo.toml'))
-
-print(f"[*] {len(cargo_tomls)} Cargo.toml trouves :")
-for p in cargo_tomls:
-    print(f"    {p}")
-
-patched = 0
-for path in cargo_tomls:
-    with open(path) as f:
-        c = f.read()
-
-    original = c
-    for crate in ['adb_client', 'java-properties', 'ksu_props', 'rustix']:
-        # Forme avec .git
-        c = re.sub(
-            r'https://github\.com/Kernel-SU/' + re.escape(crate) + r'\.git',
-            'https://github.com/KernelSU2/' + crate + '.git',
-            c
-        )
-        # Forme sans .git
-        c = re.sub(
-            r'https://github\.com/Kernel-SU/' + re.escape(crate) + r'(?!\.)',
-            'https://github.com/KernelSU2/' + crate,
-            c
-        )
-
-    if c != original:
-        with open(path, 'w') as f:
-            f.write(c)
-        print(f"[+] Patche : {path}")
-        patched += 1
-
-print(f"[+] Total : {patched} Cargo.toml patches")
-
-# Verification finale : plus aucune reference Kernel-SU
-print("[*] Verification : reste-t-il des references Kernel-SU ?")
-found = False
-for path in cargo_tomls:
-    with open(path) as f:
-        for i, line in enumerate(f, 1):
-            if 'Kernel-SU' in line:
-                print(f"    ATTENTION : {path}:{i} : {line.strip()}")
-                found = True
-if not found:
-    print("    Aucune reference Kernel-SU restante")
-PYEOF
-
-# ===== BUILD =====
-echo "=== cargo build ==="
-cargo build --release --target aarch64-linux-android 2>&1 | tail -100
-
-KSUD_BINARY="$GITHUB_WORKSPACE/ksud-src/target/aarch64-linux-android/release/ksud"
-if [ ! -f "$KSUD_BINARY" ]; then
-    echo "ERREUR: ksud introuvable apres build"
+# Controle final : la chaine embarquee dans l'Image doit etre celle du stock
+if strings out/arch/arm64/boot/Image | grep -q "Linux version ${EXPECTED_RELEASE} "; then
+    echo "[+] Image contient bien : Linux version ${EXPECTED_RELEASE}"
+else
+    echo "ERREUR: la chaine de version de l'Image ne correspond pas au stock."
+    echo "Attendue : ${EXPECTED_RELEASE}"
+    strings out/arch/arm64/boot/Image | grep -m1 "Linux version" || true
+    echo "Les modules du vendor (tactile) seraient refuses. Repack interrompu."
     exit 1
 fi
 
-cp "$KSUD_BINARY" "$GITHUB_WORKSPACE/ksud"
-chmod 755 "$GITHUB_WORKSPACE/ksud"
-echo "[+] ksud compile"
-
-# ==================== 12. REPACK ====================
+# ==================== 10. REPACK (ksud NON compile : le Manager fournit le sien) ====================
 cd "$GITHUB_WORKSPACE"
 
-curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260920/boot.img" 2>/dev/null || {
-    mkbootimg \
-      --kernel kernel_sources/out/arch/arm64/boot/Image \
-      --ramdisk /dev/null \
-      --output final_boot.img \
-      --header_version 2 \
-      --pagesize 4096 \
-      --base 0x00000000 \
-      --kernel_offset 0x00008000 \
-      --ramdisk_offset 0x01000000 \
-      --tags_offset 0x00000100 \
-      --cmdline "androidboot.hardware=kiev androidboot.selinux=permissive"
-}
-curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260920/dtbo.img" 2>/dev/null || true
+BASE="https://mirrorbits.lineageos.org/full/kiev/${STOCK_DATE}"
 
-if [ -f "boot-stock.img" ]; then
-  mkdir -p repack
-  cp boot-stock.img repack/boot.img
-  wget -q https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk -O Magisk-v27.0.apk
-  unzip -q Magisk-v27.0.apk lib/x86_64/libmagiskboot.so
-  mv lib/x86_64/libmagiskboot.so repack/magiskboot
-  chmod +x repack/magiskboot
-  rm -rf Magisk-v27.0.apk lib/
-  cd repack
-  set +e
-  ./magiskboot unpack boot.img
-  set -e
-  if [ ! -f "kernel" ] || [ ! -f "ramdisk.cpio" ]; then
+curl -fL --retry 3 -o boot-stock.img "$BASE/boot.img" \
+  || { echo "ERREUR: boot.img introuvable: $BASE/boot.img"; exit 1; }
+curl -fL --retry 3 -o dtbo-stock.img "$BASE/dtbo.img" \
+  || echo "[!] dtbo.img non telecharge (non bloquant)"
+ls -l boot-stock.img
+
+mkdir -p repack mb
+cp boot-stock.img repack/boot.img
+wget -q https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk -O Magisk.apk
+unzip -q -o Magisk.apk lib/x86_64/libmagiskboot.so -d mb
+cp mb/lib/x86_64/libmagiskboot.so repack/magiskboot
+chmod +x repack/magiskboot
+
+cd repack
+set +e
+./magiskboot unpack boot.img
+set -e
+ls -l
+if [ ! -f "kernel" ]; then
     echo "ERREUR: Echec du unpack"
     exit 1
-  fi
-  cp "$GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image" kernel
-  ./magiskboot cpio ramdisk.cpio \
-    "mkdir 0755 data" \
-    "mkdir 0755 data/adb" \
-    "mkdir 0755 data/adb/ksud" \
-    "add 0755 data/adb/ksud/ksud $GITHUB_WORKSPACE/ksud"
-  cp "$GITHUB_WORKSPACE/ksud" local_su_binary
-  chmod 755 local_su_binary
-  ./magiskboot cpio ramdisk.cpio \
-    "mkdir 0755 system" \
-    "mkdir 0755 system/bin" \
-    "add 06755 system/bin/su ./local_su_binary"
-  rm -f local_su_binary
-  ./magiskboot repack boot.img new-boot.img || { echo "ERREUR: Echec du repack"; exit 1; }
-  mv new-boot.img ../final_boot.img
-  cd ..
 fi
 
+cp "$GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image" kernel
+./magiskboot repack boot.img new-boot.img || { echo "ERREUR: Echec du repack"; exit 1; }
+cd ..
+
 mkdir -p output
-cp final_boot.img output/Backslashxx-SusFS-boot.img
+cp repack/new-boot.img output/Backslashxx-SusFS-boot.img
 cp dtbo-stock.img output/dtbo.img 2>/dev/null || true
 cp kernel_sources/build.log output/
-cp "$GITHUB_WORKSPACE/ksud" output/ksud 2>/dev/null || true
+cp kernel_sources/out/System.map output/ 2>/dev/null || true
+cp kernel_sources/out/.config output/kernel.config 2>/dev/null || true
 
 echo "=== BUILD TERMINE ==="
 ls -lh output/
