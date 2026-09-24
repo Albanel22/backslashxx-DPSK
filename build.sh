@@ -619,20 +619,20 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 
 grep "CONFIG_KSU_SUSFS" out/.config
 
-# ==================== 7a. VERIFICATION DE LA CHAINE DE VERSION ====================
+# ==================== 7a. CHAINE DE VERSION : FORCAGE ET VERIFICATION ====================
+# La chaine est imposee directement via KERNELRELEASE (variable Kbuild qui alimente
+# UTS_RELEASE, le banner "Linux version" et le vermagic des modules), sans dependre
+# de LOCALVERSION ni de git. `make kernelrelease` n'est plus utilise : sur ce noyau
+# il ne refletait pas le .config.
 echo "=== Verification de la chaine de version ==="
 grep -E "^CONFIG_LOCALVERSION|LOCALVERSION_AUTO" out/.config || true
 
-ACTUAL_RELEASE=$(make -s O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 kernelrelease 2>/dev/null | tail -1)
-echo "Release attendue : $EXPECTED_RELEASE"
-echo "Release obtenue  : $ACTUAL_RELEASE"
+make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
+    KERNELRELEASE="$EXPECTED_RELEASE" include/generated/utsrelease.h || true
 
-if [ "$ACTUAL_RELEASE" != "$EXPECTED_RELEASE" ]; then
-    echo "ERREUR: la chaine de version ne correspond pas au stock."
-    echo "Les modules du vendor (tactile) seraient refuses. Build interrompu avant compilation."
-    exit 1
-fi
-echo "[+] Chaine de version identique au stock"
+echo "Release attendue : $EXPECTED_RELEASE"
+grep -n "UTS_RELEASE" out/include/generated/utsrelease.h \
+    || echo "[!] utsrelease.h non genere a ce stade (verification finale apres compilation)"
 
 # ==================== 7b. FIX get_cred_rcu (kernel 4.19) ====================
 echo "=== Fix get_cred_rcu pour kernel 4.19 ==="
@@ -702,7 +702,7 @@ sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 echo "[i] Patch tactile msm_drv.c omis (les pilotes modulaires gerent le panel)"
 
 # ==================== 9. COMPILATION ====================
-make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image 2>&1 | tee build.log
+make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 KERNELRELEASE="$EXPECTED_RELEASE" -j$(nproc) Image 2>&1 | tee build.log
 
 if [ ! -f "out/arch/arm64/boot/Image" ]; then
     echo "BUILD FAILED"
@@ -716,8 +716,11 @@ echo "Compilation reussie"
 if strings out/arch/arm64/boot/Image | grep -q "Linux version ${EXPECTED_RELEASE} "; then
     echo "[+] Image contient bien : Linux version ${EXPECTED_RELEASE}"
 else
-    echo "::warning::La chaine 'Linux version ${EXPECTED_RELEASE}' est introuvable dans l'Image"
+    echo "ERREUR: la chaine de version de l'Image ne correspond pas au stock."
+    echo "Attendue : ${EXPECTED_RELEASE}"
     strings out/arch/arm64/boot/Image | grep -m1 "Linux version" || true
+    echo "Les modules du vendor (tactile) seraient refuses. Repack interrompu."
+    exit 1
 fi
 
 # ==================== 10. REPACK (ksud NON compile : le Manager fournit le sien) ====================
