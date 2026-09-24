@@ -4,6 +4,15 @@ set -e
 echo "=== BUILD WINNER : KernelSU v3.2.5-76+ (0b138d6a) + SuSFS + fix UAPI + sys_reboot (sans patch msm_drv.c) ==="
 df -h
 
+# ==================== PARAMETRES DU BUILD STOCK CIBLE ====================
+# Build LineageOS installe sur l'appareil et chaine de version de son noyau.
+# Les modules du vendor (tactile, etc.) ne se chargent que si la chaine du
+# noyau compile correspond exactement a celle du stock.
+STOCK_DATE="20260920"
+STOCK_EXTRAVERSION="-cip136-st20"
+STOCK_LOCALVERSION="-perf-gc21b90c6860e"
+EXPECTED_RELEASE="4.19.325${STOCK_EXTRAVERSION}${STOCK_LOCALVERSION}"
+
 # ==================== ENVIRONNEMENT ====================
 sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
 sudo apt-get clean
@@ -178,6 +187,11 @@ else
 fi
 
 echo "[+] Hooks KernelSU en place"
+
+# Un hook manquant ne fait pas echouer le build mais empeche le root : on le signale.
+if [ "$HOOKS_FAILED" -ne 0 ]; then
+    echo "::warning::Au moins un hook KernelSU n'a pas ete insere (voir les lignes ERREUR ci-dessus) : le root risque de ne pas fonctionner"
+fi
 
 # ==================== 4. TELECHARGEMENT DU VRAI SUSFS ====================
 echo "=== Telechargement du VRAI SuSFS (JackA1ltman) ==="
@@ -540,6 +554,21 @@ KCONFIG_EOF
     fi
 fi
 
+# ==================== 6b. CHAINE DE VERSION DU NOYAU = STOCK ====================
+# release = 4.19.325 + EXTRAVERSION + fichiers localversion* + CONFIG_LOCALVERSION + (auto git)
+# On neutralise toutes les sources et on impose exactement la chaine du stock.
+echo "=== Alignement de la chaine de version sur le stock ($EXPECTED_RELEASE) ==="
+
+echo "--- Avant ---"
+grep -n "^EXTRAVERSION" Makefile || true
+ls localversion* 2>/dev/null || echo "(aucun fichier localversion* a la racine)"
+
+find . -maxdepth 1 -name 'localversion*' -type f -delete
+sed -i "s/^EXTRAVERSION[[:space:]]*=.*/EXTRAVERSION = ${STOCK_EXTRAVERSION}/" Makefile
+
+echo "--- Apres ---"
+grep -n "^EXTRAVERSION" Makefile
+
 # ==================== 7. CONFIGURATION ====================
 export ARCH=arm64
 export SUBARCH=arm64
@@ -569,7 +598,9 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
     --enable KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
     --enable KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
     --enable KSU_SUSFS_OPEN_REDIRECT \
-    --enable THREAD_INFO_IN_TASK
+    --enable THREAD_INFO_IN_TASK \
+    --set-str LOCALVERSION "${STOCK_LOCALVERSION}" \
+    --disable LOCALVERSION_AUTO
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
@@ -587,6 +618,21 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 } >> out/.config
 
 grep "CONFIG_KSU_SUSFS" out/.config
+
+# ==================== 7a. VERIFICATION DE LA CHAINE DE VERSION ====================
+echo "=== Verification de la chaine de version ==="
+grep -E "^CONFIG_LOCALVERSION|LOCALVERSION_AUTO" out/.config || true
+
+ACTUAL_RELEASE=$(make -s O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 kernelrelease 2>/dev/null | tail -1)
+echo "Release attendue : $EXPECTED_RELEASE"
+echo "Release obtenue  : $ACTUAL_RELEASE"
+
+if [ "$ACTUAL_RELEASE" != "$EXPECTED_RELEASE" ]; then
+    echo "ERREUR: la chaine de version ne correspond pas au stock."
+    echo "Les modules du vendor (tactile) seraient refuses. Build interrompu avant compilation."
+    exit 1
+fi
+echo "[+] Chaine de version identique au stock"
 
 # ==================== 7b. FIX get_cred_rcu (kernel 4.19) ====================
 echo "=== Fix get_cred_rcu pour kernel 4.19 ==="
@@ -653,7 +699,7 @@ grep -n "get_cred_rcu" include/linux/cred.h kernel/cred.c 2>/dev/null | head -10
 
 # ==================== 8. PATCH SIGNATURES ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
-echo "✅ Patch tactile msm_drv.c omis (les pilotes modulaires gèrent le panel)"
+echo "[i] Patch tactile msm_drv.c omis (les pilotes modulaires gerent le panel)"
 
 # ==================== 9. COMPILATION ====================
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 -j$(nproc) Image 2>&1 | tee build.log
@@ -666,10 +712,18 @@ fi
 
 echo "Compilation reussie"
 
+# Controle final : la chaine embarquee dans l'Image doit etre celle du stock
+if strings out/arch/arm64/boot/Image | grep -q "Linux version ${EXPECTED_RELEASE} "; then
+    echo "[+] Image contient bien : Linux version ${EXPECTED_RELEASE}"
+else
+    echo "::warning::La chaine 'Linux version ${EXPECTED_RELEASE}' est introuvable dans l'Image"
+    strings out/arch/arm64/boot/Image | grep -m1 "Linux version" || true
+fi
+
 # ==================== 10. REPACK (ksud NON compile : le Manager fournit le sien) ====================
 cd "$GITHUB_WORKSPACE"
 
-BASE="https://mirrorbits.lineageos.org/full/kiev/20260920"
+BASE="https://mirrorbits.lineageos.org/full/kiev/${STOCK_DATE}"
 
 curl -fL --retry 3 -o boot-stock.img "$BASE/boot.img" \
   || { echo "ERREUR: boot.img introuvable: $BASE/boot.img"; exit 1; }
