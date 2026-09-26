@@ -28,9 +28,6 @@ echo "=== Clone kernel ==="
 # Choisir la source selon le build (Albanel22 ou LineageOS officiel)
 git clone https://github.com/Albanel22/android_kernel_motorola_sm8250.git \
     -b lineage-23.2 --depth=1 kernel_sources
-# OU pour le build 2 :
-# git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git \
-#     -b lineage-23.2 --depth=1 kernel_sources
 
 cd kernel_sources
 git log --oneline -1
