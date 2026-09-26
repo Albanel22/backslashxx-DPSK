@@ -32,6 +32,68 @@ cd kernel_sources
 git log --oneline -1
 echo "✅ Kernel cloné depuis LineageOS officiel"
 
+# ==================== 1b. BACKPORT get_cred_rcu ====================
+echo "=== Backport de get_cred_rcu ==="
+
+# Vérifier si get_cred_rcu existe déjà
+if grep -q "get_cred_rcu" include/linux/cred.h; then
+    echo "✅ get_cred_rcu déjà présent"
+else
+    echo "[+] Ajout de get_cred_rcu dans include/linux/cred.h"
+    python3 - << 'PYEOF'
+import re
+
+# 1) Ajouter get_cred_rcu dans include/linux/cred.h
+with open('include/linux/cred.h', 'r') as f:
+    content = f.read()
+
+if 'get_cred_rcu' not in content:
+    # Insérer après la fonction get_cred()
+    pattern = r'(static inline const struct cred \*get_cred\(const struct cred \*cred\)\s*\{[^}]*\})'
+    match = re.search(pattern, content, re.DOTALL)
+    if match:
+        insertion = '''
+
+static inline const struct cred *get_cred_rcu(const struct cred *cred)
+{
+    struct cred *nonconst_cred = (struct cred *) cred;
+    if (!cred)
+        return NULL;
+    if (!atomic_inc_not_zero(&nonconst_cred->usage))
+        return NULL;
+    validate_creds(cred);
+    return cred;
+}'''
+        content = content[:match.end()] + insertion + content[match.end():]
+        with open('include/linux/cred.h', 'w') as f:
+            f.write(content)
+        print("[+] get_cred_rcu ajouté dans include/linux/cred.h")
+    else:
+        print("[!] Pattern get_cred() non trouvé, ajout manuel nécessaire")
+else:
+    print("[+] get_cred_rcu déjà dans include/linux/cred.h")
+
+# 2) Modifier kernel/cred.c
+with open('kernel/cred.c', 'r') as f:
+    content = f.read()
+
+if 'get_cred_rcu(cred)' not in content:
+    content = content.replace(
+        'while (!atomic_inc_not_zero(&((struct cred *)cred)->usage));',
+        'while (!get_cred_rcu(cred));'
+    )
+    with open('kernel/cred.c', 'w') as f:
+        f.write(content)
+    print("[+] kernel/cred.c modifié pour utiliser get_cred_rcu")
+else:
+    print("[+] get_cred_rcu déjà utilisé dans kernel/cred.c")
+PYEOF
+fi
+
+# Vérification
+grep -n "get_cred_rcu" include/linux/cred.h || echo "⚠️ get_cred_rcu non trouvé dans cred.h"
+grep -n "get_cred_rcu" kernel/cred.c || echo "⚠️ get_cred_rcu non utilisé dans cred.c"
+
 # ==================== 2. CLONE KERNELSU v3.3.0-52 ====================
 echo "=== Clone KernelSU v3.3.0-52 (backslashxx) ==="
 rm -rf drivers/kernelsu KernelSU /tmp/KernelSU || true
