@@ -1,14 +1,14 @@
 #!/bin/bash
 # =============================================================================
-# BUILD : LineageOS 23.2 (Android 16 QPR2) + backslashxx KernelSU v3.3.0-52
+# BUILD : LineageOS 23.2 (Android 16 QPR2) + backslashxx KernelSU
 # Appareil : Motorola One 5G Ace (kiev / lito)
-# Kernel   : Albanel22/android_kernel_motorola_sm8250 branche lineage-23.2
-# Hooks    : kernelsu-coccinelle (scope-minimized)
-# SuSFS    : DÉSACTIVÉ pour ce premier build
+# Kernel   : 4.19.325
+# Hooks    : KSU_HACK_ARM64_BRANCH_LINK (natif, pas de Coccinelle)
+# SuSFS    : DÉSACTIVÉ
 # =============================================================================
 set -e
 
-echo "=== BUILD KernelSU v3.3.0-52 + Coccinelle hooks (SANS SuSFS) ==="
+echo "=== BUILD KernelSU (ARM64_BRANCH_LINK) SANS SuSFS ==="
 df -h
 
 # ==================== 0. ENVIRONNEMENT ====================
@@ -19,36 +19,32 @@ sudo sed -i 's/azure.archive.ubuntu.com/archive.ubuntu.com/g' /etc/apt/sources.l
 sudo apt-get update
 sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf-dev \
     libssl-dev libncurses-dev gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
-    clang llvm lld device-tree-compiler zip unzip curl git python3 mkbootimg perl \
-    ocaml opam pkg-config libpcre-ocaml-dev
+    clang llvm lld device-tree-compiler zip unzip curl git python3 mkbootimg perl
 
 cd "$GITHUB_WORKSPACE"
 
-# ==================== 1. CLONE DU KERNEL (LINEAGEOS OFFICIEL) ====================
-echo "=== Clone kernel LineageOS officiel lineage-23.2 ==="
-git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git \
-    -b lineage-23.2 --depth=1 kernel_sources
+# ==================== 1. CLONE DU KERNEL ====================
+# OU pour le build 2 :
+# git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git \
+#     -b lineage-23.2 --depth=1 kernel_sources
+
 cd kernel_sources
 git log --oneline -1
-echo "✅ Kernel cloné depuis LineageOS officiel"
+echo "✅ Kernel cloné"
 
-# ==================== 1b. BACKPORT get_cred_rcu ====================
-echo "=== Backport de get_cred_rcu ==="
+# ==================== 1b. BACKPORT get_cred_rcu (4.19.325) ====================
+echo "=== Backport de get_cred_rcu (compatible atomic_long_t) ==="
 
-# Vérifier si get_cred_rcu existe déjà
 if grep -q "get_cred_rcu" include/linux/cred.h; then
     echo "✅ get_cred_rcu déjà présent"
 else
-    echo "[+] Ajout de get_cred_rcu dans include/linux/cred.h"
     python3 - << 'PYEOF'
 import re
 
-# 1) Ajouter get_cred_rcu dans include/linux/cred.h
 with open('include/linux/cred.h', 'r') as f:
     content = f.read()
 
 if 'get_cred_rcu' not in content:
-    # Insérer après la fonction get_cred()
     pattern = r'(static inline const struct cred \*get_cred\(const struct cred \*cred\)\s*\{[^}]*\})'
     match = re.search(pattern, content, re.DOTALL)
     if match:
@@ -59,7 +55,7 @@ static inline const struct cred *get_cred_rcu(const struct cred *cred)
     struct cred *nonconst_cred = (struct cred *) cred;
     if (!cred)
         return NULL;
-    if (!atomic_inc_not_zero(&nonconst_cred->usage))
+    if (!atomic_long_inc_not_zero(&nonconst_cred->usage))
         return NULL;
     validate_creds(cred);
     return cred;
@@ -68,42 +64,34 @@ static inline const struct cred *get_cred_rcu(const struct cred *cred)
         with open('include/linux/cred.h', 'w') as f:
             f.write(content)
         print("[+] get_cred_rcu ajouté dans include/linux/cred.h")
-    else:
-        print("[!] Pattern get_cred() non trouvé, ajout manuel nécessaire")
-else:
-    print("[+] get_cred_rcu déjà dans include/linux/cred.h")
 
-# 2) Modifier kernel/cred.c
 with open('kernel/cred.c', 'r') as f:
     content = f.read()
 
 if 'get_cred_rcu(cred)' not in content:
+    content = content.replace(
+        'while (!atomic_long_inc_not_zero(&((struct cred *)cred)->usage));',
+        'while (!get_cred_rcu(cred));'
+    )
     content = content.replace(
         'while (!atomic_inc_not_zero(&((struct cred *)cred)->usage));',
         'while (!get_cred_rcu(cred));'
     )
     with open('kernel/cred.c', 'w') as f:
         f.write(content)
-    print("[+] kernel/cred.c modifié pour utiliser get_cred_rcu")
-else:
-    print("[+] get_cred_rcu déjà utilisé dans kernel/cred.c")
+    print("[+] kernel/cred.c modifié")
 PYEOF
 fi
 
-# Vérification
-grep -n "get_cred_rcu" include/linux/cred.h || echo "⚠️ get_cred_rcu non trouvé dans cred.h"
-grep -n "get_cred_rcu" kernel/cred.c || echo "⚠️ get_cred_rcu non utilisé dans cred.c"
+grep -n "get_cred_rcu" include/linux/cred.h || echo "⚠️ non trouvé"
+grep -n "get_cred_rcu" kernel/cred.c || echo "⚠️ non utilisé"
 
-# ==================== 2. CLONE KERNELSU v3.3.0-52 ====================
-echo "=== Clone KernelSU v3.3.0-52 (backslashxx) ==="
-rm -rf drivers/kernelsu KernelSU /tmp/KernelSU || true
+# ==================== 2. CLONE KERNELSU ====================
+echo "=== Clone KernelSU (backslashxx master) ==="
+rm -rf drivers/kernelsu /tmp/KernelSU || true
 
 git clone --depth=1 https://github.com/backslashxx/KernelSU.git /tmp/KernelSU
 cd /tmp/KernelSU
-git fetch --depth=1 origin tag v3.3.0-52 2>/dev/null || \
-    git fetch --depth=1 origin refs/tags/v3.3.0-52:refs/tags/v3.3.0-52
-git checkout v3.3.0-52
-echo "✅ KernelSU v3.3.0-52 checkout"
 git log --oneline -1
 cd "$GITHUB_WORKSPACE/kernel_sources"
 
@@ -119,57 +107,19 @@ fi
 
 printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> drivers/Makefile
 sed -i "/endmenu/i\source \"drivers/kernelsu/Kconfig\"" drivers/Kconfig
+echo "✅ KernelSU intégré"
 
-# ==================== 3. HOOKS VIA KERNELSU-COCCINELLE ====================
-echo "=== Application des hooks scope-minimized via Coccinelle ==="
+# ==================== 3. VÉRIFICATION HOOKS NATIFS ====================
+echo "=== Vérification des hooks natifs ==="
 
-# Initialiser opam + installer coccinelle
-opam init --disable-sandboxing -y
-eval $(opam env)
-opam install -y coccinelle
-
-# Vérifier que spatch est disponible
-which spatch || { echo "❌ spatch introuvable"; exit 1; }
-spatch --version | head -1
-
-# Cloner les patchs
-rm -rf /tmp/kernelsu-coccinelle
-git clone --depth=1 https://github.com/devnoname120/kernelsu-coccinelle.git /tmp/kernelsu-coccinelle
-
-# Vérifier le contenu du dépôt
-echo "=== Contenu de kernelsu-coccinelle ==="
-ls -la /tmp/kernelsu-coccinelle/
-echo "--- scope-minimized-hooks ---"
-ls -la /tmp/kernelsu-coccinelle/scope-minimized-hooks/ 2>/dev/null || \
-    echo "⚠️ Répertoire scope-minimized-hooks non trouvé"
-find /tmp/kernelsu-coccinelle -name "*.cocci" | head -20
-
-# Appliquer les patchs
-cd /tmp/kernelsu-coccinelle
-if [ -f "apply.sh" ]; then
-    echo "=== Utilisation de apply.sh ==="
-    bash apply.sh "$GITHUB_WORKSPACE/kernel_sources" 2>&1 | tee /tmp/coccinelle.log
-elif [ -d "scope-minimized-hooks" ]; then
-    echo "=== Application manuelle des patchs scope-minimized ==="
-    cd scope-minimized-hooks
-    for patch in *.cocci; do
-        echo ">>> Application de $patch..."
-        spatch --sp-file "$patch" --dir "$GITHUB_WORKSPACE/kernel_sources" --in-place 2>&1 | tee -a /tmp/coccinelle.log
-    done
+if [ -d "/tmp/KernelSU/kernel/hook" ]; then
+    echo "✅ Dossier hook/ trouvé :"
+    ls /tmp/KernelSU/kernel/hook/
 else
-    echo "❌ Aucune méthode d'application trouvée"
-    exit 1
+    echo "⚠️ Dossier hook/ non trouvé"
 fi
 
-cd "$GITHUB_WORKSPACE/kernel_sources"
-
-# Vérifier que les hooks ont bien été insérés
-echo "=== Vérification des hooks ==="
-grep -r "ksu_handle_execveat" fs/exec.c | head -3 || echo "⚠️ Hook execveat non trouvé"
-grep -r "ksu_handle_faccessat" fs/open.c | head -3 || echo "⚠️ Hook faccessat non trouvé"
-grep -r "ksu_handle_stat" fs/stat.c | head -3 || echo "⚠️ Hook stat non trouvé"
-
-# ==================== 4. CONFIGURATION DU NOYAU ====================
+# ==================== 4. CONFIGURATION ====================
 export ARCH=arm64
 export SUBARCH=arm64
 export CROSS_COMPILE=aarch64-linux-gnu-
@@ -185,12 +135,19 @@ echo "Config utilisée: $CONFIG_NAME"
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 $CONFIG_NAME
 
-# Désactiver set -e pour ./scripts/config (peut retourner 1 sur options absentes)
+# Désactiver set -e pour ./scripts/config
 set +e
 
 ./scripts/config --file out/.config \
     --enable KSU \
-    --enable KSU_MANUAL_HOOK \
+    --enable KSU_HACK_ARM64_BRANCH_LINK \
+    --disable KSU_TAMPER_SYSCALL_TABLE \
+    --disable KSU_KPROBES_KSUD \
+    --enable KSU_LSM_SECURITY_HOOKS \
+    --enable KSU_FEATURE_SULOG \
+    --enable KSU_FEATURE_ADBROOT \
+    --enable KALLSYMS \
+    --enable KALLSYMS_ALL \
     --disable KPROBES \
     --disable HAVE_KPROBES \
     --disable KPROBE_EVENTS \
@@ -199,11 +156,9 @@ set +e
 
 set -e
 
-# Vérifier
 echo "=== Vérification config KernelSU ==="
 grep "CONFIG_KSU" out/.config || echo "⚠️ Aucune option KSU trouvée"
 
-# Régénérer .config
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
 
 echo "=== Config finale KernelSU ==="
@@ -213,7 +168,7 @@ grep "CONFIG_KSU" out/.config
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
 # ==================== 6. PATCH TACTILE ====================
-echo "=== Application du patch tactile (techpack/display) ==="
+echo "=== Application du patch tactile ==="
 if [ -f "techpack/display/msm/msm_drv.c" ]; then
     if ! grep -q "panel_register_notifier" techpack/display/msm/msm_drv.c; then
         printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
@@ -225,7 +180,7 @@ else
     echo "⚠️ techpack/display/msm/msm_drv.c introuvable"
 fi
 
-# ==================== 7. COMPILATION DU NOYAU ====================
+# ==================== 7. COMPILATION ====================
 echo "=== Compilation du noyau ==="
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
     -j$(nproc) Image 2>&1 | tee build.log
@@ -248,7 +203,6 @@ wget -q https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
 unzip -q android-ndk-r26d-linux.zip
 
 export ANDROID_NDK_ROOT="$GITHUB_WORKSPACE/android-ndk-r26d"
-export ANDROID_NDK_HOME="$ANDROID_NDK_ROOT"
 export AARCH64_CLANG_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
 export AARCH64_CLANGXX_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang++"
 export AR_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
@@ -256,11 +210,7 @@ export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_RO
 
 rm -rf "$GITHUB_WORKSPACE/ksud-src"
 git clone --depth=1 https://github.com/backslashxx/KernelSU.git "$GITHUB_WORKSPACE/ksud-src"
-cd "$GITHUB_WORKSPACE/ksud-src"
-git fetch --depth=1 origin tag v3.3.0-52 2>/dev/null || true
-git checkout v3.3.0-52
-
-cd userspace/ksud
+cd "$GITHUB_WORKSPACE/ksud-src/userspace/ksud"
 
 mkdir -p .cargo
 cat > .cargo/config.toml <<EOF
