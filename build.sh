@@ -201,45 +201,85 @@ if [ ! -f "out/arch/arm64/boot/Image" ]; then
 fi
 echo "✅ Compilation réussie"
 
-# ==================== 8. COMPILATION KSUD ====================
+# ==================== 8. COMPILATION KSUD (NDK r27) ====================
 cd "$GITHUB_WORKSPACE"
 
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 source "$HOME/.cargo/env"
 rustup target add aarch64-linux-android
 
-wget -q https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
-unzip -q android-ndk-r26d-linux.zip
+# --- Télécharger le NDK r27 (supporte -std=gnu23) ---
+echo "=== Téléchargement du NDK r27 ==="
 
-export ANDROID_NDK_ROOT="$GITHUB_WORKSPACE/android-ndk-r26d"
+NDK_ZIP=""
+for ver in r27c r27b r27; do
+    url="https://dl.google.com/android/repository/android-ndk-${ver}-linux.zip"
+    echo "[*] Test : $url"
+    if wget --spider -q "$url" 2>/dev/null; then
+        echo "[+] Disponible : $url"
+        NDK_ZIP="android-ndk-${ver}-linux.zip"
+        wget -q "$url"
+        break
+    fi
+done
+
+if [ -z "$NDK_ZIP" ]; then
+    echo "❌ Aucun NDK r27 trouvé. Fallback sur r26d + patch build.rs"
+    wget -q https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
+    NDK_ZIP="android-ndk-r26d-linux.zip"
+    NEED_BUILD_RS_PATCH=1
+else
+    NEED_BUILD_RS_PATCH=0
+fi
+
+unzip -q "$NDK_ZIP"
+NDK_DIR=$(ls -d android-ndk-* 2>/dev/null | head -1)
+echo "✅ NDK extrait : $NDK_DIR"
+
+export ANDROID_NDK_ROOT="$GITHUB_WORKSPACE/$NDK_DIR"
 export ANDROID_NDK_HOME="$ANDROID_NDK_ROOT"
+
 export AARCH64_CLANG_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
 export AARCH64_CLANGXX_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang++"
 export AR_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
 export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot -I$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/aarch64-linux-android"
 
+# Vérifier la version de clang
+"$AARCH64_CLANG_PATH" --version | head -1
+
+# --- Cloner KernelSU ---
 rm -rf "$GITHUB_WORKSPACE/ksud-src"
 git clone --depth=1 https://github.com/backslashxx/KernelSU.git "$GITHUB_WORKSPACE/ksud-src"
 cd "$GITHUB_WORKSPACE/ksud-src"
 
-# Checkout du même tag que le noyau
 if git fetch --depth=1 origin tag v3.3.0-52 2>/dev/null; then
     git checkout v3.3.0-52
+    echo "✅ Tag v3.3.0-52 checkout pour ksud"
 fi
 
-# ==================== 8b. FIX ADB_CLIENT (si nécessaire) ====================
-CARGO_TOML="userspace/ksud/Cargo.toml"
-if [ -f "$CARGO_TOML" ]; then
-    if grep -q "Kernel-SU/adb_client" "$CARGO_TOML"; then
-        echo "=== Correction dépendance adb_client ==="
-        cp "$CARGO_TOML" "${CARGO_TOML}.bak"
-        sed -i 's|^adb_client\s*=\s*{.*git.*Kernel-SU/adb_client.*}.*|adb_client = { version = "3.1.1", default-features = false }|' "$CARGO_TOML"
-        rm -f Cargo.lock
-        echo "✅ adb_client patché"
+# --- Patch build.rs si NDK r26d (fallback) ---
+if [ "$NEED_BUILD_RS_PATCH" = "1" ]; then
+    echo "=== Patch build.rs : gnu23 → gnu17 ==="
+    BUILD_RS="$GITHUB_WORKSPACE/ksud-src/userspace/ksud/build.rs"
+    if [ -f "$BUILD_RS" ]; then
+        sed -i 's/std=gnu23/std=gnu17/g' "$BUILD_RS"
+        echo "[+] build.rs patché"
+    else
+        find "$GITHUB_WORKSPACE/ksud-src/userspace/ksud" -name "build.rs" \
+            -exec sed -i 's/std=gnu23/std=gnu17/g' {} \;
     fi
 fi
 
-# ==================== 8c. COMPILATION KSUD ====================
+# --- Fix adb_client si nécessaire ---
+CARGO_TOML="userspace/ksud/Cargo.toml"
+if [ -f "$CARGO_TOML" ] && grep -q "Kernel-SU/adb_client" "$CARGO_TOML"; then
+    echo "=== Patch adb_client ==="
+    sed -i 's|^adb_client\s*=\s*{.*git.*Kernel-SU/adb_client.*}.*|adb_client = { version = "3.1.1", default-features = false }|' "$CARGO_TOML"
+    rm -f Cargo.lock
+    echo "✅ adb_client patché"
+fi
+
+# --- Compilation ksud ---
 cd userspace/ksud
 
 mkdir -p .cargo
