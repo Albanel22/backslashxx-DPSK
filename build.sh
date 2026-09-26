@@ -3,12 +3,14 @@
 # BUILD : LineageOS 23.2 (Android 16 QPR2) + backslashxx KernelSU
 # Appareil : Motorola One 5G Ace (kiev / lito)
 # Kernel   : 4.19.325
-# Hooks    : KSU_HACK_ARM64_BRANCH_LINK (natif, pas de Coccinelle)
+# Source   : Albanel22/android_kernel_motorola_sm8250 (branche lineage-23.2)
+# KernelSU : backslashxx/KernelSU v3.3.0-52
+# Hooks    : KSU_HACK_ARM64_BRANCH_LINK (natif)
 # SuSFS    : DÉSACTIVÉ
 # =============================================================================
 set -e
 
-echo "=== BUILD KernelSU (ARM64_BRANCH_LINK) SANS SuSFS ==="
+echo "=== BUILD KernelSU v3.3.0-52 (ARM64_BRANCH_LINK) SANS SuSFS ==="
 df -h
 
 # ==================== 0. ENVIRONNEMENT ====================
@@ -23,11 +25,10 @@ sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf
 
 cd "$GITHUB_WORKSPACE"
 
-# ==================== 1. CLONE DU KERNEL ====================
-# OU pour le build 2 :
-# git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git \
-#     -b lineage-23.2 --depth=1 kernel_sources
-
+# ==================== 1. CLONAGE DU NOYAU ====================
+echo "=== Clone kernel Albanel22 lineage-23.2 ==="
+git clone https://github.com/Albanel22/android_kernel_motorola_sm8250.git \
+    -b lineage-23.2 --depth=1 kernel_sources
 cd kernel_sources
 git log --oneline -1
 echo "✅ Kernel cloné"
@@ -86,17 +87,25 @@ fi
 grep -n "get_cred_rcu" include/linux/cred.h || echo "⚠️ non trouvé"
 grep -n "get_cred_rcu" kernel/cred.c || echo "⚠️ non utilisé"
 
-# ==================== 2. CLONE KERNELSU ====================
-echo "=== Clone KernelSU (backslashxx master) ==="
+# ==================== 2. CLONE KERNELSU v3.3.0-52 ====================
+echo "=== Clone KernelSU v3.3.0-52 (backslashxx) ==="
 rm -rf drivers/kernelsu /tmp/KernelSU || true
 
 git clone --depth=1 https://github.com/backslashxx/KernelSU.git /tmp/KernelSU
 cd /tmp/KernelSU
+# Tenter le checkout du tag v3.3.0-52
+if git fetch --depth=1 origin tag v3.3.0-52 2>/dev/null; then
+    git checkout v3.3.0-52
+    echo "✅ Tag v3.3.0-52 checkout"
+else
+    echo "⚠️ Tag v3.3.0-52 introuvable, utilisation de la branche par défaut"
+fi
 git log --oneline -1
 cd "$GITHUB_WORKSPACE/kernel_sources"
 
 # ==================== 2b. SYMLINK DRIVER ====================
 ln -sf /tmp/KernelSU/kernel drivers/kernelsu
+
 if [ -d "drivers/kernelsu" ]; then
     echo "✅ Symlink OK"
     ls drivers/kernelsu/ | head -5
@@ -109,7 +118,7 @@ printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> drivers/Makefile
 sed -i "/endmenu/i\source \"drivers/kernelsu/Kconfig\"" drivers/Kconfig
 echo "✅ KernelSU intégré"
 
-# ==================== 3. VÉRIFICATION HOOKS NATIFS ====================
+# ==================== 3. VÉRIFICATION DES HOOKS NATIFS ====================
 echo "=== Vérification des hooks natifs ==="
 
 if [ -d "/tmp/KernelSU/kernel/hook" ]; then
@@ -135,7 +144,7 @@ echo "Config utilisée: $CONFIG_NAME"
 
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 $CONFIG_NAME
 
-# Désactiver set -e pour ./scripts/config
+# Désactiver set -e pour ./scripts/config (peut retourner 1 sur options absentes)
 set +e
 
 ./scripts/config --file out/.config \
@@ -180,7 +189,7 @@ else
     echo "⚠️ techpack/display/msm/msm_drv.c introuvable"
 fi
 
-# ==================== 7. COMPILATION ====================
+# ==================== 7. COMPILATION DU NOYAU ====================
 echo "=== Compilation du noyau ==="
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
     -j$(nproc) Image 2>&1 | tee build.log
@@ -203,6 +212,7 @@ wget -q https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
 unzip -q android-ndk-r26d-linux.zip
 
 export ANDROID_NDK_ROOT="$GITHUB_WORKSPACE/android-ndk-r26d"
+export ANDROID_NDK_HOME="$ANDROID_NDK_ROOT"
 export AARCH64_CLANG_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
 export AARCH64_CLANGXX_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang++"
 export AR_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
@@ -210,7 +220,27 @@ export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_RO
 
 rm -rf "$GITHUB_WORKSPACE/ksud-src"
 git clone --depth=1 https://github.com/backslashxx/KernelSU.git "$GITHUB_WORKSPACE/ksud-src"
-cd "$GITHUB_WORKSPACE/ksud-src/userspace/ksud"
+cd "$GITHUB_WORKSPACE/ksud-src"
+
+# Checkout du même tag que le noyau
+if git fetch --depth=1 origin tag v3.3.0-52 2>/dev/null; then
+    git checkout v3.3.0-52
+fi
+
+# ==================== 8b. FIX ADB_CLIENT (si nécessaire) ====================
+CARGO_TOML="userspace/ksud/Cargo.toml"
+if [ -f "$CARGO_TOML" ]; then
+    if grep -q "Kernel-SU/adb_client" "$CARGO_TOML"; then
+        echo "=== Correction dépendance adb_client ==="
+        cp "$CARGO_TOML" "${CARGO_TOML}.bak"
+        sed -i 's|^adb_client\s*=\s*{.*git.*Kernel-SU/adb_client.*}.*|adb_client = { version = "3.1.1", default-features = false }|' "$CARGO_TOML"
+        rm -f Cargo.lock
+        echo "✅ adb_client patché"
+    fi
+fi
+
+# ==================== 8c. COMPILATION KSUD ====================
+cd userspace/ksud
 
 mkdir -p .cargo
 cat > .cargo/config.toml <<EOF
