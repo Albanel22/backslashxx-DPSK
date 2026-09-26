@@ -61,44 +61,48 @@ sed -i "/endmenu/i\source \"drivers/kernelsu/Kconfig\"" drivers/Kconfig
 # ==================== 3. HOOKS VIA KERNELSU-COCCINELLE ====================
 echo "=== Application des hooks scope-minimized via Coccinelle ==="
 
-# Initialiser opam + installer coccinelle
-opam init --disable-sandboxing -y
-eval $(opam env)
-opam install -y coccinelle
+# Installer Coccinelle (si ce n'est pas déjà fait)
+if ! command -v spatch &> /dev/null; then
+    echo "=== Installation de Coccinelle ==="
+    opam init --disable-sandboxing -y
+    eval $(opam env)
+    opam install -y coccinelle
+fi
 
 # Vérifier que spatch est disponible
 which spatch || { echo "❌ spatch introuvable"; exit 1; }
 spatch --version | head -1
 
-# Cloner les patchs
-rm -rf /tmp/kernelsu-coccinelle
-git clone --depth=1 https://github.com/devnoname120/kernelsu-coccinelle.git /tmp/kernelsu-coccinelle
+# Cloner les patchs (si ce n'est pas déjà fait)
+if [ ! -d "/tmp/kernelsu-coccinelle" ]; then
+    git clone --depth=1 https://github.com/devnoname120/kernelsu-coccinelle.git /tmp/kernelsu-coccinelle
+fi
 
-# Vérifier le contenu du dépôt
-echo "=== Contenu de kernelsu-coccinelle ==="
-ls -la /tmp/kernelsu-coccinelle/
-echo "--- scope-minimized-hooks ---"
-ls -la /tmp/kernelsu-coccinelle/scope-minimized-hooks/ 2>/dev/null || \
-    echo "⚠️ Répertoire scope-minimized-hooks non trouvé"
-find /tmp/kernelsu-coccinelle -name "*.cocci" | head -20
+# --- CORRECTION : Utiliser apply.sh dans le bon répertoire ---
+cd /tmp/kernelsu-coccinelle/scope-minimized-hooks
 
-# Appliquer les patchs
-cd /tmp/kernelsu-coccinelle
-if [ -f "apply.sh" ]; then
-    echo "=== Utilisation de apply.sh ==="
-    bash apply.sh "$GITHUB_WORKSPACE/kernel_sources" 2>&1 | tee /tmp/coccinelle.log
-elif [ -d "scope-minimized-hooks" ]; then
-    echo "=== Application manuelle des patchs scope-minimized ==="
-    cd scope-minimized-hooks
-    for patch in *.cocci; do
-        echo ">>> Application de $patch..."
-        spatch --sp-file "$patch" --dir "$GITHUB_WORKSPACE/kernel_sources" --in-place 2>&1 | tee -a /tmp/coccinelle.log
-    done
-else
-    echo "❌ Aucune méthode d'application trouvée"
+# Vérifier que apply.sh et le fichier .cocci existent
+if [ ! -f "apply.sh" ]; then
+    echo "❌ apply.sh introuvable dans scope-minimized-hooks"
+    exit 1
+fi
+if [ ! -f "kernelsu-scope-minimized.cocci" ]; then
+    echo "❌ kernelsu-scope-minimized.cocci introuvable"
     exit 1
 fi
 
+# Rendre le script exécutable
+chmod +x apply.sh
+
+# Afficher la liste des fichiers qui seront patchés (pour vérification)
+echo "=== Fichiers cibles d'après le .cocci ==="
+grep -Po 'file in "\K[^"]+' kernelsu-scope-minimized.cocci | sort -u
+
+# Appliquer les hooks
+echo "=== Application via apply.sh ==="
+./apply.sh "$GITHUB_WORKSPACE/kernel_sources" 2>&1 | tee /tmp/coccinelle.log
+
+# Retourner dans le répertoire du noyau
 cd "$GITHUB_WORKSPACE/kernel_sources"
 
 # Vérifier que les hooks ont bien été insérés
@@ -107,6 +111,7 @@ grep -r "ksu_handle_execveat" fs/exec.c | head -3 || echo "⚠️ Hook execveat 
 grep -r "ksu_handle_faccessat" fs/open.c | head -3 || echo "⚠️ Hook faccessat non trouvé"
 grep -r "ksu_handle_stat" fs/stat.c | head -3 || echo "⚠️ Hook stat non trouvé"
 
+echo "✅ Hooks KernelSU appliqués"
 # ==================== 4. CONFIGURATION DU NOYAU ====================
 export ARCH=arm64
 export SUBARCH=arm64
