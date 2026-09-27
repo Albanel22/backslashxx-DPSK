@@ -540,6 +540,48 @@ else
     echo "⚠️ techpack/display/msm/msm_drv.c introuvable"
 fi
 
+# ==================== 8c. CORRECTION DES SIGNATURES SuSFS (stat.c) ====================
+echo "=== Correction des signatures SuSFS dans fs/stat.c ==="
+
+# 1. Corriger la déclaration dans include/linux/susfs.h
+SUSFS_H="include/linux/susfs.h"
+if [ -f "$SUSFS_H" ]; then
+    if grep -q "susfs_sus_ino_for_generic_fillattr" "$SUSFS_H"; then
+        echo "[+] Mise à jour de la déclaration dans $SUSFS_H"
+        sed -i 's/void susfs_sus_ino_for_generic_fillattr(unsigned long ino, struct kstat \*stat);/void susfs_generic_fillattr_spoofer(struct inode *inode, struct kstat *stat);/g' "$SUSFS_H"
+    fi
+fi
+
+# 2. Corriger l'implémentation et les appels dans fs/stat.c
+STAT_C="fs/stat.c"
+if [ -f "$STAT_C" ]; then
+    echo "[+] Correction de $STAT_C"
+
+    # Remplacer le nom de la fonction partout
+    sed -i 's/susfs_sus_ino_for_generic_fillattr/susfs_generic_fillattr_spoofer/g' "$STAT_C"
+
+    # Corriger la signature de la fonction elle-même
+    # (ancienne signature : unsigned long ino  ->  nouvelle : struct inode *inode)
+    sed -i 's/void susfs_generic_fillattr_spoofer(unsigned long ino, struct kstat \*stat)/void susfs_generic_fillattr_spoofer(struct inode *inode, struct kstat *stat)/g' "$STAT_C"
+
+    # Corriger l'appel dans generic_fillattr()
+    # (ancien appel : susfs_generic_fillattr_spoofer(inode->i_ino, stat)
+    #  -> nouveau : susfs_generic_fillattr_spoofer(inode, stat))
+    sed -i 's/susfs_generic_fillattr_spoofer(inode->i_ino, stat)/susfs_generic_fillattr_spoofer(inode, stat)/g' "$STAT_C"
+
+    # Fallback si le nom a déjà été changé mais pas la signature
+    if grep -q "susfs_generic_fillattr_spoofer(unsigned long ino" "$STAT_C"; then
+        sed -i 's/susfs_generic_fillattr_spoofer(unsigned long ino/susfs_generic_fillattr_spoofer(struct inode *inode/g' "$STAT_C"
+    fi
+fi
+
+# 3. Vérification
+echo "=== Vérification des corrections dans fs/stat.c ==="
+grep -n "susfs_generic_fillattr_spoofer" fs/stat.c | head -10
+
+echo "=== Vérification dans susfs.h ==="
+grep -n "susfs_generic_fillattr_spoofer" include/linux/susfs.h | head -5
+
 # ==================== 9. COMPILATION DU NOYAU ====================
 echo "=== Compilation du noyau ==="
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
