@@ -187,103 +187,81 @@ if [ -f "fs/Makefile" ]; then
     fi
 fi
 
-# ==================== 4c. CORRECTION DES INCLUDES MANQUANTS ====================
-echo "=== Correction des includes SuSFS manquants ==="
+# ==================== 4c. INJECTION FORCÉE CL_COPY_MNT_NS + includes ====================
+echo "=== Injection forcée de CL_COPY_MNT_NS dans les fichiers concernés ==="
 
-python3 - << 'PYEOF'
-import re, os
+# Fonction pour injecter un bloc après la ligne de #include <linux/...> ou en tête
+inject_cl_copy() {
+    local file="$1"
 
-EXTERN_SYMBOLS = [
-    'susfs_is_current_ksu_domain',
-    'susfs_is_sdcard_android_data_not_decrypted',
-]
+    if [ ! -f "$file" ]; then
+        return
+    fi
 
-MARKER = '/* __SUSFS_EXTERNS_INJECTED__ */'
+    # Ne rien faire si déjà défini
+    if grep -q '#define CL_COPY_MNT_NS' "$file"; then
+        echo "[+] $file : déjà défini"
+        return
+    fi
 
-INCLUDE_BLOCK = (
-    '\n/* __SUSFS_INCLUDES_INJECTED__ */\n'
-    '#ifdef CONFIG_KSU_SUSFS\n'
-    '#include <linux/susfs.h>\n'
-    '#endif\n'
-    '#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n'
-    '#include <linux/susfs_def.h>\n'
-    '#endif\n'
-)
+    # Ne rien faire si pas utilisé
+    if ! grep -q 'CL_COPY_MNT_NS' "$file"; then
+        return
+    fi
 
-EXTERN_BLOCK = (
-    '\n' + MARKER + '\n'
-    '#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n'
-    'extern bool susfs_is_current_ksu_domain(void);\n'
-    'extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n'
-    '#endif\n'
-)
+    echo "[+] Injection dans $file"
 
-def inject_after_last_include(content, block):
-    m = list(re.finditer(r'^#include\s+[<"][^>"]+[>"]\s*$', content, re.MULTILINE))
-    if m:
-        pos = m[-1].end()
-        return content[:pos] + block + content[pos:]
-    return content
+    # Utiliser awk pour insérer après la DERNIÈRE ligne #include
+    awk '
+    BEGIN { last_include = 0 }
+    /^#include/ { last_include = NR }
+    { lines[NR] = $0 }
+    END {
+        for (i = 1; i <= NR; i++) {
+            print lines[i]
+            if (i == last_include) {
+                print ""
+                print "/* __SUSFS_CL_COPY_MNT_NS_INJECTED__ */"
+                print "#ifndef CL_COPY_MNT_NS"
+                print "#define CL_COPY_MNT_NS BIT(25)"
+                print "#endif"
+                print ""
+            }
+        }
+    }' "$file" > "${file}.tmp" && mv "${file}.tmp" "$file"
+}
 
-def fix_file(path):
-    try:
-        with open(path, 'r', encoding='utf-8', errors='ignore') as f:
-            content = f.read()
-    except Exception:
-        return None
+# Injecter dans les fichiers qui utilisent CL_COPY_MNT_NS
+for f in fs/namespace.c fs/super.c fs/namei.c fs/open.c fs/stat.c fs/exec.c; do
+    inject_cl_copy "$f"
+done
 
-    if not re.search(r'\b(susfs_[a-zA-Z0-9_]+|SUSFS_[A-Z0-9_]+)\b', content):
-        return None
-    if path.endswith(('susfs.h', 'susfs_def.h')):
-        return None
+# Vérification
+echo "=== Vérification CL_COPY_MNT_NS ==="
+grep -n "CL_COPY_MNT_NS" fs/namespace.c | head -10
 
-    original = content
-    changed = False
+# Fallback : si toujours pas défini dans namespace.c, insérer en tête de fichier
+if ! grep -q '#define CL_COPY_MNT_NS' fs/namespace.c; then
+    echo "⚠️ Injection awk échouée, fallback avec sed en tête de fichier"
 
-    new_content = re.sub(r'^\s*n(?=#ifdef|#endif|#include|#define|extern)', '', content, flags=re.MULTILINE)
-    if new_content != content:
-        content = new_content
-        changed = True
+    # Créer un fichier temporaire avec l'entête injecté
+    {
+        echo "/* __SUSFS_CL_COPY_MNT_NS_INJECTED__ */
+#ifndef CL_COPY_MNT_NS
+#define CL_COPY_MNT_NS BIT(25)
+#endif
+"
+        cat fs/namespace.c
+    } > fs/namespace.c.tmp
+    mv fs/namespace.c.tmp fs/namespace.c
 
-    if '#include <linux/susfs.h>' not in content:
-        content = inject_after_last_include(content, INCLUDE_BLOCK)
-        changed = True
+    echo "[+] CL_COPY_MNT_NS injecté en tête de fs/namespace.c"
+fi
 
-    need_externs = any(sym in content for sym in EXTERN_SYMBOLS)
-    if need_externs and MARKER not in content:
-        anchors = ['#include "pnode.h"', '#include "internal.h"', '#include "mount.h"',
-                   '#include <linux/susfs.h>', '#include <linux/susfs_def.h>', '#include <linux/fs.h>']
-        inserted = False
-        for anchor in anchors:
-            if anchor in content:
-                content = content.replace(anchor, anchor + '\n' + EXTERN_BLOCK, 1)
-                inserted = True
-                changed = True
-                break
-        if not inserted:
-            content = inject_after_last_include(content, EXTERN_BLOCK)
-            changed = True
-
-    if changed and content != original:
-        with open(path, 'w', encoding='utf-8') as f:
-            f.write(content)
-        return 'fixed'
-    return None
-
-print("[*] Scan des fichiers source...")
-fixed = 0
-for root, dirs, files in os.walk('.'):
-    dirs[:] = [d for d in dirs if d not in ('out', '.git', 'drivers/kernelsu',
-               'include/generated', 'include/config', 'scripts', 'tools', 'Documentation')]
-    for fn in files:
-        if fn.endswith(('.c', '.h')):
-            result = fix_file(os.path.join(root, fn))
-            if result == 'fixed':
-                fixed += 1
-                print(f"[+] Corrigé : {os.path.join(root, fn)}")
-
-print(f"[+] {fixed} fichiers corrigés")
-PYEOF
+# Vérification finale
+echo "=== Vérification finale ==="
+grep -n "define CL_COPY_MNT_NS" fs/namespace.c || echo "❌ Toujours pas défini"
+head -10 fs/namespace.c
 
 # ==================== 4c-bis. DÉFINITION CL_COPY_MNT_NS (4.19) ====================
 echo "=== Injection de CL_COPY_MNT_NS pour noyau 4.19 ==="
