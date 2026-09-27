@@ -5,7 +5,7 @@
 # Kernel   : 4.19.325
 # Source   : LineageOS/android_kernel_motorola_sm8250 (branche lineage-23.2)
 # KernelSU : backslashxx/KernelSU v3.3.0-52
-# Hooks    : KSU_MANUAL_HOOK (compatible SuSFS)
+# Hooks    : KSU_MANUAL_HOOK (compatible SuSFS + root fonctionnel)
 # SuSFS    : JackA1ltman/NonGKI_Kernel_Build_2nd (patch 4.19)
 # =============================================================================
 set -e
@@ -190,7 +190,6 @@ fi
 # ==================== 4c. ENRICHISSEMENT DES HEADERS SuSFS ====================
 echo "=== Enrichissement des headers SuSFS ==="
 
-# --- susfs_def.h : ajouter CL_COPY_MNT_NS et DEFAULT_KSU_MNT_MINOR_DEV ---
 SUSFS_DEF="include/linux/susfs_def.h"
 if [ -f "$SUSFS_DEF" ]; then
     if ! grep -q "define CL_COPY_MNT_NS" "$SUSFS_DEF"; then
@@ -213,7 +212,6 @@ EOF
     fi
 fi
 
-# --- susfs.h : ajouter les externs ---
 SUSFS_H="include/linux/susfs.h"
 if [ -f "$SUSFS_H" ]; then
     if ! grep -q "extern bool susfs_is_current_ksu_domain" "$SUSFS_H"; then
@@ -231,18 +229,15 @@ fi
 # ==================== 4d. INJECTION UNIQUE DES INCLUDES ====================
 echo "=== Injection unique des includes SuSFS ==="
 
-# Liste des fichiers qui utilisent SuSFS
 SUSFS_FILES="fs/namespace.c fs/super.c fs/namei.c fs/open.c fs/stat.c fs/exec.c fs/readdir.c fs/d_path.c fs/proc/task_mmu.c fs/proc/base.c fs/proc/fd.c fs/mount.h"
 
 for f in $SUSFS_FILES; do
     [ -f "$f" ] || continue
 
-    # Skip si le fichier n'utilise pas SuSFS
     if ! grep -qE 'susfs_|SUSFS_|DEFAULT_KSU_MNT_MINOR_DEV|CL_COPY_MNT_NS' "$f"; then
         continue
     fi
 
-    # Skip si l'include est DÉJÀ présent (évite les doublons)
     if grep -q '#include <linux/susfs.h>' "$f"; then
         echo "[+] $f : include déjà présent"
         continue
@@ -250,7 +245,6 @@ for f in $SUSFS_FILES; do
 
     echo "[+] Injection dans $f"
 
-    # Injection après le premier #include
     awk '
     BEGIN { done = 0 }
     /^#include/ && !done {
