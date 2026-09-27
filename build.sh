@@ -5,12 +5,12 @@
 # Kernel   : 4.19.325
 # Source   : LineageOS/android_kernel_motorola_sm8250 (branche lineage-23.2)
 # KernelSU : backslashxx/KernelSU v3.3.0-52
-# Hooks    : KSU_HACK_ARM64_BRANCH_LINK (natif)
+# Hooks    : KSU_MANUAL_HOOK (compatible SuSFS)
 # SuSFS    : JackA1ltman/NonGKI_Kernel_Build_2nd (patch 4.19)
 # =============================================================================
 set -e
 
-echo "=== BUILD KernelSU v3.3.0-52 + SuSFS 4.19 ==="
+echo "=== BUILD KernelSU v3.3.0-52 + SuSFS 4.19 (MANUAL_HOOK) ==="
 df -h
 
 # ==================== 0. ENVIRONNEMENT ====================
@@ -151,7 +151,7 @@ PATCH_EXIT=$?
 set -e
 
 if [ $PATCH_EXIT -ne 0 ]; then
-    echo "⚠️ Le patch a rencontré des rejets (normal avec backslashxx)"
+    echo "⚠️ Le patch a rencontré des rejets"
     echo "=== Rejets détectés ==="
     find . -name "*.rej" -type f | head -20
 
@@ -187,216 +187,90 @@ if [ -f "fs/Makefile" ]; then
     fi
 fi
 
-# ==================== 4c. CORRECTION FORCÉE DES INCLUDES SuSFS ====================
-echo "=== Correction forcée des includes SuSFS ==="
+# ==================== 4c. ENRICHISSEMENT DES HEADERS SuSFS ====================
+echo "=== Enrichissement des headers SuSFS ==="
 
-# Liste des fichiers qui utilisent SuSFS et doivent avoir les includes
-SUSFS_FILES="fs/namespace.c fs/super.c fs/namei.c fs/open.c fs/stat.c fs/exec.c fs/readdir.c fs/d_path.c fs/proc/task_mmu.c fs/proc/base.c fs/proc/fd.c fs/mount.h fs/susfs.c"
+# --- susfs_def.h : ajouter CL_COPY_MNT_NS et DEFAULT_KSU_MNT_MINOR_DEV ---
+SUSFS_DEF="include/linux/susfs_def.h"
+if [ -f "$SUSFS_DEF" ]; then
+    if ! grep -q "define CL_COPY_MNT_NS" "$SUSFS_DEF"; then
+        echo "[+] Ajout CL_COPY_MNT_NS dans susfs_def.h"
+        cat >> "$SUSFS_DEF" << 'EOF'
 
-# S'assurer que les fichiers susfs.h et susfs_def.h existent et contiennent les bonnes définitions
-echo "=== Vérification des headers SuSFS ==="
+#ifndef CL_COPY_MNT_NS
+#define CL_COPY_MNT_NS BIT(25)
+#endif
+EOF
+    fi
+    if ! grep -q "define DEFAULT_KSU_MNT_MINOR_DEV" "$SUSFS_DEF"; then
+        echo "[+] Ajout DEFAULT_KSU_MNT_MINOR_DEV dans susfs_def.h"
+        cat >> "$SUSFS_DEF" << 'EOF'
 
-if [ ! -f "include/linux/susfs.h" ]; then
-    echo "❌ include/linux/susfs.h introuvable"
-    exit 1
+#ifndef DEFAULT_KSU_MNT_MINOR_DEV
+#define DEFAULT_KSU_MNT_MINOR_DEV 234
+#endif
+EOF
+    fi
 fi
 
-if [ ! -f "include/linux/susfs_def.h" ]; then
-    echo "❌ include/linux/susfs_def.h introuvable"
-    exit 1
-fi
-
-# Forcer la présence des externs dans susfs.h
-if ! grep -q "extern bool susfs_is_current_ksu_domain" include/linux/susfs.h; then
-    echo "[+] Ajout de susfs_is_current_ksu_domain dans susfs.h"
-    cat >> include/linux/susfs.h << 'EOF'
+# --- susfs.h : ajouter les externs ---
+SUSFS_H="include/linux/susfs.h"
+if [ -f "$SUSFS_H" ]; then
+    if ! grep -q "extern bool susfs_is_current_ksu_domain" "$SUSFS_H"; then
+        echo "[+] Ajout des externs dans susfs.h"
+        cat >> "$SUSFS_H" << 'EOF'
 
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 extern bool susfs_is_current_ksu_domain(void);
 extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
 #endif
 EOF
+    fi
 fi
 
-# Forcer DEFAULT_KSU_MNT_MINOR_DEV dans susfs_def.h
-if ! grep -q "DEFAULT_KSU_MNT_MINOR_DEV" include/linux/susfs_def.h; then
-    echo "[+] Ajout de DEFAULT_KSU_MNT_MINOR_DEV dans susfs_def.h"
-    cat >> include/linux/susfs_def.h << 'EOF'
+# ==================== 4d. INJECTION UNIQUE DES INCLUDES ====================
+echo "=== Injection unique des includes SuSFS ==="
 
-#ifndef DEFAULT_KSU_MNT_MINOR_DEV
-#define DEFAULT_KSU_MNT_MINOR_DEV 234
-#endif
+# Liste des fichiers qui utilisent SuSFS
+SUSFS_FILES="fs/namespace.c fs/super.c fs/namei.c fs/open.c fs/stat.c fs/exec.c fs/readdir.c fs/d_path.c fs/proc/task_mmu.c fs/proc/base.c fs/proc/fd.c fs/mount.h"
 
-#ifndef CL_COPY_MNT_NS
-#define CL_COPY_MNT_NS BIT(25)
-#endif
-EOF
-fi
-
-# Injecter les #include au DÉBUT de chaque fichier concerné
 for f in $SUSFS_FILES; do
     [ -f "$f" ] || continue
 
-    # Ne rien faire si le fichier n'utilise pas SuSFS
+    # Skip si le fichier n'utilise pas SuSFS
     if ! grep -qE 'susfs_|SUSFS_|DEFAULT_KSU_MNT_MINOR_DEV|CL_COPY_MNT_NS' "$f"; then
         continue
     fi
 
-    # Vérifier si les includes sont déjà présents
-    HAS_SUSFS_H=0
-    HAS_SUSFS_DEF=0
-    grep -q '#include <linux/susfs.h>' "$f" && HAS_SUSFS_H=1
-    grep -q '#include <linux/susfs_def.h>' "$f" && HAS_SUSFS_DEF=1
-
-    # Si les deux sont présents, on passe
-    if [ "$HAS_SUSFS_H" = "1" ] && [ "$HAS_SUSFS_DEF" = "1" ]; then
-        echo "[+] $f : includes déjà présents"
+    # Skip si l'include est DÉJÀ présent (évite les doublons)
+    if grep -q '#include <linux/susfs.h>' "$f"; then
+        echo "[+] $f : include déjà présent"
         continue
     fi
 
-    echo "[+] $f : injection des includes"
+    echo "[+] Injection dans $f"
 
-    # Sauvegarder le fichier
-    cp "$f" "${f}.bak"
-
-    # Construire le bloc à insérer
-    BLOCK="/* __SUSFS_INCLUDES_INJECTED__ */"
-    if [ "$HAS_SUSFS_DEF" = "0" ]; then
-        BLOCK="$BLOCK
-#include <linux/susfs_def.h>"
-    fi
-    if [ "$HAS_SUSFS_H" = "0" ]; then
-        BLOCK="$BLOCK
-#include <linux/susfs.h>"
-    fi
-
-    # Utiliser sed pour insérer après la première ligne #include
-    # (ou après la première ligne si aucune #include n'existe)
-    if grep -q '^#include' "$f"; then
-        # Insérer après la PREMIÈRE ligne #include (plus sûr que la dernière)
-        awk -v block="$BLOCK" '
-            BEGIN { done = 0 }
-            /^#include/ && !done {
-                print $0
-                print block
-                done = 1
-                next
-            }
-            { print }
-        ' "$f" > "${f}.tmp" && mv "${f}.tmp" "$f"
-    else
-        # Pas de #include : insérer au début
-        {
-            echo "$BLOCK"
-            cat "$f"
-        } > "${f}.tmp" && mv "${f}.tmp" "$f"
-    fi
-
-    # Nettoyer le backup si tout va bien
-    rm -f "${f}.bak"
+    # Injection après le premier #include
+    awk '
+    BEGIN { done = 0 }
+    /^#include/ && !done {
+        print $0
+        print "/* __SUSFS_INCLUDE__ */"
+        print "#include <linux/susfs_def.h>"
+        print "#include <linux/susfs.h>"
+        done = 1
+        next
+    }
+    { print }
+    ' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
 done
 
-# Supprimer les injections en double
-for f in $SUSFS_FILES; do
-    [ -f "$f" ] || continue
-    # Compter les occurrences
-    COUNT=$(grep -c 'include <linux/susfs.h>' "$f" 2>/dev/null || echo 0)
-    if [ "$COUNT" -gt 1 ]; then
-        echo "[!] $f : $COUNT occurrences de susfs.h, nettoyage..."
-        # Garder seulement la première
-        awk '
-            /#include <linux\/susfs.h>/ {
-                if (seen++) next
-            }
-            { print }
-        ' "$f" > "${f}.tmp" && mv "${f}.tmp" "$f"
-    fi
-done
-
-# Vérification finale
-echo "=== Vérification des includes ==="
-for f in fs/namespace.c fs/super.c fs/namei.c fs/open.c; do
-    [ -f "$f" ] || continue
-    if grep -qE 'susfs_|DEFAULT_KSU_MNT_MINOR_DEV|CL_COPY_MNT_NS' "$f"; then
-        echo "--- $f ---"
-        grep -nE '#include <linux/susfs' "$f" || echo "  ❌ Aucun include SuSFS"
-    fi
-done
-
-# ==================== 4c-bis. DÉFINITION CL_COPY_MNT_NS (4.19) ====================
-echo "=== Injection de CL_COPY_MNT_NS pour noyau 4.19 ==="
-
-# Vérifier si la définition existe quelque part
-if grep -rq "define CL_COPY_MNT_NS" include/ fs/ 2>/dev/null; then
-    echo "✅ CL_COPY_MNT_NS déjà défini"
-else
-    echo "[+] Injection dans fs/namespace.c"
-    python3 - << 'PYEOF'
-import re
-
-path = 'fs/namespace.c'
-with open(path, 'r') as f:
-    content = f.read()
-
-if 'CL_COPY_MNT_NS' in content and '#define CL_COPY_MNT_NS' not in content:
-    # Trouver le dernier #include et injecter juste après
-    m = list(re.finditer(r'^#include\s+[<"][^>"]+[>"]\s*$', content, re.MULTILINE))
-    if m:
-        pos = m[-1].end()
-        block = '''
-
-/* __SUSFS_CL_COPY_MNT_NS_INJECTED__ */
-#ifndef CL_COPY_MNT_NS
-#define CL_COPY_MNT_NS BIT(25)
-#endif
-'''
-        content = content[:pos] + block + content[pos:]
-        with open(path, 'w') as f:
-            f.write(content)
-        print("[+] CL_COPY_MNT_NS défini dans fs/namespace.c")
-    else:
-        print("[!] Aucun #include trouvé — injection en tête de fichier")
-        content = '#ifndef CL_COPY_MNT_NS\n#define CL_COPY_MNT_NS BIT(25)\n#endif\n\n' + content
-        with open(path, 'w') as f:
-            f.write(content)
-else:
-    print("[+] CL_COPY_MNT_NS déjà présent ou non utilisé")
-
-# Faire la même chose pour fs/super.c (souvent utilisé aussi)
-for f in ['fs/super.c', 'fs/namei.c', 'fs/open.c']:
-    try:
-        with open(f, 'r') as fh:
-            c = fh.read()
-        if 'CL_COPY_MNT_NS' in c and '#define CL_COPY_MNT_NS' not in c:
-            m = list(re.finditer(r'^#include\s+[<"][^>"]+[>"]\s*$', c, re.MULTILINE))
-            if m:
-                pos = m[-1].end()
-                block = '''
-
-/* __SUSFS_CL_COPY_MNT_NS_INJECTED__ */
-#ifndef CL_COPY_MNT_NS
-#define CL_COPY_MNT_NS BIT(25)
-#endif
-'''
-                c = c[:pos] + block + c[pos:]
-                with open(f, 'w') as fh:
-                    fh.write(c)
-                print(f"[+] CL_COPY_MNT_NS défini dans {f}")
-    except FileNotFoundError:
-        pass
-PYEOF
-fi
-
-# Vérification
-echo "=== Vérification CL_COPY_MNT_NS ==="
-grep -n "CL_COPY_MNT_NS" fs/namespace.c | head -5
-
-
-# ==================== 4d. AJOUT DES SYMBOLES MANQUANTS ====================
+# ==================== 4e. AJOUT DES SYMBOLES MANQUANTS ====================
 echo "=== Ajout des symboles manquants dans fs/susfs.c ==="
 
-if ! grep -q "^bool susfs_is_current_ksu_domain" fs/susfs.c; then
-    cat >> fs/susfs.c << 'SUSFS_EOF'
+if [ -f "fs/susfs.c" ]; then
+    if ! grep -q "^bool susfs_is_current_ksu_domain" fs/susfs.c; then
+        cat >> fs/susfs.c << 'SUSFS_EOF'
 
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 bool susfs_is_current_ksu_domain(void)
@@ -407,22 +281,22 @@ bool susfs_is_current_ksu_domain(void)
 EXPORT_SYMBOL(susfs_is_current_ksu_domain);
 #endif
 SUSFS_EOF
-    echo "[+] susfs_is_current_ksu_domain ajouté"
-fi
+        echo "[+] susfs_is_current_ksu_domain ajouté"
+    fi
 
-if ! grep -q "DEFINE_STATIC_KEY_TRUE(susfs_is_sdcard_android_data_not_decrypted)" fs/susfs.c; then
-    cat >> fs/susfs.c << 'SUSFS_EOF'
+    if ! grep -q "DEFINE_STATIC_KEY_TRUE(susfs_is_sdcard_android_data_not_decrypted)" fs/susfs.c; then
+        cat >> fs/susfs.c << 'SUSFS_EOF'
 
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 DEFINE_STATIC_KEY_TRUE(susfs_is_sdcard_android_data_not_decrypted);
 EXPORT_SYMBOL(susfs_is_sdcard_android_data_not_decrypted);
 #endif
 SUSFS_EOF
-    echo "[+] susfs_is_sdcard_android_data_not_decrypted ajouté"
-fi
+        echo "[+] susfs_is_sdcard_android_data_not_decrypted ajouté"
+    fi
 
-if ! grep -q "susfs_ksu_sid" fs/susfs.c; then
-    cat >> fs/susfs.c << 'SUSFS_EOF'
+    if ! grep -q "susfs_ksu_sid" fs/susfs.c; then
+        cat >> fs/susfs.c << 'SUSFS_EOF'
 
 #ifdef CONFIG_KSU_SUSFS
 u32 susfs_ksu_sid = 0;
@@ -431,10 +305,11 @@ u32 susfs_priv_app_sid = 0;
 EXPORT_SYMBOL(susfs_priv_app_sid);
 #endif
 SUSFS_EOF
-    echo "[+] susfs_ksu_sid / susfs_priv_app_sid ajoutés"
+        echo "[+] susfs_ksu_sid / susfs_priv_app_sid ajoutés"
+    fi
 fi
 
-# ==================== 4e. CORRECTION TASK_MMU.C ====================
+# ==================== 4f. CORRECTION TASK_MMU.C ====================
 if [ -f "fs/proc/task_mmu.c" ]; then
     sed -i 's/struct vm_area_struct \*vma;/struct vm_area_struct *vma __maybe_unused;/g' fs/proc/task_mmu.c
     echo "[+] task_mmu.c corrigé"
@@ -492,6 +367,10 @@ config KSU_SUSFS_SUS_MAP
 	bool "sus_map"
 	default y
 
+config KSU_SUSFS_SUS_SU
+	bool "sus_su"
+	default n
+
 endif
 KCONFIG_EOF
     fi
@@ -517,7 +396,8 @@ set +e
 
 ./scripts/config --file out/.config \
     --enable KSU \
-    --enable KSU_HACK_ARM64_BRANCH_LINK \
+    --enable KSU_MANUAL_HOOK \
+    --disable KSU_HACK_ARM64_BRANCH_LINK \
     --disable KSU_TAMPER_SYSCALL_TABLE \
     --disable KSU_KPROBES_KSUD \
     --enable KSU_LSM_SECURITY_HOOKS \
@@ -534,13 +414,14 @@ set +e
     --enable KSU_SUSFS_SUS_PATH \
     --enable KSU_SUSFS_SUS_MOUNT \
     --enable KSU_SUSFS_SUS_KSTAT \
-    --enable KSU_SUSFS_TRY_UMOUNT \
     --enable KSU_SUSFS_SPOOF_UNAME \
     --enable KSU_SUSFS_ENABLE_LOG \
     --enable KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
-    --enable KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
-    --enable KSU_SUSFS_OPEN_REDIRECT \
-    --enable KSU_SUSFS_SUS_MAP
+    --disable KSU_SUSFS_TRY_UMOUNT \
+    --disable KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+    --disable KSU_SUSFS_OPEN_REDIRECT \
+    --disable KSU_SUSFS_SUS_MAP \
+    --disable KSU_SUSFS_SUS_SU
 
 set -e
 
@@ -567,144 +448,6 @@ if [ -f "techpack/display/msm/msm_drv.c" ]; then
 else
     echo "⚠️ techpack/display/msm/msm_drv.c introuvable"
 fi
-
-# ==================== 8b. INJECTION FORCÉE DES INCLUDES SuSFS ====================
-echo "=== Injection forcée des includes SuSFS (avant compilation) ==="
-
-# --- 1. S'assurer que susfs_def.h contient CL_COPY_MNT_NS ---
-SUSFS_DEF="include/linux/susfs_def.h"
-if [ -f "$SUSFS_DEF" ]; then
-    if ! grep -q "define CL_COPY_MNT_NS" "$SUSFS_DEF"; then
-        echo "[+] Ajout de CL_COPY_MNT_NS dans $SUSFS_DEF"
-        echo "" >> "$SUSFS_DEF"
-        echo "#ifndef CL_COPY_MNT_NS" >> "$SUSFS_DEF"
-        echo "#define CL_COPY_MNT_NS BIT(25)" >> "$SUSFS_DEF"
-        echo "#endif" >> "$SUSFS_DEF"
-    fi
-    if ! grep -q "define DEFAULT_KSU_MNT_MINOR_DEV" "$SUSFS_DEF"; then
-        echo "[+] Ajout de DEFAULT_KSU_MNT_MINOR_DEV dans $SUSFS_DEF"
-        echo "" >> "$SUSFS_DEF"
-        echo "#ifndef DEFAULT_KSU_MNT_MINOR_DEV" >> "$SUSFS_DEF"
-        echo "#define DEFAULT_KSU_MNT_MINOR_DEV 234" >> "$SUSFS_DEF"
-        echo "#endif" >> "$SUSFS_DEF"
-    fi
-    echo "✅ susfs_def.h enrichi"
-else
-    echo "⚠️ $SUSFS_DEF introuvable, création..."
-    mkdir -p include/linux
-    cat > "$SUSFS_DEF" << 'EOF'
-#ifndef _LINUX_SUSFS_DEF_H
-#define _LINUX_SUSFS_DEF_H
-#ifndef CL_COPY_MNT_NS
-#define CL_COPY_MNT_NS BIT(25)
-#endif
-#ifndef DEFAULT_KSU_MNT_MINOR_DEV
-#define DEFAULT_KSU_MNT_MINOR_DEV 234
-#endif
-#endif
-EOF
-fi
-
-# --- 2. S'assurer que susfs.h contient les externs ---
-SUSFS_H="include/linux/susfs.h"
-if [ -f "$SUSFS_H" ]; then
-    if ! grep -q "extern bool susfs_is_current_ksu_domain" "$SUSFS_H"; then
-        echo "[+] Ajout des externs dans $SUSFS_H"
-        cat >> "$SUSFS_H" << 'EOF'
-
-#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-extern bool susfs_is_current_ksu_domain(void);
-extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
-#endif
-EOF
-    fi
-fi
-
-# --- 3. FORCER l'inclusion dans fs/namespace.c ---
-echo "=== Injection dans fs/namespace.c ==="
-
-# Supprimer toute injection précédente (pour éviter les doublons)
-sed -i '/__SUSFS_FORCED_INCLUDE__/d' fs/namespace.c 2>/dev/null || true
-
-# Injecter APRÈS le premier #include du fichier
-awk '
-BEGIN { done = 0 }
-/^#include/ && !done {
-    print $0
-    print "/* __SUSFS_FORCED_INCLUDE__ */"
-    print "#include <linux/susfs_def.h>"
-    print "#include <linux/susfs.h>"
-    done = 1
-    next
-}
-{ print }
-' fs/namespace.c > fs/namespace.c.tmp && mv fs/namespace.c.tmp fs/namespace.c
-
-# Vérification
-if grep -q "__SUSFS_FORCED_INCLUDE__" fs/namespace.c; then
-    echo "✅ Injection OK dans fs/namespace.c"
-else
-    echo "❌ Injection awk échouée, fallback sed en tête"
-    sed -i '1i\
-/* __SUSFS_FORCED_INCLUDE__ */\
-#include <linux/susfs_def.h>\
-#include <linux/susfs.h>\
-' fs/namespace.c
-fi
-
-# --- 4. Même chose pour les autres fichiers concernés ---
-for f in fs/super.c fs/namei.c fs/open.c fs/stat.c fs/exec.c fs/readdir.c fs/d_path.c fs/proc/task_mmu.c fs/proc/base.c fs/proc/fd.c fs/mount.h; do
-    [ -f "$f" ] || continue
-
-    # Skip si le fichier n'utilise pas SuSFS
-    if ! grep -qE 'susfs_|SUSFS_|DEFAULT_KSU_MNT_MINOR_DEV|CL_COPY_MNT_NS' "$f"; then
-        continue
-    fi
-
-    # Skip si l'include est déjà présent
-    if grep -q '#include <linux/susfs.h>' "$f"; then
-        continue
-    fi
-
-    echo "[+] Injection dans $f"
-
-    # Supprimer toute injection précédente
-    sed -i '/__SUSFS_FORCED_INCLUDE__/d' "$f" 2>/dev/null || true
-    sed -i '/#include <linux\/susfs_def.h>/d' "$f" 2>/dev/null || true
-    sed -i '/#include <linux\/susfs.h>/d' "$f" 2>/dev/null || true
-
-    # Injecter après le premier #include
-    awk '
-    BEGIN { done = 0 }
-    /^#include/ && !done {
-        print $0
-        print "/* __SUSFS_FORCED_INCLUDE__ */"
-        print "#include <linux/susfs_def.h>"
-        print "#include <linux/susfs.h>"
-        done = 1
-        next
-    }
-    { print }
-    ' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
-done
-
-# --- 5. VÉRIFICATION FINALE ---
-echo ""
-echo "=== VÉRIFICATION FINALE DES INCLUDES ==="
-for f in fs/namespace.c fs/super.c fs/namei.c fs/open.c; do
-    [ -f "$f" ] || continue
-    if grep -qE 'susfs_|DEFAULT_KSU_MNT_MINOR_DEV|CL_COPY_MNT_NS' "$f"; then
-        echo "--- $f ---"
-        grep -n "susfs" "$f" | grep "#include" | head -3
-        grep -c "CL_COPY_MNT_NS" "$f" | xargs echo "  Utilisations CL_COPY_MNT_NS :"
-    fi
-done
-
-echo ""
-echo "=== Contenu susfs_def.h ==="
-tail -20 include/linux/susfs_def.h
-
-echo "=== Fin de l'injection ==="
 
 # ==================== 9. COMPILATION DU NOYAU ====================
 echo "=== Compilation du noyau ==="
@@ -749,7 +492,7 @@ else
 fi
 
 unzip -q "$NDK_ZIP"
-NDK_DIR=$(ls -d android-ndk-* 2>/dev/null | head -1)
+NDK_DIR=$(ls -d android-ndk-* 2>/dev/null | grep -v ".zip" | head -1)
 echo "✅ NDK extrait : $NDK_DIR"
 
 export ANDROID_NDK_ROOT="$GITHUB_WORKSPACE/$NDK_DIR"
@@ -773,14 +516,8 @@ fi
 
 if [ "$NEED_BUILD_RS_PATCH" = "1" ]; then
     echo "=== Patch build.rs : gnu23 → gnu17 ==="
-    BUILD_RS="$GITHUB_WORKSPACE/ksud-src/userspace/ksud/build.rs"
-    if [ -f "$BUILD_RS" ]; then
-        sed -i 's/std=gnu23/std=gnu17/g' "$BUILD_RS"
-        echo "[+] build.rs patché"
-    else
-        find "$GITHUB_WORKSPACE/ksud-src/userspace/ksud" -name "build.rs" \
-            -exec sed -i 's/std=gnu23/std=gnu17/g' {} \;
-    fi
+    find "$GITHUB_WORKSPACE/ksud-src" -name "build.rs" \
+        -exec sed -i 's/std=gnu23/std=gnu17/g' {} \;
 fi
 
 CARGO_TOML="userspace/ksud/Cargo.toml"
@@ -788,8 +525,9 @@ if [ -f "$CARGO_TOML" ] && grep -q "Kernel-SU/adb_client" "$CARGO_TOML"; then
     echo "=== Patch adb_client ==="
     sed -i 's|^adb_client\s*=\s*{.*git.*Kernel-SU/adb_client.*}.*|adb_client = { version = "3.1.1", default-features = false }|' "$CARGO_TOML"
     rm -f Cargo.lock
-    echo "✅ adb_client patché"
 fi
+
+rm -rf "$GITHUB_WORKSPACE/ksud-src/target"
 
 cd userspace/ksud
 
