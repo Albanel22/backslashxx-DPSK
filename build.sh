@@ -127,6 +127,125 @@ else
     echo "⚠️ Dossier hook/ non trouvé"
 fi
 
+# ==================== 3b. INSERTION DES HOOKS MANUELS ====================
+echo "=== Insertion des hooks manuels KernelSU ==="
+
+# Fonction utilitaire pour insérer un hook après une signature
+insert_hook() {
+    local file="$1"
+    local signature="$2"
+    local extern_decl="$3"
+    local call_line="$4"
+
+    if [ ! -f "$file" ]; then
+        echo "❌ $file introuvable"
+        return 1
+    fi
+
+    if grep -q "$call_line" "$file"; then
+        echo "[+] Hook déjà présent dans $file"
+        return 0
+    fi
+
+    # Utiliser Python pour insérer proprement
+    python3 - "$file" "$signature" "$extern_decl" "$call_line" << 'PYEOF'
+import sys
+import re
+
+file_path = sys.argv[1]
+signature = sys.argv[2]
+extern_decl = sys.argv[3]
+call_line = sys.argv[4]
+
+with open(file_path, 'r') as f:
+    content = f.read()
+
+# Trouver la signature
+match = re.search(signature, content)
+if not match:
+    print(f"[!] Signature non trouvée dans {file_path}")
+    sys.exit(1)
+
+# Trouver la fin de la signature (accolade ouvrante)
+insert_pos = match.end()
+
+# Construire le bloc à insérer
+block = f"\n{extern_decl}\n#ifdef CONFIG_KSU\n#pragma GCC diagnostic ignored \"-Wdeclaration-after-statement\"\n{call_line}\n#endif\n"
+
+# Insérer
+content = content[:insert_pos] + block + content[insert_pos:]
+
+with open(file_path, 'w') as f:
+    f.write(content)
+
+print(f"[+] Hook inséré dans {file_path}")
+PYEOF
+}
+
+# --- fs/exec.c : ksu_handle_execveat_sucompat ---
+insert_hook "fs/exec.c" \
+    r'static int do_execveat_common\(int fd, struct filename \*filename,\s*\n\s*struct user_arg_ptr argv,\s*\n\s*struct user_arg_ptr envp,\s*\n\s*int flags\)\s*\n\{' \
+    'extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);' \
+    'ksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);'
+
+# --- fs/open.c : ksu_handle_faccessat ---
+insert_hook "fs/open.c" \
+    r'long do_faccessat\(int dfd, const char __user \*filename, int mode\)\s*\n\{' \
+    'extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);' \
+    'ksu_handle_faccessat(&dfd, &filename, &mode, NULL);'
+
+# --- fs/stat.c : ksu_handle_stat ---
+insert_hook "fs/stat.c" \
+    r'int vfs_statx\(int dfd, const char __user \*filename, int flags,\s*\n\s*struct kstat \*stat, unsigned int request_mask\)\s*\n\{' \
+    'extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);' \
+    'ksu_handle_stat(&dfd, &filename, &flags);'
+
+# --- kernel/reboot.c : ksu_handle_sys_reboot ---
+if ! grep -q "ksu_handle_sys_reboot" kernel/reboot.c; then
+    python3 - << 'PYEOF'
+import re
+
+with open('kernel/reboot.c', 'r') as f:
+    content = f.read()
+
+# Ajouter l'extern avant SYSCALL_DEFINE4(reboot, ...)
+pattern = r'(SYSCALL_DEFINE4\(reboot, int, magic1, int, magic2, unsigned int, cmd,)'
+extern_decl = '''#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD)
+extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);
+#endif
+
+'''
+
+match = re.search(pattern, content)
+if match:
+    content = content[:match.start()] + extern_decl + content[match.start():]
+
+    # Trouver "int ret = 0;" dans SYSCALL_DEFINE4(reboot)
+    ret_pattern = r'(int ret = 0;\s*\n)'
+    ret_match = re.search(ret_pattern, content[match.start():])
+    if ret_match:
+        insert_pos = match.start() + ret_match.end()
+        call_block = '''
+#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD)
+	ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);
+#endif
+'''
+        content = content[:insert_pos] + call_block + content[insert_pos:]
+        print("[+] Hook sys_reboot inséré")
+
+with open('kernel/reboot.c', 'w') as f:
+    f.write(content)
+PYEOF
+fi
+
+echo "=== Vérification des hooks ==="
+grep -c "ksu_handle_execveat_sucompat" fs/exec.c || echo "  execveat: absent"
+grep -c "ksu_handle_faccessat" fs/open.c || echo "  faccessat: absent"
+grep -c "ksu_handle_stat" fs/stat.c || echo "  stat: absent"
+grep -c "ksu_handle_sys_reboot" kernel/reboot.c || echo "  sys_reboot: absent"
+
+echo "✅ Hooks manuels insérés"
+
 # ==================== 4. INTÉGRATION SuSFS ====================
 echo "=== Téléchargement et application du patch SuSFS 4.19 ==="
 
