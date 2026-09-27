@@ -541,7 +541,7 @@ else
 fi
 
 # ==================== 8c. CORRECTION ROBUSTE DES SIGNATURES SuSFS ====================
-echo "=== Correction robuste des signatures SuSFS ==="
+echo "=== Correction robuste des signatures SuSFS (stat.c) ==="
 
 python3 - << 'PYEOF'
 import re
@@ -551,174 +551,200 @@ SUSFS_H = 'include/linux/susfs.h'
 SUSFS_DEF = 'include/linux/susfs_def.h'
 STAT_C = 'fs/stat.c'
 
-def remove_old_declarations(path):
-    """Supprime toutes les déclarations de susfs_sus_ino_for_generic_fillattr et susfs_generic_fillattr_spoofer d'un header."""
+# --- Étape 1 : Nettoyer TOUTES les déclarations de la fonction dans les headers ---
+def clean_header(path):
     if not os.path.exists(path):
-        return 0
+        return False
     with open(path, 'r') as f:
         content = f.read()
     original = content
-    # Supprimer toute ligne contenant les anciens/nouveaux noms
+
+    # Supprimer toute ligne contenant les noms de fonction
     lines = content.split('\n')
-    new_lines = [l for l in lines if 'susfs_sus_ino_for_generic_fillattr' not in l 
-                 and 'susfs_generic_fillattr_spoofer' not in l]
+    new_lines = []
+    for line in lines:
+        if ('susfs_generic_fillattr_spoofer' in line or
+            'susfs_sus_ino_for_generic_fillattr' in line):
+            continue
+        new_lines.append(line)
     content = '\n'.join(new_lines)
+
     if content != original:
         with open(path, 'w') as f:
             f.write(content)
-        return 1
-    return 0
+        return True
+    return False
 
-def fix_stat_c():
-    """Corrige proprement la fonction dans fs/stat.c."""
-    if not os.path.exists(STAT_C):
-        print("[!] fs/stat.c introuvable")
-        return
-    
-    with open(STAT_C, 'r') as f:
-        content = f.read()
-    
-    original = content
-    
-    # --- Étape 1 : Renommer tous les anciens noms ---
-    content = content.replace('susfs_sus_ino_for_generic_fillattr', 'susfs_generic_fillattr_spoofer')
-    
-    # --- Étape 2 : Trouver et réécrire la DÉFINITION de la fonction ---
-    # Pattern : <static> <void|int> susfs_generic_fillattr_spoofer(...)  {
-    func_pattern = r'(static\s+)?(void|int)\s+susfs_generic_fillattr_spoofer\s*\([^)]*\)\s*\{'
-    match = re.search(func_pattern, content)
-    
-    if match:
-        start = match.start()
-        end_of_sig = match.end()
-        
-        # Trouver la fin de la fonction
-        depth = 1
-        i = end_of_sig
-        while i < len(content) and depth > 0:
-            if content[i] == '{':
-                depth += 1
-            elif content[i] == '}':
-                depth -= 1
-            i += 1
-        func_end = i
-        
-        # Extraire le corps actuel
-        old_body = content[end_of_sig:func_end-1]
-        
-        # Extraire la nouvelle signature
-        is_static = "static" if match.group(1) else ""
-        ret_type = match.group(2)
-        
-        # Construire la nouvelle fonction
-        new_func = f"""{is_static} {ret_type} susfs_generic_fillattr_spoofer(struct inode *inode, struct kstat *stat)
-{{
-	struct kstat *kstat = stat;
-
-	if (inode && stat) {{
-		/* Récupérer l'ino réel depuis l'inode */
-		unsigned long ino = inode->i_ino;
-
-		if (susfs_is_inode_sus_path(inode))
-			SUSFS_LOGI("hiding ino: %lu for path: %s\\n",
-				   ino, inode->i_sb->s_id);
-
-		/* Le spoofing réel est fait par susfs.c */
-		(void)kstat;
-		(void)ino;
-	}}
-}}"""
-        
-        content = content[:start] + new_func + content[func_end:]
-        print("[+] Définition de susfs_generic_fillattr_spoofer réécrite")
-    
-    # --- Étape 3 : Corriger l'appel dans generic_fillattr ---
-    content = content.replace(
-        'susfs_generic_fillattr_spoofer(inode->i_ino, stat)',
-        'susfs_generic_fillattr_spoofer(inode, stat)'
-    )
-    content = content.replace(
-        'susfs_generic_fillattr_spoofer(ino, stat)',
-        'susfs_generic_fillattr_spoofer(inode, stat)'
-    )
-    
-    # --- Étape 4 : Vérifier qu'il y a un appel dans generic_fillattr ---
-    if 'susfs_generic_fillattr_spoofer' in content and \
-       'generic_fillattr' in content and \
-       'susfs_generic_fillattr_spoofer(inode, stat)' not in content:
-        # Ajouter l'appel après la déclaration des variables dans generic_fillattr
-        # Chercher la signature de generic_fillattr
-        gf_pattern = r'void\s+generic_fillattr\s*\([^)]*\)\s*\{'
-        gf_match = re.search(gf_pattern, content)
-        if gf_match:
-            # Injecter l'appel après la première ligne du corps
-            insert_pos = gf_match.end()
-            # Trouver la fin de la première ligne après {
-            newline_pos = content.find('\n', insert_pos)
-            if newline_pos > 0:
-                # Chercher où mettre l'appel (après les déclarations, avant les usages)
-                call = "\n#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n\tsusfs_generic_fillattr_spoofer(inode, stat);\n#endif\n"
-                # Trouver la première instruction (après les déclarations)
-                lines_after = content[insert_pos:].split('\n')
-                insert_line = 0
-                for idx, line in enumerate(lines_after):
-                    stripped = line.strip()
-                    if stripped and not stripped.startswith(('struct ', 'unsigned ', 'umode_t ', 'dev_t ', 'int ', 'u32 ', 'u64 ', 'kuid_t ', 'kgid_t ', '/*', '*')):
-                        insert_line = idx
-                        break
-                # Reconstruire
-                before = content[:insert_pos]
-                after = '\n'.join(lines_after[insert_line:])
-                content = before + call + after
-                print("[+] Appel susfs_generic_fillattr_spoofer ajouté dans generic_fillattr")
-    
-    if content != original:
-        with open(STAT_C, 'w') as f:
-            f.write(content)
-        print("[+] fs/stat.c mis à jour")
-
-# --- Exécution ---
 print("--- Nettoyage des headers ---")
-if remove_old_declarations(SUSFS_H):
+if clean_header(SUSFS_H):
     print("[+] susfs.h nettoyé")
-if remove_old_declarations(SUSFS_DEF):
+if clean_header(SUSFS_DEF):
     print("[+] susfs_def.h nettoyé")
 
-# --- Ajouter une déclaration propre dans susfs.h ---
+# --- Étape 2 : Ajouter une déclaration propre et complète dans susfs.h ---
 with open(SUSFS_H, 'r') as f:
     susfs_content = f.read()
 
-if 'susfs_generic_fillattr_spoofer' not in susfs_content:
-    # S'assurer que les structs sont forward-déclarés
-    if 'struct inode;' not in susfs_content:
-        susfs_content = susfs_content.replace(
-            '#define __LINUX_SUSFS_H',
-            '#define __LINUX_SUSFS_H\n\nstruct inode;\nstruct kstat;'
-        )
-    
-    # Ajouter la déclaration propre
-    susfs_content += """
+# S'assurer que les forward declarations des structs existent AVANT toute déclaration
+if 'struct inode;' not in susfs_content:
+    # Insérer au tout début, après le #ifndef guard
+    susfs_content = re.sub(
+        r'(#ifndef\s+\w+\s*\n#define\s+\w+\s*\n)',
+        r'\1\nstruct inode;\nstruct kstat;\nstruct path;\n',
+        susfs_content,
+        count=1
+    )
+    print("[+] Forward declarations struct inode/kstat/path ajoutées")
 
-/* Déclaration propre - ajoutée par le script de build */
+# Ajouter la déclaration propre en fin de fichier (avant le #endif final)
+declaration = """
+
+/* __SUSFS_FILLATTR_DECL__ */
 #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
 void susfs_generic_fillattr_spoofer(struct inode *inode, struct kstat *stat);
 #endif
 """
-    with open(SUSFS_H, 'w') as f:
-        f.write(susfs_content)
+
+if 'susfs_generic_fillattr_spoofer' not in susfs_content:
+    # Insérer avant le dernier #endif
+    idx = susfs_content.rfind('#endif')
+    if idx > 0:
+        susfs_content = susfs_content[:idx] + declaration + '\n' + susfs_content[idx:]
+    else:
+        susfs_content += declaration
     print("[+] Déclaration propre ajoutée dans susfs.h")
 
-# --- Fixer fs/stat.c ---
-print("--- Correction de fs/stat.c ---")
-fix_stat_c()
+with open(SUSFS_H, 'w') as f:
+    f.write(susfs_content)
 
-# --- Vérification ---
+# --- Étape 3 : Réécrire complètement la fonction dans fs/stat.c ---
+with open(STAT_C, 'r') as f:
+    content = f.read()
+
+# 3a. Vérifier que susfs.h est inclus
+if '#include <linux/susfs.h>' not in content:
+    print("[!] susfs.h n'est PAS inclus dans fs/stat.c — injection")
+    content = re.sub(
+        r'(#include <linux/fs\.h>)',
+        r'\1\n#include <linux/susfs.h>\n#include <linux/susfs_def.h>',
+        content,
+        count=1
+    )
+
+# 3b. Supprimer TOUTE définition existante de la fonction
+# Chercher le pattern et supprimer du début de la fonction jusqu'à sa fermeture
+func_pattern = r'(static\s+)?(void|int)\s+susfs_generic_fillattr_spoofer\s*\([^)]*\)\s*\{'
+
+while True:
+    match = re.search(func_pattern, content)
+    if not match:
+        break
+    
+    start = match.start()
+    # Trouver la fin de la fonction
+    depth = 1
+    i = match.end()
+    while i < len(content) and depth > 0:
+        if content[i] == '{':
+            depth += 1
+        elif content[i] == '}':
+            depth -= 1
+        i += 1
+    func_end = i
+    
+    # Supprimer la fonction (avec les lignes blanches autour)
+    content = content[:start].rstrip() + '\n\n' + content[func_end:].lstrip()
+    print(f"[+] Ancienne définition supprimée ({func_end - start} chars)")
+
+# 3c. Supprimer TOUT appel existant à la fonction
+content = re.sub(
+    r'^\s*susfs_generic_fillattr_spoofer\s*\([^;]*\);\s*$',
+    '',
+    content,
+    flags=re.MULTILINE
+)
+content = re.sub(
+    r'\n\s*#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\s*\n\s*susfs_generic_fillattr_spoofer\s*\([^)]*\);\s*\n\s*#endif\s*\n',
+    '\n',
+    content
+)
+
+# 3d. Injecter la nouvelle fonction après la déclaration de generic_fillattr
+# On la place AVANT generic_fillattr pour que l'appel soit résolu
+new_func = """
+/* __SUSFS_FILLATTR_FUNC__ */
+#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
+void susfs_generic_fillattr_spoofer(struct inode *inode, struct kstat *stat)
+{
+	if (inode && stat) {
+		if (susfs_is_inode_sus_path(inode))
+			SUSFS_LOGI("hiding ino: %lu for path: %s\\n",
+				   inode->i_ino, inode->i_sb->s_id);
+	}
+}
+#else
+void susfs_generic_fillattr_spoofer(struct inode *inode, struct kstat *stat)
+{
+	(void)inode;
+	(void)stat;
+}
+#endif
+"""
+
+# Chercher la définition de generic_fillattr
+gf_pattern = r'(void\s+generic_fillattr\s*\([^)]*\)\s*\{)'
+gf_match = re.search(gf_pattern, content)
+
+if gf_match:
+    # Insérer AVANT generic_fillattr
+    insert_pos = gf_match.start()
+    content = content[:insert_pos] + new_func + '\n' + content[insert_pos:]
+    print("[+] Nouvelle fonction injectée avant generic_fillattr")
+    
+    # Trouver où mettre l'appel dans generic_fillattr
+    gf_start = gf_match.start() + len(new_func) + 1
+    gf_body_start = content.find('{', gf_start) + 1
+    
+    # Chercher la fin des déclarations (première ligne d'instruction)
+    lines_after = content[gf_body_start:].split('\n')
+    insert_line = 0
+    for idx, line in enumerate(lines_after):
+        stripped = line.strip()
+        # Skip les lignes vides, commentaires et déclarations
+        if (not stripped or 
+            stripped.startswith('/*') or 
+            stripped.startswith('*') or
+            re.match(r'^(struct|const|unsigned|int|u\d+|s\d+|dev_t|umode_t|kuid_t|kgid_t|loff_t)\s', stripped)):
+            continue
+        insert_line = idx
+        break
+    
+    # Reconstruire avec l'appel inséré
+    before = content[:gf_body_start]
+    after_lines = lines_after[:insert_line] + [
+        '',
+        '#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT',
+        '\tsusfs_generic_fillattr_spoofer(inode, stat);',
+        '#endif',
+        ''
+    ] + lines_after[insert_line:]
+    content = before + '\n'.join(after_lines)
+    print("[+] Appel inséré dans generic_fillattr")
+else:
+    print("[!] generic_fillattr introuvable")
+
+with open(STAT_C, 'w') as f:
+    f.write(content)
+
+print("[+] fs/stat.c réécrit")
+
+# --- Étape 4 : Vérification finale ---
 print("")
 print("=== VÉRIFICATION FINALE ===")
-print("--- susfs.h ---")
-os.system("grep -n 'susfs_generic_fillattr_spoofer\\|struct inode;' include/linux/susfs.h 2>/dev/null | head -5")
-print("--- fs/stat.c ---")
-os.system("grep -n 'susfs_generic_fillattr_spoofer' fs/stat.c 2>/dev/null | head -10")
+print("--- Déclaration dans susfs.h ---")
+os.system(f"grep -n 'susfs_generic_fillattr_spoofer\\|struct inode;' {SUSFS_H} | head -5")
+print("--- Fonction et appel dans fs/stat.c ---")
+os.system(f"grep -n 'susfs_generic_fillattr_spoofer\\|#include <linux/susfs' {STAT_C} | head -10")
 PYEOF
 
 echo "✅ Correction terminée"
