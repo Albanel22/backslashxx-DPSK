@@ -285,6 +285,75 @@ for root, dirs, files in os.walk('.'):
 print(f"[+] {fixed} fichiers corrigés")
 PYEOF
 
+# ==================== 4c-bis. DÉFINITION CL_COPY_MNT_NS (4.19) ====================
+echo "=== Injection de CL_COPY_MNT_NS pour noyau 4.19 ==="
+
+# Vérifier si la définition existe quelque part
+if grep -rq "define CL_COPY_MNT_NS" include/ fs/ 2>/dev/null; then
+    echo "✅ CL_COPY_MNT_NS déjà défini"
+else
+    echo "[+] Injection dans fs/namespace.c"
+    python3 - << 'PYEOF'
+import re
+
+path = 'fs/namespace.c'
+with open(path, 'r') as f:
+    content = f.read()
+
+if 'CL_COPY_MNT_NS' in content and '#define CL_COPY_MNT_NS' not in content:
+    # Trouver le dernier #include et injecter juste après
+    m = list(re.finditer(r'^#include\s+[<"][^>"]+[>"]\s*$', content, re.MULTILINE))
+    if m:
+        pos = m[-1].end()
+        block = '''
+
+/* __SUSFS_CL_COPY_MNT_NS_INJECTED__ */
+#ifndef CL_COPY_MNT_NS
+#define CL_COPY_MNT_NS BIT(25)
+#endif
+'''
+        content = content[:pos] + block + content[pos:]
+        with open(path, 'w') as f:
+            f.write(content)
+        print("[+] CL_COPY_MNT_NS défini dans fs/namespace.c")
+    else:
+        print("[!] Aucun #include trouvé — injection en tête de fichier")
+        content = '#ifndef CL_COPY_MNT_NS\n#define CL_COPY_MNT_NS BIT(25)\n#endif\n\n' + content
+        with open(path, 'w') as f:
+            f.write(content)
+else:
+    print("[+] CL_COPY_MNT_NS déjà présent ou non utilisé")
+
+# Faire la même chose pour fs/super.c (souvent utilisé aussi)
+for f in ['fs/super.c', 'fs/namei.c', 'fs/open.c']:
+    try:
+        with open(f, 'r') as fh:
+            c = fh.read()
+        if 'CL_COPY_MNT_NS' in c and '#define CL_COPY_MNT_NS' not in c:
+            m = list(re.finditer(r'^#include\s+[<"][^>"]+[>"]\s*$', c, re.MULTILINE))
+            if m:
+                pos = m[-1].end()
+                block = '''
+
+/* __SUSFS_CL_COPY_MNT_NS_INJECTED__ */
+#ifndef CL_COPY_MNT_NS
+#define CL_COPY_MNT_NS BIT(25)
+#endif
+'''
+                c = c[:pos] + block + c[pos:]
+                with open(f, 'w') as fh:
+                    fh.write(c)
+                print(f"[+] CL_COPY_MNT_NS défini dans {f}")
+    except FileNotFoundError:
+        pass
+PYEOF
+fi
+
+# Vérification
+echo "=== Vérification CL_COPY_MNT_NS ==="
+grep -n "CL_COPY_MNT_NS" fs/namespace.c | head -5
+
+
 # ==================== 4d. AJOUT DES SYMBOLES MANQUANTS ====================
 echo "=== Ajout des symboles manquants dans fs/susfs.c ==="
 
