@@ -568,6 +568,144 @@ else
     echo "⚠️ techpack/display/msm/msm_drv.c introuvable"
 fi
 
+# ==================== 8b. INJECTION FORCÉE DES INCLUDES SuSFS ====================
+echo "=== Injection forcée des includes SuSFS (avant compilation) ==="
+
+# --- 1. S'assurer que susfs_def.h contient CL_COPY_MNT_NS ---
+SUSFS_DEF="include/linux/susfs_def.h"
+if [ -f "$SUSFS_DEF" ]; then
+    if ! grep -q "define CL_COPY_MNT_NS" "$SUSFS_DEF"; then
+        echo "[+] Ajout de CL_COPY_MNT_NS dans $SUSFS_DEF"
+        echo "" >> "$SUSFS_DEF"
+        echo "#ifndef CL_COPY_MNT_NS" >> "$SUSFS_DEF"
+        echo "#define CL_COPY_MNT_NS BIT(25)" >> "$SUSFS_DEF"
+        echo "#endif" >> "$SUSFS_DEF"
+    fi
+    if ! grep -q "define DEFAULT_KSU_MNT_MINOR_DEV" "$SUSFS_DEF"; then
+        echo "[+] Ajout de DEFAULT_KSU_MNT_MINOR_DEV dans $SUSFS_DEF"
+        echo "" >> "$SUSFS_DEF"
+        echo "#ifndef DEFAULT_KSU_MNT_MINOR_DEV" >> "$SUSFS_DEF"
+        echo "#define DEFAULT_KSU_MNT_MINOR_DEV 234" >> "$SUSFS_DEF"
+        echo "#endif" >> "$SUSFS_DEF"
+    fi
+    echo "✅ susfs_def.h enrichi"
+else
+    echo "⚠️ $SUSFS_DEF introuvable, création..."
+    mkdir -p include/linux
+    cat > "$SUSFS_DEF" << 'EOF'
+#ifndef _LINUX_SUSFS_DEF_H
+#define _LINUX_SUSFS_DEF_H
+#ifndef CL_COPY_MNT_NS
+#define CL_COPY_MNT_NS BIT(25)
+#endif
+#ifndef DEFAULT_KSU_MNT_MINOR_DEV
+#define DEFAULT_KSU_MNT_MINOR_DEV 234
+#endif
+#endif
+EOF
+fi
+
+# --- 2. S'assurer que susfs.h contient les externs ---
+SUSFS_H="include/linux/susfs.h"
+if [ -f "$SUSFS_H" ]; then
+    if ! grep -q "extern bool susfs_is_current_ksu_domain" "$SUSFS_H"; then
+        echo "[+] Ajout des externs dans $SUSFS_H"
+        cat >> "$SUSFS_H" << 'EOF'
+
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+extern bool susfs_is_current_ksu_domain(void);
+extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
+#endif
+EOF
+    fi
+fi
+
+# --- 3. FORCER l'inclusion dans fs/namespace.c ---
+echo "=== Injection dans fs/namespace.c ==="
+
+# Supprimer toute injection précédente (pour éviter les doublons)
+sed -i '/__SUSFS_FORCED_INCLUDE__/d' fs/namespace.c 2>/dev/null || true
+
+# Injecter APRÈS le premier #include du fichier
+awk '
+BEGIN { done = 0 }
+/^#include/ && !done {
+    print $0
+    print "/* __SUSFS_FORCED_INCLUDE__ */"
+    print "#include <linux/susfs_def.h>"
+    print "#include <linux/susfs.h>"
+    done = 1
+    next
+}
+{ print }
+' fs/namespace.c > fs/namespace.c.tmp && mv fs/namespace.c.tmp fs/namespace.c
+
+# Vérification
+if grep -q "__SUSFS_FORCED_INCLUDE__" fs/namespace.c; then
+    echo "✅ Injection OK dans fs/namespace.c"
+else
+    echo "❌ Injection awk échouée, fallback sed en tête"
+    sed -i '1i\
+/* __SUSFS_FORCED_INCLUDE__ */\
+#include <linux/susfs_def.h>\
+#include <linux/susfs.h>\
+' fs/namespace.c
+fi
+
+# --- 4. Même chose pour les autres fichiers concernés ---
+for f in fs/super.c fs/namei.c fs/open.c fs/stat.c fs/exec.c fs/readdir.c fs/d_path.c fs/proc/task_mmu.c fs/proc/base.c fs/proc/fd.c fs/mount.h; do
+    [ -f "$f" ] || continue
+
+    # Skip si le fichier n'utilise pas SuSFS
+    if ! grep -qE 'susfs_|SUSFS_|DEFAULT_KSU_MNT_MINOR_DEV|CL_COPY_MNT_NS' "$f"; then
+        continue
+    fi
+
+    # Skip si l'include est déjà présent
+    if grep -q '#include <linux/susfs.h>' "$f"; then
+        continue
+    fi
+
+    echo "[+] Injection dans $f"
+
+    # Supprimer toute injection précédente
+    sed -i '/__SUSFS_FORCED_INCLUDE__/d' "$f" 2>/dev/null || true
+    sed -i '/#include <linux\/susfs_def.h>/d' "$f" 2>/dev/null || true
+    sed -i '/#include <linux\/susfs.h>/d' "$f" 2>/dev/null || true
+
+    # Injecter après le premier #include
+    awk '
+    BEGIN { done = 0 }
+    /^#include/ && !done {
+        print $0
+        print "/* __SUSFS_FORCED_INCLUDE__ */"
+        print "#include <linux/susfs_def.h>"
+        print "#include <linux/susfs.h>"
+        done = 1
+        next
+    }
+    { print }
+    ' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+done
+
+# --- 5. VÉRIFICATION FINALE ---
+echo ""
+echo "=== VÉRIFICATION FINALE DES INCLUDES ==="
+for f in fs/namespace.c fs/super.c fs/namei.c fs/open.c; do
+    [ -f "$f" ] || continue
+    if grep -qE 'susfs_|DEFAULT_KSU_MNT_MINOR_DEV|CL_COPY_MNT_NS' "$f"; then
+        echo "--- $f ---"
+        grep -n "susfs" "$f" | grep "#include" | head -3
+        grep -c "CL_COPY_MNT_NS" "$f" | xargs echo "  Utilisations CL_COPY_MNT_NS :"
+    fi
+done
+
+echo ""
+echo "=== Contenu susfs_def.h ==="
+tail -20 include/linux/susfs_def.h
+
+echo "=== Fin de l'injection ==="
+
 # ==================== 9. COMPILATION DU NOYAU ====================
 echo "=== Compilation du noyau ==="
 make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
