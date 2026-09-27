@@ -187,81 +187,141 @@ if [ -f "fs/Makefile" ]; then
     fi
 fi
 
-# ==================== 4c. INJECTION FORCÉE CL_COPY_MNT_NS + includes ====================
-echo "=== Injection forcée de CL_COPY_MNT_NS dans les fichiers concernés ==="
+# ==================== 4c. CORRECTION FORCÉE DES INCLUDES SuSFS ====================
+echo "=== Correction forcée des includes SuSFS ==="
 
-# Fonction pour injecter un bloc après la ligne de #include <linux/...> ou en tête
-inject_cl_copy() {
-    local file="$1"
+# Liste des fichiers qui utilisent SuSFS et doivent avoir les includes
+SUSFS_FILES="fs/namespace.c fs/super.c fs/namei.c fs/open.c fs/stat.c fs/exec.c fs/readdir.c fs/d_path.c fs/proc/task_mmu.c fs/proc/base.c fs/proc/fd.c fs/mount.h fs/susfs.c"
 
-    if [ ! -f "$file" ]; then
-        return
-    fi
+# S'assurer que les fichiers susfs.h et susfs_def.h existent et contiennent les bonnes définitions
+echo "=== Vérification des headers SuSFS ==="
 
-    # Ne rien faire si déjà défini
-    if grep -q '#define CL_COPY_MNT_NS' "$file"; then
-        echo "[+] $file : déjà défini"
-        return
-    fi
+if [ ! -f "include/linux/susfs.h" ]; then
+    echo "❌ include/linux/susfs.h introuvable"
+    exit 1
+fi
 
-    # Ne rien faire si pas utilisé
-    if ! grep -q 'CL_COPY_MNT_NS' "$file"; then
-        return
-    fi
+if [ ! -f "include/linux/susfs_def.h" ]; then
+    echo "❌ include/linux/susfs_def.h introuvable"
+    exit 1
+fi
 
-    echo "[+] Injection dans $file"
+# Forcer la présence des externs dans susfs.h
+if ! grep -q "extern bool susfs_is_current_ksu_domain" include/linux/susfs.h; then
+    echo "[+] Ajout de susfs_is_current_ksu_domain dans susfs.h"
+    cat >> include/linux/susfs.h << 'EOF'
 
-    # Utiliser awk pour insérer après la DERNIÈRE ligne #include
-    awk '
-    BEGIN { last_include = 0 }
-    /^#include/ { last_include = NR }
-    { lines[NR] = $0 }
-    END {
-        for (i = 1; i <= NR; i++) {
-            print lines[i]
-            if (i == last_include) {
-                print ""
-                print "/* __SUSFS_CL_COPY_MNT_NS_INJECTED__ */"
-                print "#ifndef CL_COPY_MNT_NS"
-                print "#define CL_COPY_MNT_NS BIT(25)"
-                print "#endif"
-                print ""
-            }
-        }
-    }' "$file" > "${file}.tmp" && mv "${file}.tmp" "$file"
-}
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+extern bool susfs_is_current_ksu_domain(void);
+extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
+#endif
+EOF
+fi
 
-# Injecter dans les fichiers qui utilisent CL_COPY_MNT_NS
-for f in fs/namespace.c fs/super.c fs/namei.c fs/open.c fs/stat.c fs/exec.c; do
-    inject_cl_copy "$f"
-done
+# Forcer DEFAULT_KSU_MNT_MINOR_DEV dans susfs_def.h
+if ! grep -q "DEFAULT_KSU_MNT_MINOR_DEV" include/linux/susfs_def.h; then
+    echo "[+] Ajout de DEFAULT_KSU_MNT_MINOR_DEV dans susfs_def.h"
+    cat >> include/linux/susfs_def.h << 'EOF'
 
-# Vérification
-echo "=== Vérification CL_COPY_MNT_NS ==="
-grep -n "CL_COPY_MNT_NS" fs/namespace.c | head -10
+#ifndef DEFAULT_KSU_MNT_MINOR_DEV
+#define DEFAULT_KSU_MNT_MINOR_DEV 234
+#endif
 
-# Fallback : si toujours pas défini dans namespace.c, insérer en tête de fichier
-if ! grep -q '#define CL_COPY_MNT_NS' fs/namespace.c; then
-    echo "⚠️ Injection awk échouée, fallback avec sed en tête de fichier"
-
-    # Créer un fichier temporaire avec l'entête injecté
-    {
-        echo "/* __SUSFS_CL_COPY_MNT_NS_INJECTED__ */
 #ifndef CL_COPY_MNT_NS
 #define CL_COPY_MNT_NS BIT(25)
 #endif
-"
-        cat fs/namespace.c
-    } > fs/namespace.c.tmp
-    mv fs/namespace.c.tmp fs/namespace.c
-
-    echo "[+] CL_COPY_MNT_NS injecté en tête de fs/namespace.c"
+EOF
 fi
 
+# Injecter les #include au DÉBUT de chaque fichier concerné
+for f in $SUSFS_FILES; do
+    [ -f "$f" ] || continue
+
+    # Ne rien faire si le fichier n'utilise pas SuSFS
+    if ! grep -qE 'susfs_|SUSFS_|DEFAULT_KSU_MNT_MINOR_DEV|CL_COPY_MNT_NS' "$f"; then
+        continue
+    fi
+
+    # Vérifier si les includes sont déjà présents
+    HAS_SUSFS_H=0
+    HAS_SUSFS_DEF=0
+    grep -q '#include <linux/susfs.h>' "$f" && HAS_SUSFS_H=1
+    grep -q '#include <linux/susfs_def.h>' "$f" && HAS_SUSFS_DEF=1
+
+    # Si les deux sont présents, on passe
+    if [ "$HAS_SUSFS_H" = "1" ] && [ "$HAS_SUSFS_DEF" = "1" ]; then
+        echo "[+] $f : includes déjà présents"
+        continue
+    fi
+
+    echo "[+] $f : injection des includes"
+
+    # Sauvegarder le fichier
+    cp "$f" "${f}.bak"
+
+    # Construire le bloc à insérer
+    BLOCK="/* __SUSFS_INCLUDES_INJECTED__ */"
+    if [ "$HAS_SUSFS_DEF" = "0" ]; then
+        BLOCK="$BLOCK
+#include <linux/susfs_def.h>"
+    fi
+    if [ "$HAS_SUSFS_H" = "0" ]; then
+        BLOCK="$BLOCK
+#include <linux/susfs.h>"
+    fi
+
+    # Utiliser sed pour insérer après la première ligne #include
+    # (ou après la première ligne si aucune #include n'existe)
+    if grep -q '^#include' "$f"; then
+        # Insérer après la PREMIÈRE ligne #include (plus sûr que la dernière)
+        awk -v block="$BLOCK" '
+            BEGIN { done = 0 }
+            /^#include/ && !done {
+                print $0
+                print block
+                done = 1
+                next
+            }
+            { print }
+        ' "$f" > "${f}.tmp" && mv "${f}.tmp" "$f"
+    else
+        # Pas de #include : insérer au début
+        {
+            echo "$BLOCK"
+            cat "$f"
+        } > "${f}.tmp" && mv "${f}.tmp" "$f"
+    fi
+
+    # Nettoyer le backup si tout va bien
+    rm -f "${f}.bak"
+done
+
+# Supprimer les injections en double
+for f in $SUSFS_FILES; do
+    [ -f "$f" ] || continue
+    # Compter les occurrences
+    COUNT=$(grep -c 'include <linux/susfs.h>' "$f" 2>/dev/null || echo 0)
+    if [ "$COUNT" -gt 1 ]; then
+        echo "[!] $f : $COUNT occurrences de susfs.h, nettoyage..."
+        # Garder seulement la première
+        awk '
+            /#include <linux\/susfs.h>/ {
+                if (seen++) next
+            }
+            { print }
+        ' "$f" > "${f}.tmp" && mv "${f}.tmp" "$f"
+    fi
+done
+
 # Vérification finale
-echo "=== Vérification finale ==="
-grep -n "define CL_COPY_MNT_NS" fs/namespace.c || echo "❌ Toujours pas défini"
-head -10 fs/namespace.c
+echo "=== Vérification des includes ==="
+for f in fs/namespace.c fs/super.c fs/namei.c fs/open.c; do
+    [ -f "$f" ] || continue
+    if grep -qE 'susfs_|DEFAULT_KSU_MNT_MINOR_DEV|CL_COPY_MNT_NS' "$f"; then
+        echo "--- $f ---"
+        grep -nE '#include <linux/susfs' "$f" || echo "  ❌ Aucun include SuSFS"
+    fi
+done
 
 # ==================== 4c-bis. DÉFINITION CL_COPY_MNT_NS (4.19) ====================
 echo "=== Injection de CL_COPY_MNT_NS pour noyau 4.19 ==="
