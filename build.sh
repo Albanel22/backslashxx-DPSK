@@ -383,12 +383,12 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 echo "=== Config finale ==="
 grep "CONFIG_KSU" out/.config
 
-# Vérification profil SusFS minimal
+# Vérification profil SusFS (SUS_PATH + core + logs)
 grep -q '^CONFIG_KSU_SUSFS=y$' out/.config || { echo "❌ KSU_SUSFS pas activé"; exit 1; }
+grep -q '^CONFIG_KSU_SUSFS_SUS_PATH=y$' out/.config || { echo "❌ KSU_SUSFS_SUS_PATH pas activé"; exit 1; }
 grep -q '^CONFIG_KSU_SUSFS_ENABLE_LOG=y$' out/.config || { echo "❌ KSU_SUSFS_ENABLE_LOG pas activé"; exit 1; }
 
 for symbol in \
-    KSU_SUSFS_SUS_PATH \
     KSU_SUSFS_SUS_MOUNT \
     KSU_SUSFS_SUS_KSTAT \
     KSU_SUSFS_SPOOF_UNAME \
@@ -402,7 +402,7 @@ for symbol in \
         exit 1
     fi
 done
-echo "✅ Profil SusFS minimal validé"
+echo "✅ Profil SusFS validé : SUS_PATH + core + logs"
 
 # ==================== 5. PATCH SIGNATURES MODULE ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
