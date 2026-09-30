@@ -169,68 +169,31 @@ PYEOF_SYMBOL
 
 echo "✅ Patch SusFS nGKI appliqué"
 
-# ==================== 2a-ter. DÉFINITIONS MANQUANTES SUSFS ====================
-echo "=== Ajout des définitions manquantes SuSFS ==="
+# ==================== 2a-ter. VÉRIFICATION DES DÉFINITIONS SUSFS ====================
+echo "=== Vérification des définitions SuSFS ==="
 
-if [ ! -f "fs/susfs.c" ]; then
-    echo "❌ fs/susfs.c introuvable"
-    exit 1
+# Ces symboles sont déjà définis dans cyberc3dr/KernelSU (drivers/kernelsu/selinux/selinux.c)
+# Ne PAS les ajouter dans fs/susfs.c, sinon conflit au link (duplicate symbol)
+
+if grep -q "susfs_is_current_ksu_domain" /tmp/KernelSU/kernel/selinux/selinux.c 2>/dev/null; then
+    echo "✅ susfs_is_current_ksu_domain fourni par cyberc3dr/KernelSU"
+else
+    echo "⚠️ susfs_is_current_ksu_domain non trouvé dans KernelSU — vérifier la révision"
 fi
 
-python3 << 'PYEOF'
-from pathlib import Path
-import re
+if grep -q "susfs_ksu_sid" /tmp/KernelSU/kernel/selinux/selinux.c 2>/dev/null; then
+    echo "✅ susfs_ksu_sid fourni par cyberc3dr/KernelSU"
+else
+    echo "⚠️ susfs_ksu_sid non trouvé dans KernelSU"
+fi
 
-path = Path("fs/susfs.c")
-text = path.read_text()
-original_len = len(text)
-added = []
+if grep -q "susfs_priv_app_sid" /tmp/KernelSU/kernel/selinux/selinux.c 2>/dev/null; then
+    echo "✅ susfs_priv_app_sid fourni par cyberc3dr/KernelSU"
+else
+    echo "⚠️ susfs_priv_app_sid non trouvé dans KernelSU"
+fi
 
-# 1. susfs_is_current_ksu_domain
-if not re.search(r'^bool\s+susfs_is_current_ksu_domain\s*\(void\)', text, re.MULTILINE):
-    text += '''
-
-/* ═══ SUSFS_FIX: susfs_is_current_ksu_domain ═══ */
-bool susfs_is_current_ksu_domain(void)
-{
-	const struct cred *cred = current_cred();
-	return (cred->uid.val == 0 || cred->uid.val == 2000);
-}
-EXPORT_SYMBOL(susfs_is_current_ksu_domain);
-'''
-    added.append("susfs_is_current_ksu_domain")
-
-# 2. susfs_ksu_sid
-if not re.search(r'^u32\s+susfs_ksu_sid\b', text, re.MULTILINE):
-    text += '''
-
-/* ═══ SUSFS_FIX: susfs_ksu_sid ═══ */
-u32 susfs_ksu_sid = 0;
-EXPORT_SYMBOL(susfs_ksu_sid);
-'''
-    added.append("susfs_ksu_sid")
-
-# 3. susfs_priv_app_sid
-if not re.search(r'^u32\s+susfs_priv_app_sid\b', text, re.MULTILINE):
-    text += '''
-
-/* ═══ SUSFS_FIX: susfs_priv_app_sid ═══ */
-u32 susfs_priv_app_sid = 0;
-EXPORT_SYMBOL(susfs_priv_app_sid);
-'''
-    added.append("susfs_priv_app_sid")
-
-if added:
-    path.write_text(text)
-    print(f"[+] Ajouté : {', '.join(added)}")
-else:
-    print("[i] Aucune modification")
-PYEOF
-
-for sym in susfs_is_current_ksu_domain susfs_ksu_sid susfs_priv_app_sid; do
-    grep -q "$sym" fs/susfs.c || { echo "❌ $sym manquant"; exit 1; }
-done
-echo "✅ Toutes les définitions présentes"
+echo "✅ Vérification terminée (pas d'ajout dans fs/susfs.c)"
 
 # ==================== 2b. SYMLINK DRIVER ====================
 ln -sf /tmp/KernelSU/kernel drivers/kernelsu
