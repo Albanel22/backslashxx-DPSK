@@ -150,46 +150,61 @@ grep -qF \
 
 info "Application stricte de SusFS 4.19"
 
-# Le dépôt SusFS est public mais son clonage peut échouer
-# transitoirement sur un runner GitHub.
-# Le log est conservé et le clonage est réessayé trois fois.
+# Le clonage Git peut échouer sur les runners Actions à cause du réseau.
+# L'archive GitHub est plus légère et curl réessaie automatiquement.
+
+need_cmd curl
+need_cmd tar
+
+SUSFS_ARCHIVE_URL="${SUSFS_ARCHIVE_URL:-${SUSFS_REPO%.git}/archive/refs/heads/${SUSFS_REF}.tar.gz}"
+SUSFS_ARCHIVE="$WORKSPACE/susfs.tar.gz"
+SUSFS_EXTRACT="$WORKSPACE/susfs_extract"
 
 rm -rf \
     "$SUSFS_DIR" \
-    "$WORKSPACE/susfs_clone.log"
+    "$SUSFS_EXTRACT" \
+    "$SUSFS_ARCHIVE"
 
-clone_ok=0
+echo "Téléchargement SusFS: $SUSFS_ARCHIVE_URL"
 
-for attempt in 1 2 3; do
-    echo "Clonage SusFS: tentative $attempt/3"
+curl \
+    --fail \
+    --location \
+    --retry 5 \
+    --retry-delay 5 \
+    --retry-all-errors \
+    --connect-timeout 20 \
+    --max-time 180 \
+    "$SUSFS_ARCHIVE_URL" \
+    -o "$SUSFS_ARCHIVE"
 
-    if git clone \
-        --depth=1 \
-        --single-branch \
-        --branch "$SUSFS_REF" \
-        "$SUSFS_REPO" \
-        "$SUSFS_DIR" \
-        2>&1 | tee -a "$WORKSPACE/susfs_clone.log"
-    then
-        clone_ok=1
-        break
-    fi
+mkdir -p "$SUSFS_EXTRACT"
 
-    rm -rf "$SUSFS_DIR"
+tar \
+    -xzf "$SUSFS_ARCHIVE" \
+    -C "$SUSFS_EXTRACT"
 
-    if [[ "$attempt" -lt 3 ]]; then
-        sleep 5
-    fi
-done
+SUSFS_ROOT=$(
+    find "$SUSFS_EXTRACT" \
+        -mindepth 1 \
+        -maxdepth 1 \
+        -type d \
+        -print \
+        -quit
+)
 
-if [[ "$clone_ok" -ne 1 ]]; then
-    echo "--- susfs_clone.log ---"
-    cat "$WORKSPACE/susfs_clone.log"
+[[ -n "$SUSFS_ROOT" ]] ||
+    fail "Archive SusFS vide ou invalide"
 
-    fail \
-        "Clonage SusFS impossible après 3 tentatives: \
-$SUSFS_REPO#$SUSFS_REF"
-fi
+mv \
+    "$SUSFS_ROOT" \
+    "$SUSFS_DIR"
+
+rm -rf \
+    "$SUSFS_EXTRACT" \
+    "$SUSFS_ARCHIVE"
+
+echo "SusFS récupéré depuis $SUSFS_REF"
 
 SUSFS_PATCH="$SUSFS_DIR/$SUSFS_PATCH_REL"
 
