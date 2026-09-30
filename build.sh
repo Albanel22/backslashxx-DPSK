@@ -69,9 +69,7 @@ git clone --depth=1 --branch "$KERNEL_REF" "$KERNEL_REPO" "$KERNEL_DIR"
 git -C "$KERNEL_DIR" log -1 --oneline
 
 info "Clonage de KernelSU backslashxx"
-git clone --depth=1 "$KSU_REPO" "$KSU_DIR"
-git -C "$KSU_DIR" fetch --depth=1 origin "tag $KSU_REF"
-git -C "$KSU_DIR" checkout --detach "$KSU_REF"
+git clone --depth=1 --branch "$KSU_REF" "$KSU_REPO" "$KSU_DIR"
 echo "KernelSU: $(git -C "$KSU_DIR" log -1 --oneline)"
 
 info "Intégration KernelSU"
