@@ -4,15 +4,16 @@
 # Appareil : Motorola One 5G Ace (kiev / lito)
 # Kernel   : 4.19.325
 # Source   : LineageOS/android_kernel_motorola_sm8250 (branche lineage-23.2)
-# KernelSU : cyberc3dr/KernelSU (susfs-rksu-master)
+# KernelSU : backslashxx/KernelSU v3.3.0-52 (compatible Manager backslashxx)
 # Hooks    : KSU_HACK_ARM64_BRANCH_LINK (natif)
-# SusFS    : core + logs uniquement (minimal)
+# SusFS    : patch cyberc3dr nGKI 4.19 + correctif kiev/lito
+# Profil   : minimal (core + logs uniquement)
 # =============================================================================
 set -e
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
-echo "=== BUILD KernelSU + SusFS minimal (BRANCH_LINK) ==="
+echo "=== BUILD backslashxx KernelSU v3.3.0-52 + SusFS minimal ==="
 df -h
 
 # ==================== 0. ENVIRONNEMENT ====================
@@ -86,24 +87,23 @@ if 'get_cred_rcu(cred)' not in content:
 PYEOF
 fi
 
-# ==================== 2. CLONE KERNELSU ====================
-KSU_REPO="${KSU_REPO:-https://github.com/cyberc3dr/KernelSU.git}"
-KSU_REF="${KSU_REF:-susfs-rksu-master}"
-echo "=== Clone KernelSU: $KSU_REPO ($KSU_REF) ==="
+# ==================== 2. CLONE KERNELSU v3.3.0-52 (backslashxx) ====================
+echo "=== Clone KernelSU v3.3.0-52 (backslashxx) ==="
 rm -rf drivers/kernelsu /tmp/KernelSU || true
 
-git clone --depth=1 "$KSU_REPO" /tmp/KernelSU
+git clone --depth=1 https://github.com/backslashxx/KernelSU.git /tmp/KernelSU
 cd /tmp/KernelSU
-if git fetch --depth=1 origin "$KSU_REF" 2>/dev/null && git checkout FETCH_HEAD 2>/dev/null; then
-    echo "✅ Révision KernelSU: $KSU_REF"
+if git fetch --depth=1 origin tag v3.3.0-52 2>/dev/null; then
+    git checkout v3.3.0-52
+    echo "✅ Tag v3.3.0-52 checkout"
 else
-    echo "⚠️ Révision $KSU_REF introuvable"
+    echo "⚠️ Tag v3.3.0-52 introuvable, utilisation de la branche par défaut"
 fi
 git log --oneline -1
 cd "$GITHUB_WORKSPACE/kernel_sources"
 
 # ==================== 2a. SUSFS nGKI ====================
-echo "=== Préparation SusFS via nGKI ==="
+echo "=== Préparation SusFS via nGKI_Kernel_Build ==="
 NGKI_DIR="/tmp/nGKI_Kernel_Build"
 rm -rf "$NGKI_DIR"
 git clone --depth=1 --branch rebase \
@@ -169,31 +169,70 @@ PYEOF_SYMBOL
 
 echo "✅ Patch SusFS nGKI appliqué"
 
-# ==================== 2a-ter. VÉRIFICATION DES DÉFINITIONS SUSFS ====================
-echo "=== Vérification des définitions SuSFS ==="
+# ==================== 2a-ter. DÉFINITIONS MANQUANTES SUSFS ====================
+# Avec backslashxx/KernelSU, ces 3 symboles NE sont PAS fournis par KernelSU.
+# Ils doivent être ajoutés dans fs/susfs.c.
+echo "=== Ajout des définitions manquantes SuSFS ==="
 
-# Ces symboles sont déjà définis dans cyberc3dr/KernelSU (drivers/kernelsu/selinux/selinux.c)
-# Ne PAS les ajouter dans fs/susfs.c, sinon conflit au link (duplicate symbol)
-
-if grep -q "susfs_is_current_ksu_domain" /tmp/KernelSU/kernel/selinux/selinux.c 2>/dev/null; then
-    echo "✅ susfs_is_current_ksu_domain fourni par cyberc3dr/KernelSU"
-else
-    echo "⚠️ susfs_is_current_ksu_domain non trouvé dans KernelSU — vérifier la révision"
+if [ ! -f "fs/susfs.c" ]; then
+    echo "❌ fs/susfs.c introuvable"
+    exit 1
 fi
 
-if grep -q "susfs_ksu_sid" /tmp/KernelSU/kernel/selinux/selinux.c 2>/dev/null; then
-    echo "✅ susfs_ksu_sid fourni par cyberc3dr/KernelSU"
-else
-    echo "⚠️ susfs_ksu_sid non trouvé dans KernelSU"
-fi
+python3 << 'PYEOF'
+from pathlib import Path
+import re
 
-if grep -q "susfs_priv_app_sid" /tmp/KernelSU/kernel/selinux/selinux.c 2>/dev/null; then
-    echo "✅ susfs_priv_app_sid fourni par cyberc3dr/KernelSU"
-else
-    echo "⚠️ susfs_priv_app_sid non trouvé dans KernelSU"
-fi
+path = Path("fs/susfs.c")
+text = path.read_text()
+original_len = len(text)
+added = []
 
-echo "✅ Vérification terminée (pas d'ajout dans fs/susfs.c)"
+# 1. susfs_is_current_ksu_domain
+if not re.search(r'^bool\s+susfs_is_current_ksu_domain\s*\(void\)', text, re.MULTILINE):
+    text += '''
+
+/* ═══ SUSFS_FIX: susfs_is_current_ksu_domain ═══ */
+bool susfs_is_current_ksu_domain(void)
+{
+	const struct cred *cred = current_cred();
+	return (cred->uid.val == 0 || cred->uid.val == 2000);
+}
+EXPORT_SYMBOL(susfs_is_current_ksu_domain);
+'''
+    added.append("susfs_is_current_ksu_domain")
+
+# 2. susfs_ksu_sid
+if not re.search(r'^u32\s+susfs_ksu_sid\b', text, re.MULTILINE):
+    text += '''
+
+/* ═══ SUSFS_FIX: susfs_ksu_sid ═══ */
+u32 susfs_ksu_sid = 0;
+EXPORT_SYMBOL(susfs_ksu_sid);
+'''
+    added.append("susfs_ksu_sid")
+
+# 3. susfs_priv_app_sid
+if not re.search(r'^u32\s+susfs_priv_app_sid\b', text, re.MULTILINE):
+    text += '''
+
+/* ═══ SUSFS_FIX: susfs_priv_app_sid ═══ */
+u32 susfs_priv_app_sid = 0;
+EXPORT_SYMBOL(susfs_priv_app_sid);
+'''
+    added.append("susfs_priv_app_sid")
+
+if added:
+    path.write_text(text)
+    print(f"[+] Ajouté : {', '.join(added)}")
+else:
+    print("[i] Aucune modification")
+PYEOF
+
+for sym in susfs_is_current_ksu_domain susfs_ksu_sid susfs_priv_app_sid; do
+    grep -q "$sym" fs/susfs.c || { echo "❌ $sym manquant"; exit 1; }
+done
+echo "✅ Toutes les définitions présentes"
 
 # ==================== 2b. SYMLINK DRIVER ====================
 ln -sf /tmp/KernelSU/kernel drivers/kernelsu
@@ -203,6 +242,80 @@ if [ ! -d "drivers/kernelsu" ]; then
     exit 1
 fi
 echo "✅ Symlink OK"
+
+# Kconfig SusFS (backslashxx n'inclut pas les options SusFS par défaut)
+python3 - <<'PYEOF_KCONFIG'
+from pathlib import Path
+
+path = Path("/tmp/KernelSU/kernel/Kconfig")
+text = path.read_text()
+marker = "\nconfig KSU_SUSFS\n"
+if marker not in text:
+    block = r'''
+
+config KSU_SUSFS
+	bool "SUSFS core (nGKI 4.19)"
+	depends on KSU
+	default n
+
+config KSU_SUSFS_ENABLE_LOG
+	bool "SUSFS logging"
+	depends on KSU_SUSFS
+	default n
+
+config KSU_SUSFS_SUS_PATH
+	bool "SUSFS path hiding"
+	depends on KSU_SUSFS
+	default n
+
+config KSU_SUSFS_SUS_MOUNT
+	bool "SUSFS mount hiding"
+	depends on KSU_SUSFS
+	default n
+
+config KSU_SUSFS_SUS_KSTAT
+	bool "SUSFS kstat hiding"
+	depends on KSU_SUSFS
+	default n
+
+config KSU_SUSFS_SPOOF_UNAME
+	bool "SUSFS uname spoofing"
+	depends on KSU_SUSFS
+	default n
+
+config KSU_SUSFS_TRY_UMOUNT
+	bool "SUSFS try umount"
+	depends on KSU_SUSFS
+	default n
+
+config KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
+	bool "SUSFS hide symbols"
+	depends on KSU_SUSFS
+	default n
+
+config KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+	bool "SUSFS cmdline spoofing"
+	depends on KSU_SUSFS
+	default n
+
+config KSU_SUSFS_OPEN_REDIRECT
+	bool "SUSFS open redirect"
+	depends on KSU_SUSFS
+	default n
+
+config KSU_SUSFS_SUS_MAP
+	bool "SUSFS map hiding"
+	depends on KSU_SUSFS
+	default n
+'''
+    if "\nendmenu" not in text:
+        raise SystemExit("KSU Kconfig endmenu not found")
+    text = text.replace("\nendmenu", block + "\nendmenu", 1)
+    path.write_text(text)
+    print("✅ Déclarations Kconfig SUSFS ajoutées")
+else:
+    print("✅ Déclarations Kconfig SUSFS déjà présentes")
+PYEOF_KCONFIG
 
 printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> drivers/Makefile
 sed -i "/endmenu/i\source \"drivers/kernelsu/Kconfig\"" drivers/Kconfig
