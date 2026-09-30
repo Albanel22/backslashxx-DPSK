@@ -38,135 +38,334 @@ OUT_DIR="$KERNEL_DIR/out"
 OUTPUT_DIR="$WORKSPACE/output"
 LOG="$WORKSPACE/build.log"
 
-fail() { echo "❌ $*" >&2; exit 1; }
-info() { echo; echo "=== $* ==="; }
-need_cmd() { command -v "$1" >/dev/null 2>&1 || fail "Commande absente: $1"; }
+fail() {
+    echo "❌ $*" >&2
+    exit 1
+}
+
+info() {
+    echo
+    echo "=== $* ==="
+}
+
+need_cmd() {
+    command -v "$1" >/dev/null 2>&1 ||
+        fail "Commande absente: $1"
+}
 
 cleanup_on_error() {
     rc=$?
     echo "❌ BUILD FAILED (code $rc)"
+
     if [[ -f "$LOG" ]]; then
         echo "--- dernières erreurs ---"
-        grep -iE 'error:|undefined reference|undefined symbol|fatal:' "$LOG" | tail -80 || true
+        grep -iE \
+            'error:|undefined reference|undefined symbol|fatal:' \
+            "$LOG" | tail -80 || true
     fi
+
     exit "$rc"
 }
+
 trap cleanup_on_error ERR
 
 if command -v apt-get >/dev/null 2>&1; then
     sudo apt-get update
-    sudo apt-get install -y bc bison build-essential ccache flex libelf-dev libssl-dev \
-        libncurses-dev gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
-        clang llvm lld device-tree-compiler zip unzip curl git python3 patch
+
+    sudo apt-get install -y \
+        bc \
+        bison \
+        build-essential \
+        ccache \
+        flex \
+        libelf-dev \
+        libssl-dev \
+        libncurses-dev \
+        gcc-aarch64-linux-gnu \
+        gcc-arm-linux-gnueabi \
+        clang \
+        llvm \
+        lld \
+        device-tree-compiler \
+        zip \
+        unzip \
+        curl \
+        git \
+        python3 \
+        patch
 fi
-for c in git make python3 patch clang ld.lld; do need_cmd "$c"; done
+
+for c in git make python3 patch clang ld.lld; do
+    need_cmd "$c"
+done
+
 mkdir -p "$WORKSPACE"
-rm -rf "$KERNEL_DIR" "$KSU_DIR" "$SUSFS_DIR" "$OUTPUT_DIR"
+
+rm -rf \
+    "$KERNEL_DIR" \
+    "$KSU_DIR" \
+    "$SUSFS_DIR" \
+    "$OUTPUT_DIR"
+
 mkdir -p "$OUTPUT_DIR"
 
 info "Clonage du noyau"
-git clone --depth=1 --branch "$KERNEL_REF" "$KERNEL_REPO" "$KERNEL_DIR"
+
+git clone \
+    --depth=1 \
+    --branch "$KERNEL_REF" \
+    "$KERNEL_REPO" \
+    "$KERNEL_DIR"
+
 git -C "$KERNEL_DIR" log -1 --oneline
 
 info "Clonage de KernelSU backslashxx"
-git clone --depth=1 --branch "$KSU_REF" "$KSU_REPO" "$KSU_DIR"
+
+git clone \
+    --depth=1 \
+    --branch "$KSU_REF" \
+    "$KSU_REPO" \
+    "$KSU_DIR"
+
 echo "KernelSU: $(git -C "$KSU_DIR" log -1 --oneline)"
 
 info "Intégration KernelSU"
-ln -s "$KSU_DIR/kernel" "$KERNEL_DIR/drivers/kernelsu"
-grep -qF 'obj-$(CONFIG_KSU) += kernelsu/' "$KERNEL_DIR/drivers/Makefile" || \
-    printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> "$KERNEL_DIR/drivers/Makefile"
-grep -qF 'source "drivers/kernelsu/Kconfig"' "$KERNEL_DIR/drivers/Kconfig" || \
-    sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' "$KERNEL_DIR/drivers/Kconfig"
+
+ln -s \
+    "$KSU_DIR/kernel" \
+    "$KERNEL_DIR/drivers/kernelsu"
+
+grep -qF \
+    'obj-$(CONFIG_KSU) += kernelsu/' \
+    "$KERNEL_DIR/drivers/Makefile" ||
+    printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' \
+        >> "$KERNEL_DIR/drivers/Makefile"
+
+grep -qF \
+    'source "drivers/kernelsu/Kconfig"' \
+    "$KERNEL_DIR/drivers/Kconfig" ||
+    sed -i \
+        '/endmenu/i source "drivers/kernelsu/Kconfig"' \
+        "$KERNEL_DIR/drivers/Kconfig"
 
 info "Application stricte de SusFS 4.19"
-git clone --depth=1 --branch "$SUSFS_REF" "$SUSFS_REPO" "$SUSFS_DIR"
+
+# Le dépôt SusFS est public mais son clonage peut échouer
+# transitoirement sur un runner GitHub.
+# Le log est conservé et le clonage est réessayé trois fois.
+
+rm -rf \
+    "$SUSFS_DIR" \
+    "$WORKSPACE/susfs_clone.log"
+
+clone_ok=0
+
+for attempt in 1 2 3; do
+    echo "Clonage SusFS: tentative $attempt/3"
+
+    if git clone \
+        --depth=1 \
+        --single-branch \
+        --branch "$SUSFS_REF" \
+        "$SUSFS_REPO" \
+        "$SUSFS_DIR" \
+        2>&1 | tee -a "$WORKSPACE/susfs_clone.log"
+    then
+        clone_ok=1
+        break
+    fi
+
+    rm -rf "$SUSFS_DIR"
+
+    if [[ "$attempt" -lt 3 ]]; then
+        sleep 5
+    fi
+done
+
+if [[ "$clone_ok" -ne 1 ]]; then
+    echo "--- susfs_clone.log ---"
+    cat "$WORKSPACE/susfs_clone.log"
+
+    fail \
+        "Clonage SusFS impossible après 3 tentatives: \
+$SUSFS_REPO#$SUSFS_REF"
+fi
+
 SUSFS_PATCH="$SUSFS_DIR/$SUSFS_PATCH_REL"
-[[ -f "$SUSFS_PATCH" ]] || fail "Patch SusFS introuvable: $SUSFS_PATCH"
+
+[[ -f "$SUSFS_PATCH" ]] ||
+    fail "Patch SusFS introuvable: $SUSFS_PATCH"
+
 cd "$KERNEL_DIR"
+
 set +e
-patch --batch --forward -p1 < "$SUSFS_PATCH" > "$WORKSPACE/susfs_patch.log" 2>&1
+
+patch \
+    --batch \
+    --forward \
+    -p1 \
+    < "$SUSFS_PATCH" \
+    > "$WORKSPACE/susfs_patch.log" \
+    2>&1
+
 patch_rc=$?
+
 set -e
+
 rejects=$(find . -type f -name '*.rej' -print)
-if [[ $patch_rc -ne 0 || -n "$rejects" ]]; then
+
+if [[ "$patch_rc" -ne 0 || -n "$rejects" ]]; then
     echo "--- susfs_patch.log ---"
     cat "$WORKSPACE/susfs_patch.log"
-    [[ -n "$rejects" ]] && while IFS= read -r r; do echo "--- $r"; cat "$r"; done <<< "$rejects"
+
+    if [[ -n "$rejects" ]]; then
+        while IFS= read -r r; do
+            echo "--- $r"
+            cat "$r"
+        done <<< "$rejects"
+    fi
+
     fail "Le patch SusFS n'est pas applicable sans rejet"
 fi
-find . -type f -name '*.orig' -delete
-[[ -f fs/susfs.c && -f include/linux/susfs.h && -f include/linux/susfs_def.h ]] || \
-    fail "Fichiers SusFS attendus absents après application du patch"
 
-grep -qF 'obj-$(CONFIG_KSU_SUSFS) += susfs.o' fs/Makefile || \
-    printf '\nobj-$(CONFIG_KSU_SUSFS) += susfs.o\n' >> fs/Makefile
+find . -type f -name '*.orig' -delete
+
+[[ -f fs/susfs.c ]] ||
+    fail "fs/susfs.c absent après application du patch"
+
+[[ -f include/linux/susfs.h ]] ||
+    fail "include/linux/susfs.h absent après application du patch"
+
+[[ -f include/linux/susfs_def.h ]] ||
+    fail "include/linux/susfs_def.h absent après application du patch"
+
+grep -qF \
+    'obj-$(CONFIG_KSU_SUSFS) += susfs.o' \
+    fs/Makefile ||
+    printf '\nobj-$(CONFIG_KSU_SUSFS) += susfs.o\n' \
+        >> fs/Makefile
 
 info "Compatibilité SusFS / KernelSU"
+
 python3 - <<'PY'
 from pathlib import Path
 
-root = Path('.')
+root = Path(".")
 
 # fs/stat.c utilise les macros et helpers déclarés dans susfs_def.h.
-p = root / 'fs/stat.c'
+p = root / "fs/stat.c"
 s = p.read_text()
-if '#include <linux/susfs_def.h>' not in s:
-    marker = '#include <asm/unistd.h>\n'
+
+if "#include <linux/susfs_def.h>" not in s:
+    marker = "#include <asm/unistd.h>\n"
+
     if marker not in s:
-        raise SystemExit('fs/stat.c: include marker introuvable')
-    s = s.replace(marker, marker + '\n#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n#include <linux/susfs_def.h>\n#endif\n', 1)
+        raise SystemExit(
+            "fs/stat.c: include marker introuvable"
+        )
+
+    s = s.replace(
+        marker,
+        marker
+        + "\n"
+        + "#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n"
+        + "#include <linux/susfs_def.h>\n"
+        + "#endif\n",
+        1,
+    )
+
     p.write_text(s)
 
-# KernelSU setuid_hook.c référence ce helper depuis un autre objet.
-p = root / 'fs/susfs.c'
+# KernelSU setuid_hook.c référence ce helper
+# depuis un autre objet.
+p = root / "fs/susfs.c"
 s = p.read_text()
-if 'static void susfs_run_sus_path_loop(void)' in s:
-    s = s.replace('static void susfs_run_sus_path_loop(void)', 'void susfs_run_sus_path_loop(void)', 1)
-elif 'void susfs_run_sus_path_loop(void)' not in s:
-    raise SystemExit('fs/susfs.c: susfs_run_sus_path_loop introuvable')
+
+if "static void susfs_run_sus_path_loop(void)" in s:
+    s = s.replace(
+        "static void susfs_run_sus_path_loop(void)",
+        "void susfs_run_sus_path_loop(void)",
+        1,
+    )
+elif "void susfs_run_sus_path_loop(void)" not in s:
+    raise SystemExit(
+        "fs/susfs.c: susfs_run_sus_path_loop introuvable"
+    )
+
 p.write_text(s)
 PY
 
 info "Hooks manuels KernelSU pour le noyau 4.19"
+
 python3 - <<'PYEOF_HOOKS'
 from pathlib import Path
 import re
-root = Path('.')
+
+root = Path(".")
 
 def insert_once(path, signature, extern_decl, call):
     p = root / path
     s = p.read_text()
+
     if call in s:
         return
+
     m = re.search(signature, s)
+
     if not m:
-        raise SystemExit(f"Signature introuvable pour {path}")
-    block = f"\n{extern_decl}\n#if defined(CONFIG_KSU)\n{call}\n#endif\n"
+        raise SystemExit(
+            f"Signature introuvable pour {path}"
+        )
+
+    block = (
+        f"\n{extern_decl}\n"
+        "#if defined(CONFIG_KSU)\n"
+        f"{call}\n"
+        "#endif\n"
+    )
+
     p.write_text(s[:m.end()] + block + s[m.end():])
 
+
 insert_once(
-    'fs/exec.c',
-    r'static int do_execveat_common\(int fd, struct filename \*filename,\s*\n\s*struct user_arg_ptr argv,\s*\n\s*struct user_arg_ptr envp,\s*\n\s*int flags\)\s*\n\{',
-    'extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);',
-    'ksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);')
+    "fs/exec.c",
+    r"static int do_execveat_common\(int fd, struct filename \*filename,\s*\n\s*struct user_arg_ptr argv,\s*\n\s*struct user_arg_ptr envp,\s*\n\s*int flags\)\s*\n\{",
+    "extern int ksu_handle_execveat_sucompat("
+    "int *fd, struct filename **filename_ptr, "
+    "void *argv, void *envp, int *flags);",
+    "ksu_handle_execveat_sucompat("
+    "&fd, &filename, &argv, &envp, &flags);",
+)
+
 insert_once(
-    'fs/open.c',
-    r'long do_faccessat\(int dfd, const char __user \*filename, int mode\)\s*\n\{',
-    'extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);',
-    'ksu_handle_faccessat(&dfd, &filename, &mode, NULL);')
+    "fs/open.c",
+    r"long do_faccessat\(int dfd, const char __user \*filename, int mode\)\s*\n\{",
+    "extern int ksu_handle_faccessat("
+    "int *dfd, const char __user **filename_user, "
+    "int *mode, int *flags);",
+    "ksu_handle_faccessat("
+    "&dfd, &filename, &mode, NULL);",
+)
+
 insert_once(
-    'fs/stat.c',
-    r'int vfs_statx\(int dfd, const char __user \*filename, int flags,\s*\n\s*struct kstat \*stat, unsigned int request_mask\)\s*\n\{',
-    'extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);',
-    'ksu_handle_stat(&dfd, &filename, &flags);')
+    "fs/stat.c",
+    r"int vfs_statx\(int dfd, const char __user \*filename, int flags,\s*\n\s*struct kstat \*stat, unsigned int request_mask\)\s*\n\{",
+    "extern int ksu_handle_stat("
+    "int *dfd, const char __user **filename_user, "
+    "int *flags);",
+    "ksu_handle_stat("
+    "&dfd, &filename, &flags);",
+)
 PYEOF_HOOKS
 
 info "Déclaration Kconfig SusFS"
+
 python3 - <<'PYEOF_KCONFIG'
 from pathlib import Path
+
 p = Path("drivers/kernelsu/Kconfig")
 s = p.read_text()
+
 if "config KSU_SUSFS" not in s:
     s += """
 
@@ -176,57 +375,94 @@ menuconfig KSU_SUSFS
     default y
 
 if KSU_SUSFS
+
 config KSU_SUSFS_SUS_PATH
     bool "Sus path"
     default y
+
 config KSU_SUSFS_SUS_MOUNT
     bool "Sus mount"
     default y
+
 config KSU_SUSFS_SUS_KSTAT
     bool "Sus kstat"
     default y
+
 config KSU_SUSFS_SPOOF_UNAME
     bool "Spoof uname"
     default y
+
 config KSU_SUSFS_TRY_UMOUNT
     bool "Try umount"
     default n
+
 config KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
     bool "Spoof cmdline or bootconfig"
     default n
+
 config KSU_SUSFS_OPEN_REDIRECT
     bool "Open redirect"
     default n
+
 config KSU_SUSFS_SUS_MAP
     bool "Sus map"
     default n
+
 config KSU_SUSFS_ENABLE_LOG
     bool "Enable log"
     default y
+
 config KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
     bool "Hide KernelSU/SUSFS symbols"
     default y
+
 endif
 """
+
     p.write_text(s)
 PYEOF_KCONFIG
 
 info "Configuration"
+
 if [[ -z "$DEFCONFIG" ]]; then
-    DEFCONFIG=$(find arch/arm64/configs/vendor arch/arm64/configs -maxdepth 2 \
-        \( -iname '*kiev*' -o -iname '*lito*' \) -type f -print -quit 2>/dev/null || true)
-    [[ -n "$DEFCONFIG" ]] || fail "Defconfig kiev/lito introuvable; définir DEFCONFIG"
+    DEFCONFIG=$(
+        find \
+            arch/arm64/configs/vendor \
+            arch/arm64/configs \
+            -maxdepth 2 \
+            \( -iname "*kiev*" -o -iname "*lito*" \) \
+            -type f \
+            -print \
+            -quit \
+            2>/dev/null || true
+    )
+
+    [[ -n "$DEFCONFIG" ]] ||
+        fail \
+            "Defconfig kiev/lito introuvable; définir DEFCONFIG"
+
     DEFCONFIG="${DEFCONFIG#arch/arm64/configs/}"
 fi
-export ARCH=arm64 SUBARCH=arm64
+
+export ARCH=arm64
+export SUBARCH=arm64
 export CROSS_COMPILE="${CROSS_COMPILE:-aarch64-linux-gnu-}"
 export CROSS_COMPILE_ARM32="${CROSS_COMPILE_ARM32:-arm-linux-gnueabi-}"
-make O="$OUT_DIR" LLVM=1 "$DEFCONFIG"
+
+make \
+    O="$OUT_DIR" \
+    LLVM=1 \
+    "$DEFCONFIG"
 
 scripts_config="$KERNEL_DIR/scripts/config"
-[[ -x "$scripts_config" ]] || chmod +x "$scripts_config"
+
+[[ -x "$scripts_config" ]] ||
+    chmod +x "$scripts_config"
+
 set +e
-"$scripts_config" --file "$OUT_DIR/.config" \
+
+"$scripts_config" \
+    --file "$OUT_DIR/.config" \
     --enable KSU \
     --disable KSU_HACK_ARM64_BRANCH_LINK \
     --disable KSU_TAMPER_SYSCALL_TABLE \
@@ -250,31 +486,78 @@ set +e
     --disable KPROBE_EVENTS \
     --enable THREAD_INFO_IN_TASK \
     --disable CC_WERROR
+
 set -e
-make O="$OUT_DIR" LLVM=1 olddefconfig
-cp "$OUT_DIR/.config" "$OUTPUT_DIR/kernel.config"
-grep -E 'CONFIG_(KSU|KSU_SUSFS)' "$OUT_DIR/.config" | tee "$OUTPUT_DIR/ksu-susfs.config"
+
+make \
+    O="$OUT_DIR" \
+    LLVM=1 \
+    olddefconfig
+
+cp \
+    "$OUT_DIR/.config" \
+    "$OUTPUT_DIR/kernel.config"
+
+grep -E \
+    "CONFIG_(KSU|KSU_SUSFS)" \
+    "$OUT_DIR/.config" \
+    | tee "$OUTPUT_DIR/ksu-susfs.config"
 
 info "Compilation du noyau"
-make O="$OUT_DIR" LLVM=1 -j"$JOBS" Image 2>&1 | tee "$LOG"
-[[ -f "$OUT_DIR/arch/arm64/boot/Image" ]] || fail "Image noyau absente"
-cp "$OUT_DIR/arch/arm64/boot/Image" "$OUTPUT_DIR/Image"
-cp "$LOG" "$OUTPUT_DIR/build.log"
+
+make \
+    O="$OUT_DIR" \
+    LLVM=1 \
+    -j"$JOBS" \
+    Image \
+    2>&1 \
+    | tee "$LOG"
+
+[[ -f "$OUT_DIR/arch/arm64/boot/Image" ]] ||
+    fail "Image noyau absente"
+
+cp \
+    "$OUT_DIR/arch/arm64/boot/Image" \
+    "$OUTPUT_DIR/Image"
+
+cp \
+    "$LOG" \
+    "$OUTPUT_DIR/build.log"
 
 info "Vérifications finales"
-! find "$KERNEL_DIR" -type f \( -name '*.rej' -o -name '*.orig' \) -print -quit | grep -q . || \
+
+if find "$KERNEL_DIR" \
+    -type f \
+    \( -name "*.rej" -o -name "*.orig" \) \
+    -print \
+    -quit \
+    | grep -q .
+then
     fail "Des fichiers .rej/.orig subsistent"
+fi
+
 file "$OUTPUT_DIR/Image" 2>/dev/null || true
 
 echo "✅ Compilation KernelSU + SusFS réussie"
 echo "Sorties: $OUTPUT_DIR"
 
 if [[ "$ENABLE_REPACK" == 1 ]]; then
-    [[ -n "$STOCK_BOOT_URL" ]] || fail "ENABLE_REPACK=1 nécessite STOCK_BOOT_URL"
+    [[ -n "$STOCK_BOOT_URL" ]] ||
+        fail "ENABLE_REPACK=1 nécessite STOCK_BOOT_URL"
+
     need_cmd curl
     need_cmd unzip
+
     info "Repack boot.img"
-    curl -fL "$STOCK_BOOT_URL" -o "$WORKSPACE/boot-stock.img"
-    echo "Le repack nécessite magiskboot fourni séparément; aucun flash n'est effectué."
-    fail "Repack non activé automatiquement dans cette version sûre"
+
+    curl \
+        -fL \
+        "$STOCK_BOOT_URL" \
+        -o "$WORKSPACE/boot-stock.img"
+
+    echo \
+        "Le repack nécessite magiskboot fourni séparément; aucun flash n'est effectué."
+
+    fail \
+        "Repack non activé automatiquement dans cette version sûre"
 fi
