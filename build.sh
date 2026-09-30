@@ -53,6 +53,12 @@ cleanup_on_error() {
 }
 trap cleanup_on_error ERR
 
+if command -v apt-get >/dev/null 2>&1; then
+    sudo apt-get update
+    sudo apt-get install -y bc bison build-essential ccache flex libelf-dev libssl-dev \
+        libncurses-dev gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
+        clang llvm lld device-tree-compiler zip unzip curl git python3 patch
+fi
 for c in git make python3 patch clang ld.lld; do need_cmd "$c"; done
 mkdir -p "$WORKSPACE"
 rm -rf "$KERNEL_DIR" "$KSU_DIR" "$SUSFS_DIR" "$OUTPUT_DIR"
