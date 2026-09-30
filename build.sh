@@ -356,7 +356,7 @@ set +e
     --enable KSU_FEATURE_ADBROOT \
     --enable KSU_SUSFS \
     --enable KSU_SUSFS_ENABLE_LOG \
-    --disable KSU_SUSFS_SUS_PATH \
+    --enable KSU_SUSFS_SUS_PATH \
     --disable KSU_SUSFS_SUS_MOUNT \
     --disable KSU_SUSFS_SUS_KSTAT \
     --disable KSU_SUSFS_SPOOF_UNAME \
