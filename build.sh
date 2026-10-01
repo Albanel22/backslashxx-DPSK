@@ -6,14 +6,14 @@
 # Source   : LineageOS/android_kernel_motorola_sm8250 (branche lineage-23.2)
 # KernelSU : backslashxx/KernelSU v3.3.0-52
 # Hooks    : KSU_TAMPER_SYSCALL_TABLE (table syscall)
-# SusFS    : patch cyberc3dr nGKI 4.19 + correctif kiev/lito + routage
+# SusFS    : patch cyberc3dr nGKI 4.19 + correctif kiev/lito + routage via cmd
 # Profil   : SUS_PATH + core + logs
 # =============================================================================
 set -e
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
-echo "=== BUILD backslashxx KernelSU v3.3.0-52 + SusFS (TAMPER_SYSCALL_TABLE) ==="
+echo "=== BUILD backslashxx KernelSU v3.3.0-52 + SusFS (TAMPER_SYSCALL + routage cmd) ==="
 df -h
 
 # ==================== 0. ENVIRONNEMENT ====================
@@ -229,8 +229,8 @@ for sym in susfs_is_current_ksu_domain susfs_ksu_sid susfs_priv_app_sid; do
 done
 echo "✅ Toutes les définitions présentes"
 
-# ==================== 2a-quinquies. ROUTAGE SUSFS DANS toolkit.h ====================
-echo "=== Ajout du routage SusFS dans backslashxx toolkit.h ==="
+# ==================== 2a-quinquies. ROUTAGE SUSFS DANS toolkit.h (via cmd) ====================
+echo "=== Ajout du routage SusFS dans backslashxx toolkit.h (via cmd) ==="
 
 TOOLKIT_H="/tmp/KernelSU/kernel/downstream/toolkit.h"
 
@@ -262,11 +262,12 @@ if '#include <linux/susfs.h>' not in text:
     )
     added.append("includes SusFS")
 
-# 2. Routage SusFS minimal
+# 2. Routage SusFS basé sur 'cmd' (le 3ème argument de sys_reboot)
 susfs_routing = '''
 #ifdef CONFIG_KSU_SUSFS
-	// ═══ Routage des commandes SusFS ═══
-	switch (magic2) {
+	// ═══ Routage des commandes SusFS (via cmd) ═══
+	// Le binaire ksu_susfs envoie magic2=0xcafebabe et le code SusFS dans 'cmd'
+	switch (cmd) {
 #ifdef CONFIG_KSU_SUSFS_SUS_PATH
 	case CMD_SUSFS_ADD_SUS_PATH:
 		susfs_add_sus_path(arg);
@@ -297,7 +298,7 @@ pattern = r'(if \(magic2 == CHANGE_KSUFLAGS\)\s*\n\s*goto change_ksuflags;\s*\n\
 match = re.search(pattern, text)
 if match:
     text = text[:match.end(1)] + '\n' + susfs_routing + text[match.end(1):]
-    added.append("routage SusFS minimal")
+    added.append("routage SusFS via cmd")
 
 if text != original:
     path.write_text(text)
@@ -306,10 +307,12 @@ else:
     print("[i] Aucune modification")
 PYEOF_TOOLKIT
 
-if grep -q "CMD_SUSFS_SHOW_VERSION" "$TOOLKIT_H"; then
-    echo "✅ Routage SusFS ajouté dans toolkit.h"
+# Vérification
+if grep -q "switch (cmd)" "$TOOLKIT_H" && grep -q "CMD_SUSFS_SHOW_VERSION" "$TOOLKIT_H"; then
+    echo "✅ Routage SusFS (via cmd) ajouté dans toolkit.h"
 else
     echo "❌ Échec de l'ajout du routage SusFS"
+    grep -n "susfs\|CHANGE_KSUFLAGS" "$TOOLKIT_H" | head -10
     exit 1
 fi
 
@@ -608,7 +611,7 @@ cd ..
 
 # ==================== 10. SORTIE ====================
 mkdir -p output
-cp final_boot.img output/Backslashxx-SuSFS-TAMPER_SYSCALL-boot.img
+cp final_boot.img output/Backslashxx-SuSFS-TAMPER_SYSCALL-cmd-boot.img
 cp dtbo-stock.img output/dtbo.img 2>/dev/null || true
 cp kernel_sources/build.log output/
 cp "$GITHUB_WORKSPACE/ksud" output/ksud 2>/dev/null || true
