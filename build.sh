@@ -5,15 +5,14 @@
 # Kernel   : 4.19.325
 # Source   : LineageOS/android_kernel_motorola_sm8250 (branche lineage-23.2)
 # KernelSU : backslashxx/KernelSU v3.3.0-52
-# Hooks    : KSU_TAMPER_SYSCALL_TABLE (table syscall)
-# SusFS    : patch cyberc3dr nGKI 4.19 + correctif kiev/lito + routage via cmd
-# Profil   : SUS_PATH + core + logs
+# Hooks    : KSU_TAMPER_SYSCALL_TABLE
+# SusFS    : patch cyberc3dr nGKI 4.19 + routage via cmd + DEBUG
 # =============================================================================
 set -e
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
-echo "=== BUILD backslashxx KernelSU v3.3.0-52 + SusFS (TAMPER_SYSCALL + routage cmd) ==="
+echo "=== BUILD backslashxx KernelSU v3.3.0-52 + SusFS (TAMPER_SYSCALL + routage cmd + DEBUG) ==="
 df -h
 
 # ==================== 0. ENVIRONNEMENT ====================
@@ -229,8 +228,8 @@ for sym in susfs_is_current_ksu_domain susfs_ksu_sid susfs_priv_app_sid; do
 done
 echo "✅ Toutes les définitions présentes"
 
-# ==================== 2a-quinquies. ROUTAGE SUSFS DANS toolkit.h (via cmd) ====================
-echo "=== Ajout du routage SusFS dans backslashxx toolkit.h (via cmd) ==="
+# ==================== 2a-quinquies. ROUTAGE SUSFS DANS toolkit.h (DEBUG) ====================
+echo "=== Ajout du routage SusFS dans backslashxx toolkit.h (DEBUG) ==="
 
 TOOLKIT_H="/tmp/KernelSU/kernel/downstream/toolkit.h"
 
@@ -248,47 +247,62 @@ text = path.read_text()
 original = text
 added = []
 
-# 1. Ajouter les includes SusFS
+# 1. Ajouter les includes SusFS + ERROR check
 if '#include <linux/susfs.h>' not in text:
     includes_block = '''
 #ifdef CONFIG_KSU_SUSFS
 #include <linux/susfs.h>
 #include <linux/susfs_def.h>
 #endif
+
+/* ═══ DEBUG: vérifier que CONFIG_KSU_SUSFS est bien défini ═══ */
+#ifndef CONFIG_KSU_SUSFS
+#error "SUSFS_DBG: CONFIG_KSU_SUSFS NON DEFINI dans toolkit.h !"
+#endif
 '''
     text = text.replace(
         '#define CHANGE_KSUFLAGS\t\t10013',
         '#define CHANGE_KSUFLAGS\t\t10013' + includes_block
     )
-    added.append("includes SusFS")
+    added.append("includes SusFS + check #error")
 
-# 2. Routage SusFS basé sur 'cmd' (le 3ème argument de sys_reboot)
+# 2. Routage SusFS avec log DEBUG
 susfs_routing = '''
 #ifdef CONFIG_KSU_SUSFS
+	// ═══ DEBUG: logger magic2, cmd, arg ═══
+	pr_info("SUSFS_DBG: magic1=0x%x magic2=0x%x cmd=0x%x arg=%px pid=%d comm=%s\\n",
+	        magic1, magic2, cmd, arg, current->pid, current->comm);
+
 	// ═══ Routage des commandes SusFS (via cmd) ═══
-	// Le binaire ksu_susfs envoie magic2=0xcafebabe et le code SusFS dans 'cmd'
 	switch (cmd) {
 #ifdef CONFIG_KSU_SUSFS_SUS_PATH
 	case CMD_SUSFS_ADD_SUS_PATH:
+		pr_info("SUSFS_DBG: -> CMD_SUSFS_ADD_SUS_PATH\\n");
 		susfs_add_sus_path(arg);
 		return 0;
 	case CMD_SUSFS_ADD_SUS_PATH_LOOP:
+		pr_info("SUSFS_DBG: -> CMD_SUSFS_ADD_SUS_PATH_LOOP\\n");
 		susfs_add_sus_path_loop(arg);
 		return 0;
 #endif
 	case CMD_SUSFS_ENABLE_LOG:
+		pr_info("SUSFS_DBG: -> CMD_SUSFS_ENABLE_LOG\\n");
 		susfs_enable_log(arg);
 		return 0;
 	case CMD_SUSFS_SHOW_VERSION:
+		pr_info("SUSFS_DBG: -> CMD_SUSFS_SHOW_VERSION\\n");
 		susfs_show_version(arg);
 		return 0;
 	case CMD_SUSFS_SHOW_ENABLED_FEATURES:
+		pr_info("SUSFS_DBG: -> CMD_SUSFS_SHOW_ENABLED_FEATURES\\n");
 		susfs_get_enabled_features(arg);
 		return 0;
 	case CMD_SUSFS_SHOW_VARIANT:
+		pr_info("SUSFS_DBG: -> CMD_SUSFS_SHOW_VARIANT\\n");
 		susfs_show_variant(arg);
 		return 0;
 	default:
+		pr_info("SUSFS_DBG: cmd=0x%x non route\\n", cmd);
 		break;
 	}
 #endif
@@ -298,7 +312,7 @@ pattern = r'(if \(magic2 == CHANGE_KSUFLAGS\)\s*\n\s*goto change_ksuflags;\s*\n\
 match = re.search(pattern, text)
 if match:
     text = text[:match.end(1)] + '\n' + susfs_routing + text[match.end(1):]
-    added.append("routage SusFS via cmd")
+    added.append("routage SusFS avec DEBUG")
 
 if text != original:
     path.write_text(text)
@@ -308,11 +322,10 @@ else:
 PYEOF_TOOLKIT
 
 # Vérification
-if grep -q "switch (cmd)" "$TOOLKIT_H" && grep -q "CMD_SUSFS_SHOW_VERSION" "$TOOLKIT_H"; then
-    echo "✅ Routage SusFS (via cmd) ajouté dans toolkit.h"
+if grep -q "SUSFS_DBG" "$TOOLKIT_H" && grep -q "switch (cmd)" "$TOOLKIT_H"; then
+    echo "✅ Routage SusFS avec DEBUG ajouté dans toolkit.h"
 else
     echo "❌ Échec de l'ajout du routage SusFS"
-    grep -n "susfs\|CHANGE_KSUFLAGS" "$TOOLKIT_H" | head -10
     exit 1
 fi
 
@@ -611,7 +624,7 @@ cd ..
 
 # ==================== 10. SORTIE ====================
 mkdir -p output
-cp final_boot.img output/Backslashxx-SuSFS-TAMPER_SYSCALL-cmd-boot.img
+cp final_boot.img output/Backslashxx-SuSFS-DEBUG-boot.img
 cp dtbo-stock.img output/dtbo.img 2>/dev/null || true
 cp kernel_sources/build.log output/
 cp "$GITHUB_WORKSPACE/ksud" output/ksud 2>/dev/null || true
