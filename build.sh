@@ -7,13 +7,13 @@
 # KernelSU : backslashxx/KernelSU v3.3.0-52 (compatible Manager backslashxx)
 # Hooks    : KSU_HACK_ARM64_BRANCH_LINK (natif)
 # SusFS    : patch cyberc3dr nGKI 4.19 + correctif kiev/lito
-# Profil   : minimal (core + logs uniquement)
+# Profil   : SUS_PATH + core + logs + routage complet
 # =============================================================================
 set -e
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
-echo "=== BUILD backslashxx KernelSU v3.3.0-52 + SusFS minimal ==="
+echo "=== BUILD backslashxx KernelSU v3.3.0-52 + SusFS (SUS_PATH + routage) ==="
 df -h
 
 # ==================== 0. ENVIRONNEMENT ====================
@@ -170,8 +170,6 @@ PYEOF_SYMBOL
 echo "✅ Patch SusFS nGKI appliqué"
 
 # ==================== 2a-ter. DÉFINITIONS MANQUANTES SUSFS ====================
-# Avec backslashxx/KernelSU, ces 3 symboles NE sont PAS fournis par KernelSU.
-# Ils doivent être ajoutés dans fs/susfs.c.
 echo "=== Ajout des définitions manquantes SuSFS ==="
 
 if [ ! -f "fs/susfs.c" ]; then
@@ -188,7 +186,6 @@ text = path.read_text()
 original_len = len(text)
 added = []
 
-# 1. susfs_is_current_ksu_domain
 if not re.search(r'^bool\s+susfs_is_current_ksu_domain\s*\(void\)', text, re.MULTILINE):
     text += '''
 
@@ -202,7 +199,6 @@ EXPORT_SYMBOL(susfs_is_current_ksu_domain);
 '''
     added.append("susfs_is_current_ksu_domain")
 
-# 2. susfs_ksu_sid
 if not re.search(r'^u32\s+susfs_ksu_sid\b', text, re.MULTILINE):
     text += '''
 
@@ -212,7 +208,6 @@ EXPORT_SYMBOL(susfs_ksu_sid);
 '''
     added.append("susfs_ksu_sid")
 
-# 3. susfs_priv_app_sid
 if not re.search(r'^u32\s+susfs_priv_app_sid\b', text, re.MULTILINE):
     text += '''
 
@@ -234,6 +229,139 @@ for sym in susfs_is_current_ksu_domain susfs_ksu_sid susfs_priv_app_sid; do
 done
 echo "✅ Toutes les définitions présentes"
 
+# ==================== 2a-quinquies. ROUTAGE SUSFS DANS toolkit.h ====================
+echo "=== Ajout du routage SusFS dans backslashxx toolkit.h ==="
+
+TOOLKIT_H="/tmp/KernelSU/kernel/downstream/toolkit.h"
+
+if [ ! -f "$TOOLKIT_H" ]; then
+    echo "❌ toolkit.h introuvable: $TOOLKIT_H"
+    exit 1
+fi
+
+python3 << 'PYEOF_TOOLKIT'
+from pathlib import Path
+import re
+
+path = Path("/tmp/KernelSU/kernel/downstream/toolkit.h")
+text = path.read_text()
+original = text
+added = []
+
+# 1. Ajouter les includes SusFS après les #define existants
+if '#include <linux/susfs.h>' not in text:
+    includes_block = '''
+#ifdef CONFIG_KSU_SUSFS
+#include <linux/susfs.h>
+#include <linux/susfs_def.h>
+#endif
+'''
+    # Insérer juste après la ligne #define CHANGE_KSUFLAGS
+    text = text.replace(
+        '#define CHANGE_KSUFLAGS\t\t10013',
+        '#define CHANGE_KSUFLAGS\t\t10013' + includes_block
+    )
+    added.append("includes SusFS")
+
+# 2. Ajouter le switch de routage SusFS dans toolkit_handle_sys_reboot()
+susfs_routing = '''
+#ifdef CONFIG_KSU_SUSFS
+	// ═══ Routage des commandes SusFS ═══
+	switch (magic2) {
+	case CMD_SUSFS_ADD_SUS_PATH:
+		susfs_add_sus_path(arg);
+		return 0;
+	case CMD_SUSFS_ADD_SUS_PATH_LOOP:
+		susfs_add_sus_path_loop(arg);
+		return 0;
+	case CMD_SUSFS_ADD_SUS_MOUNT:
+		susfs_add_sus_mount(arg);
+		return 0;
+	case CMD_SUSFS_ADD_SUS_KSTAT:
+		susfs_add_sus_kstat(arg);
+		return 0;
+	case CMD_SUSFS_UPDATE_SUS_KSTAT:
+		susfs_update_sus_kstat(arg);
+		return 0;
+	case CMD_SUSFS_ADD_SUS_KSTAT_STATICALLY:
+		susfs_add_sus_kstat_statically(arg);
+		return 0;
+	case CMD_SUSFS_ADD_TRY_UMOUNT:
+		susfs_add_try_umount(arg);
+		return 0;
+	case CMD_SUSFS_SET_UNAME:
+		susfs_set_uname(arg);
+		return 0;
+	case CMD_SUSFS_ENABLE_LOG:
+		susfs_enable_log(arg);
+		return 0;
+	case CMD_SUSFS_SET_CMDLINE_OR_BOOTCONFIG:
+		susfs_set_cmdline_or_bootconfig(arg);
+		return 0;
+	case CMD_SUSFS_ADD_OPEN_REDIRECT:
+		susfs_add_open_redirect(arg);
+		return 0;
+	case CMD_SUSFS_SHOW_VERSION:
+		susfs_show_version(arg);
+		return 0;
+	case CMD_SUSFS_SHOW_ENABLED_FEATURES:
+		susfs_get_enabled_features(arg);
+		return 0;
+	case CMD_SUSFS_SHOW_VARIANT:
+		susfs_show_variant(arg);
+		return 0;
+	case CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING:
+		susfs_set_avc_log_spoofing(arg);
+		return 0;
+	case CMD_SUSFS_ADD_SUS_MAP:
+		susfs_add_sus_map(arg);
+		return 0;
+	case CMD_SUSFS_RUN_TRY_UMOUNT:
+		susfs_run_try_umount_for_current_mnt_ns();
+		return 0;
+	case CMD_SUSFS_HIDE_SUS_MNTS_FOR_NON_SU_PROCS:
+		susfs_set_hide_sus_mnts_for_non_su_procs(arg);
+		return 0;
+	default:
+		break;
+	}
+#endif
+'''
+
+# Trouver le pattern CHANGE_KSUFLAGS suivi de goto
+pattern = r'(if \(magic2 == CHANGE_KSUFLAGS\)\s*\n\s*goto change_ksuflags;\s*\n\s*\n\s*return 0;)'
+match = re.search(pattern, text)
+if match:
+    text = text[:match.end(1)] + '\n' + susfs_routing + text[match.end(1):]
+    added.append("routage SusFS")
+else:
+    print("[!] Pattern CHANGE_KSUFLAGS non trouvé, tentative alternative...")
+    # Fallback : chercher le premier "return 0;" après la ligne ksuflags
+    idx = text.find('if (magic2 == CHANGE_KSUFLAGS)')
+    if idx > 0:
+        ret_idx = text.find('return 0;', idx)
+        if ret_idx > 0:
+            text = text[:ret_idx] + susfs_routing + '\n\t' + text[ret_idx:]
+            added.append("routage SusFS (fallback)")
+
+if text != original:
+    path.write_text(text)
+    print(f"[+] Ajouté : {', '.join(added)}")
+else:
+    print("[i] Aucune modification (déjà présent ?)")
+PYEOF_TOOLKIT
+
+# Vérification
+if grep -q "CMD_SUSFS_SHOW_VERSION" "$TOOLKIT_H"; then
+    echo "✅ Routage SusFS ajouté dans toolkit.h"
+else
+    echo "❌ Échec de l'ajout du routage SusFS"
+    grep -n "susfs\|CHANGE_KSUFLAGS" "$TOOLKIT_H" | head -10
+    exit 1
+fi
+
+echo "✅ Routage SusFS complet"
+
 # ==================== 2b. SYMLINK DRIVER ====================
 ln -sf /tmp/KernelSU/kernel drivers/kernelsu
 
@@ -243,7 +371,7 @@ if [ ! -d "drivers/kernelsu" ]; then
 fi
 echo "✅ Symlink OK"
 
-# Kconfig SusFS (backslashxx n'inclut pas les options SusFS par défaut)
+# Kconfig SusFS
 python3 - <<'PYEOF_KCONFIG'
 from pathlib import Path
 
@@ -383,7 +511,7 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 echo "=== Config finale ==="
 grep "CONFIG_KSU" out/.config
 
-# Vérification profil SusFS (SUS_PATH + core + logs)
+# Vérification
 grep -q '^CONFIG_KSU_SUSFS=y$' out/.config || { echo "❌ KSU_SUSFS pas activé"; exit 1; }
 grep -q '^CONFIG_KSU_SUSFS_SUS_PATH=y$' out/.config || { echo "❌ KSU_SUSFS_SUS_PATH pas activé"; exit 1; }
 grep -q '^CONFIG_KSU_SUSFS_ENABLE_LOG=y$' out/.config || { echo "❌ KSU_SUSFS_ENABLE_LOG pas activé"; exit 1; }
@@ -541,7 +669,7 @@ cd ..
 
 # ==================== 10. SORTIE ====================
 mkdir -p output
-cp final_boot.img output/Backslashxx-SuSFS-minimal-boot.img
+cp final_boot.img output/Backslashxx-SuSFS-SUS_PATH-Routing-boot.img
 cp dtbo-stock.img output/dtbo.img 2>/dev/null || true
 cp kernel_sources/build.log output/
 cp "$GITHUB_WORKSPACE/ksud" output/ksud 2>/dev/null || true
