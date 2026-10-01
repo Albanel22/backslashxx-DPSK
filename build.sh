@@ -6,14 +6,14 @@
 # Source   : LineageOS/android_kernel_motorola_sm8250 (branche lineage-23.2)
 # KernelSU : backslashxx/KernelSU v3.3.0-52
 # Hooks    : KSU_TAMPER_SYSCALL_TABLE (pour intercepter sys_reboot)
-# SusFS    : patch cyberc3dr nGKI 4.19 + correctif kiev/lito + routage corrigé
+# SusFS    : patch cyberc3dr nGKI 4.19 + routage sys_reboot + routage ioctl
 # Profil   : SUS_PATH + core + logs
 # =============================================================================
 set -e
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
-echo "=== BUILD backslashxx KernelSU v3.3.0-52 + SusFS (routage corrigé) ==="
+echo "=== BUILD backslashxx KernelSU v3.3.0-52 + SusFS (double routage) ==="
 df -h
 
 # ==================== 0. ENVIRONNEMENT ====================
@@ -315,7 +315,6 @@ text = path.read_text()
 original = text
 added = []
 
-# 1. Ajouter les includes SusFS
 if '#include <linux/susfs.h>' not in text:
     includes_block = '''
 #ifdef CONFIG_KSU_SUSFS
@@ -329,15 +328,11 @@ if '#include <linux/susfs.h>' not in text:
     )
     added.append("includes SusFS")
 
-# 2. Routage SusFS (CORRIGÉ : magic2 = 0xFAFAFAFA, cmd = vraie commande)
 susfs_routing = '''
 #ifdef CONFIG_KSU_SUSFS
-	// ═══ Routage des commandes SusFS ═══
-	// Le binaire ksu_susfs v1.5.2+ R28 utilise la nouvelle méthode :
-	//   magic1 = 0xdeadbeef (KSU_INSTALL_MAGIC1)
-	//   magic2 = 0xFAFAFAFA (SUSFS_MAGIC)
-	//   cmd    = la vraie commande SusFS (0x555e1, 0x55550, etc.)
+	pr_info("SUSFS_ROUTING: magic2=0x%x cmd=0x%x\\n", magic2, cmd);
 	if (magic2 == 0xFAFAFAFA) {
+		pr_info("SUSFS_ROUTING: detected SUSFS_MAGIC, switching on cmd=0x%x\\n", cmd);
 		switch (cmd) {
 #ifdef CONFIG_KSU_SUSFS_SUS_PATH
 		case CMD_SUSFS_ADD_SUS_PATH:
@@ -373,15 +368,6 @@ match = re.search(pattern, text)
 if match:
     text = text[:match.end(1)] + '\n' + susfs_routing + text[match.end(1):]
     added.append("routage SusFS")
-else:
-    print("[!] Pattern CHANGE_KSUFLAGS non trouvé")
-    print("[i] Recherche alternative...")
-    idx = text.find('if (magic2 == CHANGE_KSUFLAGS)')
-    if idx > 0:
-        ret_idx = text.find('\treturn 0;', idx)
-        if ret_idx > 0:
-            text = text[:ret_idx] + susfs_routing + '\n\t' + text[ret_idx:]
-            added.append("routage SusFS (fallback)")
 
 if text != original:
     path.write_text(text)
@@ -391,9 +377,142 @@ else:
 PYEOF_TOOLKIT
 
 if grep -q "0xFAFAFAFA" "$TOOLKIT_H"; then
-    echo "✅ Routage SusFS ajouté dans toolkit.h (avec magic2 = 0xFAFAFAFA)"
+    echo "✅ Routage SusFS ajouté dans toolkit.h"
 else
-    echo "❌ Échec de l'ajout du routage SusFS"
+    echo "❌ Échec du routage dans toolkit.h"
+    exit 1
+fi
+
+# ==================== 2a-sexies. ROUTAGE SUSFS DANS dispatch.c ====================
+echo "=== Ajout du routage SusFS dans backslashxx dispatch.c (supercalls) ==="
+
+DISPATCH_C="/tmp/KernelSU/kernel/supercall/dispatch.c"
+
+if [ ! -f "$DISPATCH_C" ]; then
+    echo "⚠️ dispatch.c introuvable: $DISPATCH_C"
+    echo "[i] Recherche alternative..."
+    DISPATCH_C=$(find /tmp/KernelSU -name "dispatch.c" 2>/dev/null | head -1)
+    if [ -z "$DISPATCH_C" ]; then
+        echo "❌ dispatch.c introuvable dans tout /tmp/KernelSU"
+        exit 1
+    fi
+    echo "[+] Trouvé: $DISPATCH_C"
+fi
+
+python3 << 'PYEOF_DISPATCH'
+from pathlib import Path
+import re
+
+# Trouver dispatch.c
+import glob
+paths = glob.glob("/tmp/KernelSU/**/dispatch.c", recursive=True)
+if not paths:
+    print("[!] dispatch.c introuvable")
+    raise SystemExit(1)
+
+path = Path(paths[0])
+print(f"[i] Patch de: {path}")
+text = path.read_text()
+original = text
+added = []
+
+# 1. Ajouter les includes
+if '#include <linux/susfs.h>' not in text:
+    match = re.search(r'(#include\s+[^\n]+\n)', text)
+    if match:
+        includes_block = '''
+#ifdef CONFIG_KSU_SUSFS
+#include <linux/susfs.h>
+#include <linux/susfs_def.h>
+#endif
+'''
+        text = text[:match.end(1)] + includes_block + text[match.end(1):]
+        added.append("includes SusFS")
+
+# 2. Créer des wrappers pour les fonctions SusFS (signature ioctl)
+wrappers = '''
+#ifdef CONFIG_KSU_SUSFS
+/* ═══ Wrappers SusFS pour les handlers ioctl ═══ */
+static int susfs_ioctl_wrap_show_version(void __user *arg) {
+    void __user **ptr = &arg;
+    susfs_show_version(ptr);
+    return 0;
+}
+static int susfs_ioctl_wrap_show_variant(void __user *arg) {
+    void __user **ptr = &arg;
+    susfs_show_variant(ptr);
+    return 0;
+}
+static int susfs_ioctl_wrap_get_enabled_features(void __user *arg) {
+    void __user **ptr = &arg;
+    susfs_get_enabled_features(ptr);
+    return 0;
+}
+static int susfs_ioctl_wrap_enable_log(void __user *arg) {
+    void __user **ptr = &arg;
+    susfs_enable_log(ptr);
+    return 0;
+}
+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
+static int susfs_ioctl_wrap_add_sus_path(void __user *arg) {
+    void __user **ptr = &arg;
+    susfs_add_sus_path(ptr);
+    return 0;
+}
+static int susfs_ioctl_wrap_add_sus_path_loop(void __user *arg) {
+    void __user **ptr = &arg;
+    susfs_add_sus_path_loop(ptr);
+    return 0;
+}
+#endif
+#endif
+'''
+
+# Insérer les wrappers AVANT "static const struct ksu_ioctl_cmd_map ksu_ioctl_handlers"
+pattern_handlers = r'(static const struct ksu_ioctl_cmd_map ksu_ioctl_handlers\[\])'
+match = re.search(pattern_handlers, text)
+if match:
+    text = text[:match.start(1)] + wrappers + '\n' + text[match.start(1):]
+    added.append("wrappers SusFS")
+
+# 3. Ajouter les entrées dans la table ksu_ioctl_handlers
+susfs_entries = '''#ifdef CONFIG_KSU_SUSFS
+	{ .cmd = 0x555e1, .name = "SUSFS_SHOW_VERSION", .handler = susfs_ioctl_wrap_show_version, .perm_check = manager_or_root },
+	{ .cmd = 0x555e2, .name = "SUSFS_SHOW_ENABLED_FEATURES", .handler = susfs_ioctl_wrap_get_enabled_features, .perm_check = manager_or_root },
+	{ .cmd = 0x555e3, .name = "SUSFS_SHOW_VARIANT", .handler = susfs_ioctl_wrap_show_variant, .perm_check = manager_or_root },
+	{ .cmd = 0x555a0, .name = "SUSFS_ENABLE_LOG", .handler = susfs_ioctl_wrap_enable_log, .perm_check = only_root },
+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
+	{ .cmd = 0x55550, .name = "SUSFS_ADD_SUS_PATH", .handler = susfs_ioctl_wrap_add_sus_path, .perm_check = only_root },
+	{ .cmd = 0x55553, .name = "SUSFS_ADD_SUS_PATH_LOOP", .handler = susfs_ioctl_wrap_add_sus_path_loop, .perm_check = only_root },
+#endif
+#endif
+'''
+
+# Trouver le sentinel
+sentinel_pattern = r'(\{\s*\.cmd\s*=\s*0,\s*\.name\s*=\s*NULL,\s*\.handler\s*=\s*NULL)'
+match = re.search(sentinel_pattern, text)
+if match:
+    text = text[:match.start(1)] + susfs_entries + '\t' + text[match.start(1):]
+    added.append("handlers SusFS")
+else:
+    print("[!] Sentinel non trouvé, fallback...")
+    last_handler = text.rfind('KSU_IOCTL_')
+    if last_handler > 0:
+        end_of_line = text.find('\n', last_handler)
+        text = text[:end_of_line+1] + susfs_entries + text[end_of_line+1:]
+        added.append("handlers SusFS (fallback)")
+
+if text != original:
+    path.write_text(text)
+    print(f"[+] Ajouté : {', '.join(added)}")
+else:
+    print("[i] Aucune modification")
+PYEOF_DISPATCH
+
+if grep -q "0x555e1" "$DISPATCH_C"; then
+    echo "✅ Routage SusFS ajouté dans dispatch.c"
+else
+    echo "❌ Échec du routage dans dispatch.c"
     exit 1
 fi
 
@@ -705,7 +824,7 @@ cd ..
 
 # ==================== 10. SORTIE ====================
 mkdir -p output
-cp final_boot.img output/Backslashxx-SuSFS-FIXED-boot.img
+cp final_boot.img output/Backslashxx-SuSFS-IOCTL-boot.img
 cp dtbo-stock.img output/dtbo.img 2>/dev/null || true
 cp kernel_sources/build.log output/
 cp "$GITHUB_WORKSPACE/ksud" output/ksud 2>/dev/null || true
