@@ -5,14 +5,15 @@
 # Kernel   : 4.19.325
 # Source   : LineageOS/android_kernel_motorola_sm8250 (branche lineage-23.2)
 # KernelSU : backslashxx/KernelSU v3.3.0-52
-# Hooks    : KSU_TAMPER_SYSCALL_TABLE
-# SusFS    : patch cyberc3dr nGKI 4.19 + routage via cmd + DEBUG
+# Hooks    : KSU_TAMPER_SYSCALL_TABLE (pour intercepter sys_reboot)
+# SusFS    : patch cyberc3dr nGKI 4.19 + correctif kiev/lito + routage corrigé
+# Profil   : SUS_PATH + core + logs
 # =============================================================================
 set -e
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
-echo "=== BUILD backslashxx KernelSU v3.3.0-52 + SusFS (TAMPER_SYSCALL + routage cmd + DEBUG) ==="
+echo "=== BUILD backslashxx KernelSU v3.3.0-52 + SusFS (routage corrigé) ==="
 df -h
 
 # ==================== 0. ENVIRONNEMENT ====================
@@ -86,7 +87,7 @@ if 'get_cred_rcu(cred)' not in content:
 PYEOF
 fi
 
-# ==================== 2. CLONE KERNELSU v3.3.0-52 ====================
+# ==================== 2. CLONE KERNELSU v3.3.0-52 (backslashxx) ====================
 echo "=== Clone KernelSU v3.3.0-52 (backslashxx) ==="
 rm -rf drivers/kernelsu /tmp/KernelSU || true
 
@@ -228,8 +229,75 @@ for sym in susfs_is_current_ksu_domain susfs_ksu_sid susfs_priv_app_sid; do
 done
 echo "✅ Toutes les définitions présentes"
 
-# ==================== 2a-quinquies. ROUTAGE SUSFS DANS toolkit.h (DEBUG) ====================
-echo "=== Ajout du routage SusFS dans backslashxx toolkit.h (DEBUG) ==="
+# ==================== 2a-quater. AJOUT SHOW_VERSION + SHOW_VARIANT ====================
+echo "=== Ajout de susfs_show_version et susfs_show_variant ==="
+
+python3 << 'PYEOF_SHOW'
+from pathlib import Path
+
+path = Path("fs/susfs.c")
+text = path.read_text()
+added = []
+
+if 'susfs_show_version' not in text:
+    text += '''
+
+/* ═══ SUSFS_FIX: susfs_show_version ═══ */
+void susfs_show_version(void __user **user_info) {
+	struct st_susfs_version info = {0};
+
+	if (copy_from_user(&info, (struct st_susfs_version __user*)*user_info, sizeof(info))) {
+		info.err = -EFAULT;
+		goto out_copy_to_user;
+	}
+
+	strscpy(info.susfs_version, SUSFS_VERSION, SUSFS_MAX_VERSION_BUFSIZE-1);
+	info.err = 0;
+out_copy_to_user:
+	if (copy_to_user((struct st_susfs_version __user*)*user_info, &info, sizeof(info))) {
+		info.err = -EFAULT;
+	}
+	SUSFS_LOGI("CMD_SUSFS_SHOW_VERSION -> ret: %d\\n", info.err);
+}
+'''
+    added.append("susfs_show_version")
+
+if 'susfs_show_variant' not in text:
+    text += '''
+
+/* ═══ SUSFS_FIX: susfs_show_variant ═══ */
+void susfs_show_variant(void __user **user_info) {
+	struct st_susfs_variant info = {0};
+
+	if (copy_from_user(&info, (struct st_susfs_variant __user*)*user_info, sizeof(info))) {
+		info.err = -EFAULT;
+		goto out_copy_to_user;
+	}
+
+	strscpy(info.susfs_variant, SUSFS_VARIANT, SUSFS_MAX_VARIANT_BUFSIZE-1);
+	info.err = 0;
+out_copy_to_user:
+	if (copy_to_user((struct st_susfs_variant __user*)*user_info, &info, sizeof(info))) {
+		info.err = -EFAULT;
+	}
+	SUSFS_LOGI("CMD_SUSFS_SHOW_VARIANT -> ret: %d\\n", info.err);
+}
+'''
+    added.append("susfs_show_variant")
+
+if added:
+    path.write_text(text)
+    print(f"[+] Ajouté : {', '.join(added)}")
+else:
+    print("[i] susfs_show_version et susfs_show_variant déjà présents")
+PYEOF_SHOW
+
+grep -q "susfs_show_version" fs/susfs.c || { echo "❌ susfs_show_version manquant"; exit 1; }
+grep -q "susfs_show_variant" fs/susfs.c || { echo "❌ susfs_show_variant manquant"; exit 1; }
+echo "✅ susfs_show_version et susfs_show_variant présents"
+
+# ==================== 2a-quinquies. ROUTAGE SUSFS DANS toolkit.h ====================
+echo "=== Ajout du routage SusFS dans backslashxx toolkit.h ==="
 
 TOOLKIT_H="/tmp/KernelSU/kernel/downstream/toolkit.h"
 
@@ -247,63 +315,55 @@ text = path.read_text()
 original = text
 added = []
 
-# 1. Ajouter les includes SusFS + ERROR check
+# 1. Ajouter les includes SusFS
 if '#include <linux/susfs.h>' not in text:
     includes_block = '''
 #ifdef CONFIG_KSU_SUSFS
 #include <linux/susfs.h>
 #include <linux/susfs_def.h>
 #endif
-
-/* ═══ DEBUG: vérifier que CONFIG_KSU_SUSFS est bien défini ═══ */
-#ifndef CONFIG_KSU_SUSFS
-#error "SUSFS_DBG: CONFIG_KSU_SUSFS NON DEFINI dans toolkit.h !"
-#endif
 '''
     text = text.replace(
         '#define CHANGE_KSUFLAGS\t\t10013',
         '#define CHANGE_KSUFLAGS\t\t10013' + includes_block
     )
-    added.append("includes SusFS + check #error")
+    added.append("includes SusFS")
 
-# 2. Routage SusFS avec log DEBUG
+# 2. Routage SusFS (CORRIGÉ : magic2 = 0xFAFAFAFA, cmd = vraie commande)
 susfs_routing = '''
 #ifdef CONFIG_KSU_SUSFS
-	// ═══ DEBUG: logger magic2, cmd, arg ═══
-	pr_info("SUSFS_DBG: magic1=0x%x magic2=0x%x cmd=0x%x arg=%px pid=%d comm=%s\\n",
-	        magic1, magic2, cmd, arg, current->pid, current->comm);
-
-	// ═══ Routage des commandes SusFS (via cmd) ═══
-	switch (cmd) {
+	// ═══ Routage des commandes SusFS ═══
+	// Le binaire ksu_susfs v1.5.2+ R28 utilise la nouvelle méthode :
+	//   magic1 = 0xdeadbeef (KSU_INSTALL_MAGIC1)
+	//   magic2 = 0xFAFAFAFA (SUSFS_MAGIC)
+	//   cmd    = la vraie commande SusFS (0x555e1, 0x55550, etc.)
+	if (magic2 == 0xFAFAFAFA) {
+		switch (cmd) {
 #ifdef CONFIG_KSU_SUSFS_SUS_PATH
-	case CMD_SUSFS_ADD_SUS_PATH:
-		pr_info("SUSFS_DBG: -> CMD_SUSFS_ADD_SUS_PATH\\n");
-		susfs_add_sus_path(arg);
-		return 0;
-	case CMD_SUSFS_ADD_SUS_PATH_LOOP:
-		pr_info("SUSFS_DBG: -> CMD_SUSFS_ADD_SUS_PATH_LOOP\\n");
-		susfs_add_sus_path_loop(arg);
-		return 0;
+		case CMD_SUSFS_ADD_SUS_PATH:
+			susfs_add_sus_path(arg);
+			return 0;
+		case CMD_SUSFS_ADD_SUS_PATH_LOOP:
+			susfs_add_sus_path_loop(arg);
+			return 0;
 #endif
-	case CMD_SUSFS_ENABLE_LOG:
-		pr_info("SUSFS_DBG: -> CMD_SUSFS_ENABLE_LOG\\n");
-		susfs_enable_log(arg);
+		case CMD_SUSFS_ENABLE_LOG:
+			susfs_enable_log(arg);
+			return 0;
+		case CMD_SUSFS_SHOW_VERSION:
+			susfs_show_version(arg);
+			return 0;
+		case CMD_SUSFS_SHOW_ENABLED_FEATURES:
+			susfs_get_enabled_features(arg);
+			return 0;
+		case CMD_SUSFS_SHOW_VARIANT:
+			susfs_show_variant(arg);
+			return 0;
+		default:
+			pr_info("susfs: unknown command 0x%x\\n", cmd);
+			break;
+		}
 		return 0;
-	case CMD_SUSFS_SHOW_VERSION:
-		pr_info("SUSFS_DBG: -> CMD_SUSFS_SHOW_VERSION\\n");
-		susfs_show_version(arg);
-		return 0;
-	case CMD_SUSFS_SHOW_ENABLED_FEATURES:
-		pr_info("SUSFS_DBG: -> CMD_SUSFS_SHOW_ENABLED_FEATURES\\n");
-		susfs_get_enabled_features(arg);
-		return 0;
-	case CMD_SUSFS_SHOW_VARIANT:
-		pr_info("SUSFS_DBG: -> CMD_SUSFS_SHOW_VARIANT\\n");
-		susfs_show_variant(arg);
-		return 0;
-	default:
-		pr_info("SUSFS_DBG: cmd=0x%x non route\\n", cmd);
-		break;
 	}
 #endif
 '''
@@ -312,7 +372,16 @@ pattern = r'(if \(magic2 == CHANGE_KSUFLAGS\)\s*\n\s*goto change_ksuflags;\s*\n\
 match = re.search(pattern, text)
 if match:
     text = text[:match.end(1)] + '\n' + susfs_routing + text[match.end(1):]
-    added.append("routage SusFS avec DEBUG")
+    added.append("routage SusFS")
+else:
+    print("[!] Pattern CHANGE_KSUFLAGS non trouvé")
+    print("[i] Recherche alternative...")
+    idx = text.find('if (magic2 == CHANGE_KSUFLAGS)')
+    if idx > 0:
+        ret_idx = text.find('\treturn 0;', idx)
+        if ret_idx > 0:
+            text = text[:ret_idx] + susfs_routing + '\n\t' + text[ret_idx:]
+            added.append("routage SusFS (fallback)")
 
 if text != original:
     path.write_text(text)
@@ -321,9 +390,8 @@ else:
     print("[i] Aucune modification")
 PYEOF_TOOLKIT
 
-# Vérification
-if grep -q "SUSFS_DBG" "$TOOLKIT_H" && grep -q "switch (cmd)" "$TOOLKIT_H"; then
-    echo "✅ Routage SusFS avec DEBUG ajouté dans toolkit.h"
+if grep -q "0xFAFAFAFA" "$TOOLKIT_H"; then
+    echo "✅ Routage SusFS ajouté dans toolkit.h (avec magic2 = 0xFAFAFAFA)"
 else
     echo "❌ Échec de l'ajout du routage SusFS"
     exit 1
@@ -479,13 +547,26 @@ echo "=== Config finale ==="
 grep "CONFIG_KSU" out/.config
 
 # Vérification
-grep -q '^CONFIG_KSU=y$' out/.config || { echo "❌ KSU pas activé"; exit 1; }
-grep -q '^CONFIG_KSU_TAMPER_SYSCALL_TABLE=y$' out/.config || { echo "❌ KSU_TAMPER_SYSCALL_TABLE pas activé"; exit 1; }
 grep -q '^CONFIG_KSU_SUSFS=y$' out/.config || { echo "❌ KSU_SUSFS pas activé"; exit 1; }
 grep -q '^CONFIG_KSU_SUSFS_SUS_PATH=y$' out/.config || { echo "❌ KSU_SUSFS_SUS_PATH pas activé"; exit 1; }
 grep -q '^CONFIG_KSU_SUSFS_ENABLE_LOG=y$' out/.config || { echo "❌ KSU_SUSFS_ENABLE_LOG pas activé"; exit 1; }
+grep -q '^CONFIG_KSU_TAMPER_SYSCALL_TABLE=y$' out/.config || { echo "❌ KSU_TAMPER_SYSCALL_TABLE pas activé"; exit 1; }
 
-echo "✅ Profil SusFS validé : TAMPER_SYSCALL_TABLE + SUS_PATH + core + logs"
+for symbol in \
+    KSU_SUSFS_SUS_MOUNT \
+    KSU_SUSFS_SUS_KSTAT \
+    KSU_SUSFS_SPOOF_UNAME \
+    KSU_SUSFS_TRY_UMOUNT \
+    KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+    KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+    KSU_SUSFS_OPEN_REDIRECT \
+    KSU_SUSFS_SUS_MAP; do
+    if grep -q "^CONFIG_${symbol}=y$" out/.config; then
+        echo "❌ CONFIG_${symbol} ne doit pas être activé"
+        exit 1
+    fi
+done
+echo "✅ Profil validé : SUS_PATH + core + logs + TAMPER_SYSCALL_TABLE"
 
 # ==================== 5. PATCH SIGNATURES MODULE ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
@@ -624,7 +705,7 @@ cd ..
 
 # ==================== 10. SORTIE ====================
 mkdir -p output
-cp final_boot.img output/Backslashxx-SuSFS-DEBUG-boot.img
+cp final_boot.img output/Backslashxx-SuSFS-FIXED-boot.img
 cp dtbo-stock.img output/dtbo.img 2>/dev/null || true
 cp kernel_sources/build.log output/
 cp "$GITHUB_WORKSPACE/ksud" output/ksud 2>/dev/null || true
