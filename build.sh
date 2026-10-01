@@ -4,8 +4,8 @@
 # Appareil : Motorola One 5G Ace (kiev / lito)
 # Kernel   : 4.19.325
 # Source   : LineageOS/android_kernel_motorola_sm8250 (branche lineage-23.2)
-# KernelSU : backslashxx/KernelSU v3.3.0-52 (compatible Manager backslashxx)
-# Hooks    : KSU_HACK_ARM64_BRANCH_LINK (natif)
+# KernelSU : backslashxx/KernelSU v3.3.0-52
+# Hooks    : KSU_TAMPER_SYSCALL_TABLE (table syscall)
 # SusFS    : patch cyberc3dr nGKI 4.19 + correctif kiev/lito + routage
 # Profil   : SUS_PATH + core + logs
 # =============================================================================
@@ -13,7 +13,7 @@ set -e
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
-echo "=== BUILD backslashxx KernelSU v3.3.0-52 + SusFS (SUS_PATH + routage) ==="
+echo "=== BUILD backslashxx KernelSU v3.3.0-52 + SusFS (TAMPER_SYSCALL_TABLE) ==="
 df -h
 
 # ==================== 0. ENVIRONNEMENT ====================
@@ -87,7 +87,7 @@ if 'get_cred_rcu(cred)' not in content:
 PYEOF
 fi
 
-# ==================== 2. CLONE KERNELSU v3.3.0-52 (backslashxx) ====================
+# ==================== 2. CLONE KERNELSU v3.3.0-52 ====================
 echo "=== Clone KernelSU v3.3.0-52 (backslashxx) ==="
 rm -rf drivers/kernelsu /tmp/KernelSU || true
 
@@ -262,7 +262,7 @@ if '#include <linux/susfs.h>' not in text:
     )
     added.append("includes SusFS")
 
-# 2. Routage SusFS minimal (uniquement les commandes garanties)
+# 2. Routage SusFS minimal
 susfs_routing = '''
 #ifdef CONFIG_KSU_SUSFS
 	// ═══ Routage des commandes SusFS ═══
@@ -306,7 +306,6 @@ else:
     print("[i] Aucune modification")
 PYEOF_TOOLKIT
 
-# Vérification
 if grep -q "CMD_SUSFS_SHOW_VERSION" "$TOOLKIT_H"; then
     echo "✅ Routage SusFS ajouté dans toolkit.h"
 else
@@ -428,8 +427,8 @@ set +e
 
 ./scripts/config --file out/.config \
     --enable KSU \
-    --enable KSU_HACK_ARM64_BRANCH_LINK \
-    --disable KSU_TAMPER_SYSCALL_TABLE \
+    --disable KSU_HACK_ARM64_BRANCH_LINK \
+    --enable KSU_TAMPER_SYSCALL_TABLE \
     --disable KSU_KPROBES_KSUD \
     --enable KSU_LSM_SECURITY_HOOKS \
     --enable KSU_FEATURE_SULOG \
@@ -464,25 +463,13 @@ echo "=== Config finale ==="
 grep "CONFIG_KSU" out/.config
 
 # Vérification
+grep -q '^CONFIG_KSU=y$' out/.config || { echo "❌ KSU pas activé"; exit 1; }
+grep -q '^CONFIG_KSU_TAMPER_SYSCALL_TABLE=y$' out/.config || { echo "❌ KSU_TAMPER_SYSCALL_TABLE pas activé"; exit 1; }
 grep -q '^CONFIG_KSU_SUSFS=y$' out/.config || { echo "❌ KSU_SUSFS pas activé"; exit 1; }
 grep -q '^CONFIG_KSU_SUSFS_SUS_PATH=y$' out/.config || { echo "❌ KSU_SUSFS_SUS_PATH pas activé"; exit 1; }
 grep -q '^CONFIG_KSU_SUSFS_ENABLE_LOG=y$' out/.config || { echo "❌ KSU_SUSFS_ENABLE_LOG pas activé"; exit 1; }
 
-for symbol in \
-    KSU_SUSFS_SUS_MOUNT \
-    KSU_SUSFS_SUS_KSTAT \
-    KSU_SUSFS_SPOOF_UNAME \
-    KSU_SUSFS_TRY_UMOUNT \
-    KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
-    KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
-    KSU_SUSFS_OPEN_REDIRECT \
-    KSU_SUSFS_SUS_MAP; do
-    if grep -q "^CONFIG_${symbol}=y$" out/.config; then
-        echo "❌ CONFIG_${symbol} ne doit pas être activé"
-        exit 1
-    fi
-done
-echo "✅ Profil SusFS validé : SUS_PATH + core + logs"
+echo "✅ Profil SusFS validé : TAMPER_SYSCALL_TABLE + SUS_PATH + core + logs"
 
 # ==================== 5. PATCH SIGNATURES MODULE ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
@@ -621,7 +608,7 @@ cd ..
 
 # ==================== 10. SORTIE ====================
 mkdir -p output
-cp final_boot.img output/Backslashxx-SuSFS-SUS_PATH-Routing-boot.img
+cp final_boot.img output/Backslashxx-SuSFS-TAMPER_SYSCALL-boot.img
 cp dtbo-stock.img output/dtbo.img 2>/dev/null || true
 cp kernel_sources/build.log output/
 cp "$GITHUB_WORKSPACE/ksud" output/ksud 2>/dev/null || true
