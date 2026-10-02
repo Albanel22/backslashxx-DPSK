@@ -7,7 +7,7 @@ set -Eeuo pipefail
 # Kernel   : 4.19.325
 # Source   : LineageOS/android_kernel_motorola_sm8250 (branche lineage-23.2)
 # KernelSU : backslashxx/KernelSU v3.3.0-52
-# SusFS    : patch cyberc3dr nGKI 4.19 + routage sys_reboot + routage ioctl
+# SusFS    : patch cyberc3dr nGKI 4.19 + routage dispatch.c
 # Profil   : SUS_PATH + core + logs
 # =============================================================================
 
@@ -23,15 +23,8 @@ trap 'log_err "Erreur détectée. Le script a été interrompu."; exit 1' ERR
 echo "=== BUILD backslashxx KernelSU v3.3.0-52 + SusFS (profil SUS_PATH + core + logs) ==="
 df -h
 
-# ==================== 0. VÉRIFICATIONS PRÉALABLES ====================
-for cmd in git curl wget unzip zip python3 gcc make aarch64-linux-gnu-gcc; do
-    if ! command -v "$cmd" >/dev/null 2>&1; then
-        log_err "Commande manquante : $cmd"
-        exit 1
-    fi
-done
-
-# ==================== 1. INSTALLATION DES OUTILS ====================
+# ==================== 0. INSTALLATION DES OUTILS ====================
+log_info "Installation des outils de compilation"
 sudo apt-get update
 sudo apt-get install -y --no-install-recommends \
     bc bison build-essential ccache flex glibc-source libelf-dev \
@@ -39,7 +32,16 @@ sudo apt-get install -y --no-install-recommends \
     clang llvm lld device-tree-compiler zip unzip curl git python3 \
     mkbootimg perl rsync wget
 
-# ==================== 2. CLONAGE DU NOYAU ====================
+# ==================== 0b. VÉRIFICATIONS PRÉALABLES (APRÈS INSTALLATION) ====================
+for cmd in git curl wget unzip zip python3 gcc make aarch64-linux-gnu-gcc; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        log_err "Commande manquante : $cmd"
+        exit 1
+    fi
+done
+log_info "Toutes les commandes sont disponibles"
+
+# ==================== 1. CLONAGE DU NOYAU ====================
 cd "$SCRIPT_DIR"
 if [ -d "kernel_sources" ]; then
     log_warn "Le dossier kernel_sources existe déjà. Nettoyage..."
@@ -52,7 +54,7 @@ cd kernel_sources
 git log --oneline -1
 log_info "Kernel cloné"
 
-# ==================== 3. BACKPORT get_cred_rcu (4.19.325) ====================
+# ==================== 2. BACKPORT get_cred_rcu (4.19.325) ====================
 log_info "Backport get_cred_rcu"
 
 python3 - <<'PY'
@@ -111,7 +113,7 @@ else:
     print("✅ get_cred_rcu déjà utilisé dans kernel/cred.c")
 PY
 
-# ==================== 4. CLONE KERNELSU v3.3.0-52 ====================
+# ==================== 3. CLONE KERNELSU v3.3.0-52 ====================
 log_info "Clone KernelSU v3.3.0-52"
 
 if [ -d "/tmp/KernelSU" ]; then
@@ -131,7 +133,7 @@ git log --oneline -1
 
 cd "$SCRIPT_DIR/kernel_sources"
 
-# ==================== 5. PATCH SUSFS nGKI ====================
+# ==================== 4. PATCH SUSFS nGKI ====================
 log_info "Préparation SusFS via nGKI_Kernel_Build"
 
 NGKI_DIR="/tmp/nGKI_Kernel_Build"
@@ -211,7 +213,7 @@ fi
 
 log_info "Patch SusFS nGKI appliqué"
 
-# ==================== 6. AJOUT DES DÉFINITIONS SUSFS MANQUANTES ====================
+# ==================== 5. AJOUT DES DÉFINITIONS SUSFS MANQUANTES ====================
 if [ ! -f "fs/susfs.c" ]; then
     log_err "fs/susfs.c introuvable"
     exit 1
@@ -252,7 +254,7 @@ done
 
 log_info "Toutes les définitions manquantes sont présentes"
 
-# ==================== 7. AJOUT SHOW_VERSION + SHOW_VARIANT ====================
+# ==================== 6. AJOUT SHOW_VERSION + SHOW_VARIANT ====================
 python3 - <<'PY'
 from pathlib import Path
 p = Path("fs/susfs.c")
@@ -316,14 +318,15 @@ for sym in susfs_show_version susfs_show_variant; do
     }
 done
 
-# ==================== 8. PATCH KernelSU :: dispatch.c pour SUSFS routing ====================
-log_info "Patch direct du routage SusFS dans dispatch.c"
+# ==================== 7. PATCH KernelSU :: dispatch.c pour SUSFS routing ====================
+log_info "Patch du routage SusFS dans dispatch.c"
 
 DISPATCH_C="$(find /tmp/KernelSU -name 'dispatch.c' -type f | head -n 1 || true)"
 if [ -z "$DISPATCH_C" ]; then
     log_err "dispatch.c introuvable dans /tmp/KernelSU"
     exit 1
 fi
+log_info "dispatch.c trouvé : $DISPATCH_C"
 
 python3 - <<'PY'
 import re
@@ -336,6 +339,7 @@ if not path.exists():
 text = path.read_text()
 orig = text
 
+# 1. Ajouter les includes
 if '#include <linux/susfs.h>' not in text:
     first_include = re.search(r'(#include\s+[<"][^\n>"]+(>|")\n)', text)
     if first_include:
@@ -346,65 +350,73 @@ if '#include <linux/susfs.h>' not in text:
 #endif
 '''
         text = text[:insert_pos] + includes + text[insert_pos:]
+        print("✅ Includes SusFS ajoutés")
 
-if "__ksu_handle_cmd" in text:
-    func_re = re.search(r"(long\s+__ksu_handle_cmd\s*\([^)]*\)\s*\{)", text)
-    if func_re:
-        start = func_re.end()
-        brace_count = 1
-        pos = start
-        while pos < len(text) and brace_count > 0:
-            if text[pos] == '{':
-                brace_count += 1
-            elif text[pos] == '}':
-                brace_count -= 1
-            pos += 1
-        func_end = pos - 1
-
-        susfs_code = '''
+# 2. Créer les wrappers SusFS AVANT la table des handlers
+wrappers = '''
 #ifdef CONFIG_KSU_SUSFS
-    if ((unsigned int)magic2 == 0xFAFAFAFA) {
-        pr_info("[KSU-SUSFS] CMD: 0x%x\\n", cmd);
-        switch (cmd) {
+/* ═══ Wrappers SusFS pour les handlers ioctl ═══ */
+static int susfs_wrap_show_version(void __user *arg) {
+    void __user **ptr = &arg;
+    susfs_show_version(ptr);
+    return 0;
+}
+static int susfs_wrap_show_variant(void __user *arg) {
+    void __user **ptr = &arg;
+    susfs_show_variant(ptr);
+    return 0;
+}
+static int susfs_wrap_enable_log(void __user *arg) {
+    void __user **ptr = &arg;
+    susfs_enable_log(ptr);
+    return 0;
+}
 #ifdef CONFIG_KSU_SUSFS_SUS_PATH
-        case 0x55550:
-            susfs_add_sus_path((void __user **)&arg);
-            return 0;
-        case 0x55553:
-            susfs_add_sus_path_loop((void __user **)&arg);
-            return 0;
+static int susfs_wrap_add_sus_path(void __user *arg) {
+    void __user **ptr = &arg;
+    susfs_add_sus_path(ptr);
+    return 0;
+}
+static int susfs_wrap_add_sus_path_loop(void __user *arg) {
+    void __user **ptr = &arg;
+    susfs_add_sus_path_loop(ptr);
+    return 0;
+}
 #endif
-        case 0x555a0:
-            susfs_enable_log((void __user **)&arg);
-            return 0;
-        case 0x555e1:
-            susfs_show_version((void __user **)&arg);
-            return 0;
-        case 0x555e2:
-            susfs_get_enabled_features((void __user **)&arg);
-            return 0;
-        case 0x555e3:
-            susfs_show_variant((void __user **)&arg);
-            return 0;
-        default:
-            pr_warn("[KSU-SUSFS] unknown cmd: 0x%x\\n", cmd);
-            return -EOPNOTSUPP;
-        }
-    }
 #endif
 '''
-        text = text[:func_end] + susfs_code + text[func_end:]
-        print("✅ Routage SUSFS injecté dans __ksu_handle_cmd")
-    else:
-        print("⚠️ Pattern __ksu_handle_cmd non trouvé")
+
+# Chercher la table des handlers pour insérer les wrappers avant
+handlers_pattern = r'(static\s+const\s+struct\s+ksu_ioctl_cmd_map\s+ksu_ioctl_handlers)'
+if re.search(handlers_pattern, text):
+    match = re.search(handlers_pattern, text)
+    text = text[:match.start(1)] + wrappers + '\n' + text[match.start(1):]
+    print("✅ Wrappers SusFS ajoutés")
+
+# 3. Ajouter les entrées dans la table
+susfs_entries = '''#ifdef CONFIG_KSU_SUSFS
+	{ .cmd = 0x55550, .name = "SUSFS_ADD_SUS_PATH", .handler = susfs_wrap_add_sus_path, .perm_check = manager_or_root },
+	{ .cmd = 0x55553, .name = "SUSFS_ADD_SUS_PATH_LOOP", .handler = susfs_wrap_add_sus_path_loop, .perm_check = manager_or_root },
+	{ .cmd = 0x555a0, .name = "SUSFS_ENABLE_LOG", .handler = susfs_wrap_enable_log, .perm_check = only_root },
+	{ .cmd = 0x555e1, .name = "SUSFS_SHOW_VERSION", .handler = susfs_wrap_show_version, .perm_check = manager_or_root },
+	{ .cmd = 0x555e3, .name = "SUSFS_SHOW_VARIANT", .handler = susfs_wrap_show_variant, .perm_check = manager_or_root },
+#endif
+'''
+
+# Trouver le sentinel
+sentinel_pattern = r'(\{\s*\.cmd\s*=\s*0,\s*\.name\s*=\s*NULL,\s*\.handler\s*=\s*NULL)'
+match = re.search(sentinel_pattern, text)
+if match:
+    text = text[:match.start(1)] + susfs_entries + '\t' + text[match.start(1):]
+    print("✅ Entrées SusFS ajoutées dans ksu_ioctl_handlers")
 else:
-    print("⚠️ __ksu_handle_cmd absent ; fallback générique")
+    print("⚠️ Sentinel non trouvé dans ksu_ioctl_handlers")
 
 if text != orig:
     path.write_text(text)
     print("✅ dispatch.c patché")
 else:
-    print("⚠️ Aucune modification nécessaire")
+    print("⚠️ Aucune modification dans dispatch.c")
 PY
 
 if grep -q "0x555e1" /tmp/KernelSU/kernel/supercall/dispatch.c; then
@@ -414,7 +426,7 @@ else
     exit 1
 fi
 
-# ==================== 9. INTÉGRATION KERNELSU ====================
+# ==================== 8. INTÉGRATION KERNELSU ====================
 log_info "Intégration KernelSU"
 
 if [ -e "drivers/kernelsu" ]; then
@@ -422,17 +434,17 @@ if [ -e "drivers/kernelsu" ]; then
 fi
 ln -s /tmp/KernelSU/kernel drivers/kernelsu
 
-# Ajouter obj-$(CONFIG_KSU) += kernelsu/ si absent
-if ! grep -q "obj-\\\$(CONFIG_KSU) += kernelsu/" drivers/Makefile 2>/dev/null; then
-    printf "\nobj-\\\$(CONFIG_KSU) += kernelsu/\n" >> drivers/Makefile
+if ! grep -q "obj-\$(CONFIG_KSU) += kernelsu/" drivers/Makefile 2>/dev/null; then
+    printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> drivers/Makefile
 fi
 
-# Ajouter source Kconfig si absent
 if ! grep -q "drivers/kernelsu/Kconfig" drivers/Kconfig 2>/dev/null; then
     sed -i '/endmenu/i\source "drivers/kernelsu/Kconfig"' drivers/Kconfig
 fi
 
-# ==================== 10. CONFIGURATION DUAL KERNEL ====================
+log_info "KernelSU intégré"
+
+# ==================== 9. CONFIGURATION ====================
 export ARCH=arm64
 export SUBARCH=arm64
 export CROSS_COMPILE=aarch64-linux-gnu-
@@ -466,7 +478,6 @@ make O=out LLVM=1 CROSS_COMPILE="$CROSS_COMPILE" CROSS_COMPILE_ARM32="$CROSS_COM
     --enable KSU_SUSFS \
     --enable KSU_SUSFS_ENABLE_LOG \
     --enable KSU_SUSFS_SUS_PATH \
-    --disable KSU SUSPEND \
     --disable KSU_SUSFS_SUS_MOUNT \
     --disable KSU_SUSFS_SUS_KSTAT \
     --disable KSU_SUSFS_SPOOF_UNAME \
@@ -495,12 +506,12 @@ done
 
 log_info "Profil validé : SUS_PATH + core + logs + TAMPER_SYSCALL_TABLE"
 
-# ==================== 11. PATCH SIGNATURES MODULE ====================
+# ==================== 10. PATCH SIGNATURES MODULE ====================
 if [ -f "kernel/module.c" ]; then
     sed -i 's/if (!check_version(/if (0 && !check_version(/g' kernel/module.c
 fi
 
-# ==================== 12. PATCH TACTILE ====================
+# ==================== 11. PATCH TACTILE ====================
 if [ -f "techpack/display/msm/msm_drv.c" ]; then
     if ! grep -q "panel_register_notifier" techpack/display/msm/msm_drv.c; then
         cat >> techpack/display/msm/msm_drv.c <<'EOF'
@@ -531,7 +542,7 @@ EOF
     fi
 fi
 
-# ==================== 13. COMPILATION DU NOYAU ====================
+# ==================== 12. COMPILATION DU NOYAU ====================
 log_info "Compilation du noyau"
 make O=out LLVM=1 CROSS_COMPILE="$CROSS_COMPILE" CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" -j"$(nproc)" Image 2>&1 | tee build.log
 
@@ -542,7 +553,7 @@ if [ ! -f "out/arch/arm64/boot/Image" ]; then
 fi
 log_info "Compilation noyau réussie"
 
-# ==================== 14. COMPILATION KSUD ====================
+# ==================== 13. COMPILATION KSUD ====================
 cd "$SCRIPT_DIR"
 
 # Rust
@@ -623,7 +634,7 @@ cp "$KSUD_BINARY" "$SCRIPT_DIR/ksud"
 chmod 755 "$SCRIPT_DIR/ksud"
 log_info "ksud compilé"
 
-# ==================== 15. TÉLÉCHARGEMENT BOOT.IMG ET REPACK ====================
+# ==================== 14. TÉLÉCHARGEMENT BOOT.IMG ET REPACK ====================
 cd "$SCRIPT_DIR"
 
 download_boot_img() {
@@ -689,7 +700,7 @@ cp "$SCRIPT_DIR/kernel_sources/out/arch/arm64/boot/Image" kernel
     "mkdir 0755 data/adb/ksud" \
     "add 0755 data/adb/ksud/ksud $SCRIPT_DIR/ksud" >/dev/null 2>&1 || true
 
-# Ajouter su system/bin/su si besoin
+# Ajouter su system/bin/su
 cp "$SCRIPT_DIR/ksud" local_su_binary
 chmod 755 local_su_binary
 ./magiskboot cpio ramdisk.cpio \
@@ -706,8 +717,10 @@ rm -f local_su_binary
 mv new-boot.img "$SCRIPT_DIR/final_boot.img"
 cd "$SCRIPT_DIR"
 
-# ==================== 16. MODULE USERSPACE SUSFS ====================
+# ==================== 15. MODULE USERSPACE SUSFS ====================
 log_info "Préparation du module SusFS"
+
+mkdir -p output
 
 if [ ! -d "$SCRIPT_DIR/susfs4ksu-module" ]; then
     git clone --depth=1 --branch v1.5.2+ https://github.com/sidex15/susfs4ksu-module.git "$SCRIPT_DIR/susfs4ksu-module" || true
@@ -717,7 +730,7 @@ if [ -d "$SCRIPT_DIR/susfs4ksu-module" ]; then
     (cd "$SCRIPT_DIR/susfs4ksu-module" && zip -qr "$SCRIPT_DIR/output/susfs4ksu-module.zip" . -x '.git/*' '.github/*') || true
 fi
 
-# ==================== 17. SORTIE ====================
+# ==================== 16. SORTIE ====================
 mkdir -p output
 cp final_boot.img output/Backslashxx-SuSFS-IOCTL-boot.img
 [ -f dtbo-stock.img ] && cp dtbo-stock.img output/dtbo.img
