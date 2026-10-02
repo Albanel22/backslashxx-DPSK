@@ -165,7 +165,7 @@ if ! tar -xzf /tmp/ngki.tar.gz -C "$NGKI_DIR" --strip-components=1; then
 fi
 
 log_info "✅ nGKI extrait :"
-ls "$NGKI_DIR" | head -10
+ls "$NGKI_DIR" | head -10 || true
 SUSFS_PATCH="$NGKI_DIR/Patches/Patch/susfs_patch_to_4.19.patch"
 if [ ! -f "$SUSFS_PATCH" ]; then
     log_err "Patch nGKI SusFS 4.19 introuvable : $SUSFS_PATCH"
