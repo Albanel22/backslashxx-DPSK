@@ -6,7 +6,7 @@ set -Eeuo pipefail
 # Appareil : Motorola One 5G Ace (kiev / lito)
 # Kernel   : 4.19.325
 # Source   : LineageOS/android_kernel_motorola_sm8250 (branche lineage-23.2)
-# KernelSU : backslashxx/KernelSU v3.3.0-52
+# KernelSU : backslashxx/KernelSU (commit 32651c = Manager v3.3.0-50)
 # SusFS    : patch cyberc3dr nGKI 4.19 + routage dispatch.c
 # Profil   : SUS_PATH + core + logs
 # =============================================================================
@@ -20,7 +20,7 @@ log_err()   { echo "[$(date +'%H:%M:%S')] ❌ $*" >&2; }
 
 trap 'log_err "Erreur détectée. Le script a été interrompu."; exit 1' ERR
 
-echo "=== BUILD backslashxx KernelSU v3.3.0-52 + SusFS (profil SUS_PATH + core + logs) ==="
+echo "=== BUILD backslashxx KernelSU 32651c + SusFS (SUS_PATH + core + logs) ==="
 df -h
 
 # ==================== 0. INSTALLATION DES OUTILS ====================
@@ -32,7 +32,7 @@ sudo apt-get install -y --no-install-recommends \
     clang llvm lld device-tree-compiler zip unzip curl git python3 \
     mkbootimg perl rsync wget
 
-# ==================== 0b. VÉRIFICATIONS PRÉALABLES (APRÈS INSTALLATION) ====================
+# ==================== 0b. VÉRIFICATIONS PRÉALABLES ====================
 for cmd in git curl wget unzip zip python3 gcc make aarch64-linux-gnu-gcc; do
     if ! command -v "$cmd" >/dev/null 2>&1; then
         log_err "Commande manquante : $cmd"
@@ -113,21 +113,28 @@ else:
     print("✅ get_cred_rcu déjà utilisé dans kernel/cred.c")
 PY
 
-# ==================== 3. CLONE KERNELSU v3.3.0-52 ====================
-log_info "Clone KernelSU v3.3.0-52"
+# ==================== 3. CLONE KERNELSU (commit 32651c) ====================
+log_info "Clone KernelSU (commit 32651c)"
 
 if [ -d "/tmp/KernelSU" ]; then
     rm -rf /tmp/KernelSU
 fi
 
-git clone --depth=1 https://github.com/backslashxx/KernelSU.git /tmp/KernelSU
+git clone https://github.com/backslashxx/KernelSU.git /tmp/KernelSU
 cd /tmp/KernelSU
 
-if git fetch --depth=1 origin tag v3.3.0-52 2>/dev/null; then
-    git checkout v3.3.0-52
-    log_info "✅ Tag v3.3.0-52 checkout"
+KSU_COMMIT="32651c"
+if git fetch origin "$KSU_COMMIT" 2>/dev/null; then
+    git checkout "$KSU_COMMIT"
+    log_info "✅ Commit KernelSU checkout: $KSU_COMMIT"
 else
-    log_warn "Tag v3.3.0-52 introuvable, utilisation de la branche par défaut"
+    log_warn "Commit $KSU_COMMIT introuvable, essai avec le tag..."
+    if git checkout v3.3.0-52 2>/dev/null; then
+        log_info "✅ Tag v3.3.0-52 checkout"
+    else
+        log_err "Ni commit ni tag trouvé"
+        exit 1
+    fi
 fi
 git log --oneline -1
 
@@ -149,7 +156,6 @@ if [ ! -f "$SUSFS_PATCH" ]; then
     exit 1
 fi
 
-# Appliquer le patch
 set +e
 patch --batch --forward -p1 < "$SUSFS_PATCH" > "$SCRIPT_DIR/susfs_patch.log" 2>&1
 PATCH_RC=$?
@@ -165,7 +171,6 @@ if [ -n "$REJECTS" ]; then
     echo "$REJECTS"
 fi
 
-# Nettoyer
 find . -type f \( -name '*.rej' -o -name '*.orig' \) -delete
 
 # Ajout include fs/stat.c
@@ -339,7 +344,6 @@ if not path.exists():
 text = path.read_text()
 orig = text
 
-# 1. Ajouter les includes
 if '#include <linux/susfs.h>' not in text:
     first_include = re.search(r'(#include\s+[<"][^\n>"]+(>|")\n)', text)
     if first_include:
@@ -352,10 +356,8 @@ if '#include <linux/susfs.h>' not in text:
         text = text[:insert_pos] + includes + text[insert_pos:]
         print("✅ Includes SusFS ajoutés")
 
-# 2. Créer les wrappers SusFS AVANT la table des handlers
 wrappers = '''
 #ifdef CONFIG_KSU_SUSFS
-/* ═══ Wrappers SusFS pour les handlers ioctl ═══ */
 static int susfs_wrap_show_version(void __user *arg) {
     void __user **ptr = &arg;
     susfs_show_version(ptr);
@@ -369,6 +371,11 @@ static int susfs_wrap_show_variant(void __user *arg) {
 static int susfs_wrap_enable_log(void __user *arg) {
     void __user **ptr = &arg;
     susfs_enable_log(ptr);
+    return 0;
+}
+static int susfs_wrap_get_enabled_features(void __user *arg) {
+    void __user **ptr = &arg;
+    susfs_get_enabled_features(ptr);
     return 0;
 }
 #ifdef CONFIG_KSU_SUSFS_SUS_PATH
@@ -386,24 +393,22 @@ static int susfs_wrap_add_sus_path_loop(void __user *arg) {
 #endif
 '''
 
-# Chercher la table des handlers pour insérer les wrappers avant
 handlers_pattern = r'(static\s+const\s+struct\s+ksu_ioctl_cmd_map\s+ksu_ioctl_handlers)'
 if re.search(handlers_pattern, text):
     match = re.search(handlers_pattern, text)
     text = text[:match.start(1)] + wrappers + '\n' + text[match.start(1):]
     print("✅ Wrappers SusFS ajoutés")
 
-# 3. Ajouter les entrées dans la table
 susfs_entries = '''#ifdef CONFIG_KSU_SUSFS
 	{ .cmd = 0x55550, .name = "SUSFS_ADD_SUS_PATH", .handler = susfs_wrap_add_sus_path, .perm_check = manager_or_root },
 	{ .cmd = 0x55553, .name = "SUSFS_ADD_SUS_PATH_LOOP", .handler = susfs_wrap_add_sus_path_loop, .perm_check = manager_or_root },
 	{ .cmd = 0x555a0, .name = "SUSFS_ENABLE_LOG", .handler = susfs_wrap_enable_log, .perm_check = only_root },
 	{ .cmd = 0x555e1, .name = "SUSFS_SHOW_VERSION", .handler = susfs_wrap_show_version, .perm_check = manager_or_root },
+	{ .cmd = 0x555e2, .name = "SUSFS_SHOW_ENABLED_FEATURES", .handler = susfs_wrap_get_enabled_features, .perm_check = manager_or_root },
 	{ .cmd = 0x555e3, .name = "SUSFS_SHOW_VARIANT", .handler = susfs_wrap_show_variant, .perm_check = manager_or_root },
 #endif
 '''
 
-# Trouver le sentinel
 sentinel_pattern = r'(\{\s*\.cmd\s*=\s*0,\s*\.name\s*=\s*NULL,\s*\.handler\s*=\s*NULL)'
 match = re.search(sentinel_pattern, text)
 if match:
@@ -496,7 +501,6 @@ make O=out LLVM=1 CROSS_COMPILE="$CROSS_COMPILE" CROSS_COMPILE_ARM32="$CROSS_COM
 
 make O=out LLVM=1 CROSS_COMPILE="$CROSS_COMPILE" CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" olddefconfig || true
 
-# Vérifications finales
 for cfg in CONFIG_KSU CONFIG_KSU_SUSFS CONFIG_KSU_SUSFS_SUS_PATH CONFIG_KSU_SUSFS_ENABLE_LOG CONFIG_KSU_TAMPER_SYSCALL_TABLE; do
     if ! grep -q "^${cfg}=y$" out/.config; then
         log_err "$cfg non activé dans .config"
@@ -556,7 +560,6 @@ log_info "Compilation noyau réussie"
 # ==================== 13. COMPILATION KSUD ====================
 cd "$SCRIPT_DIR"
 
-# Rust
 if ! command -v cargo >/dev/null 2>&1; then
     log_info "Installation de Rust"
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -565,7 +568,6 @@ fi
 
 rustup target add aarch64-linux-android || true
 
-# NDK
 NDK_ZIP=""
 for ver in r27c r27b r27 r26d; do
     url="https://dl.google.com/android/repository/android-ndk-${ver}-linux.zip"
@@ -600,11 +602,15 @@ if [ ! -f "$AARCH64_CLANG_PATH" ]; then
 fi
 
 rm -rf "$SCRIPT_DIR/ksud-src"
-git clone --depth=1 https://github.com/backslashxx/KernelSU.git "$SCRIPT_DIR/ksud-src"
+git clone https://github.com/backslashxx/KernelSU.git "$SCRIPT_DIR/ksud-src"
 cd "$SCRIPT_DIR/ksud-src"
 
-if git fetch --depth=1 origin tag v3.3.0-52 2>/dev/null; then
-    git checkout v3.3.0-52
+KSU_COMMIT="32651c"
+if git fetch origin "$KSU_COMMIT" 2>/dev/null; then
+    git checkout "$KSU_COMMIT"
+    log_info "✅ Commit KernelSU checkout pour ksud: $KSU_COMMIT"
+else
+    log_warn "Commit $KSU_COMMIT introuvable pour ksud"
 fi
 
 find "$SCRIPT_DIR/ksud-src" -name "build.rs" -exec sed -i 's/std=gnu23/std=gnu17/g' {} \; 2>/dev/null || true
@@ -669,7 +675,6 @@ if [ ! -f "boot-stock.img" ]; then
     exit 1
 fi
 
-# dtbo optionnel
 if timeout 15 wget --spider -q "https://mirrorbits.lineageos.org/full/kiev/20260920/dtbo.img" 2>/dev/null; then
     wget -q -O dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260920/dtbo.img"
 fi
@@ -677,7 +682,6 @@ fi
 mkdir -p repack
 cp boot-stock.img repack/boot.img
 
-# MagiskBoot
 wget -q https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk -O Magisk-v27.0.apk
 unzip -q Magisk-v27.0.apk lib/x86_64/libmagiskboot.so
 mkdir -p repack
@@ -693,14 +697,12 @@ cd repack
 
 cp "$SCRIPT_DIR/kernel_sources/out/arch/arm64/boot/Image" kernel
 
-# Ajouter ksud dans le ramdisk
 ./magiskboot cpio ramdisk.cpio \
     "mkdir 0755 data" \
     "mkdir 0755 data/adb" \
     "mkdir 0755 data/adb/ksud" \
     "add 0755 data/adb/ksud/ksud $SCRIPT_DIR/ksud" >/dev/null 2>&1 || true
 
-# Ajouter su system/bin/su
 cp "$SCRIPT_DIR/ksud" local_su_binary
 chmod 755 local_su_binary
 ./magiskboot cpio ramdisk.cpio \
