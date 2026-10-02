@@ -148,7 +148,7 @@ if [ -d "$NGKI_DIR" ]; then
     rm -rf "$NGKI_DIR"
 fi
 
-git clone --depth=1 --branch rebase https://github.com/cyberc3dr/nGKI_Kernel_Build.git "$NGKI_DIR"
+git clone --depth=1 --branch xxksu-support https://github.com/cyberc3dr/nGKI_Kernel_Build.git "$NGKI_DIR"
 
 SUSFS_PATCH="$NGKI_DIR/Patches/Patch/susfs_patch_to_4.19.patch"
 if [ ! -f "$SUSFS_PATCH" ]; then
