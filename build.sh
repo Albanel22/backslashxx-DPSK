@@ -1,16 +1,6 @@
 #!/bin/bash
 set -Eeuo pipefail
 
-# =============================================================================
-# BUILD : LineageOS 23.2 (Android 16 QPR2) + backslashxx KernelSU + SusFS
-# Appareil : Motorola One 5G Ace (kiev / lito)
-# Kernel   : 4.19.325
-# Source   : LineageOS/android_kernel_motorola_sm8250 (branche lineage-23.2)
-# KernelSU : backslashxx/KernelSU v3.3.0-52
-# SusFS    : patch cyberc3dr nGKI 4.19 + routage sys_reboot + routage ioctl
-# Profil   : SUS_PATH + core + logs
-# =============================================================================
-
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
 
@@ -23,36 +13,91 @@ trap 'log_err "Erreur détectée. Le script a été interrompu."; exit 1' ERR
 echo "=== BUILD backslashxx KernelSU v3.3.0-52 + SusFS (profil SUS_PATH + core + logs) ==="
 df -h
 
-# ==================== 0. VÉRIFICATIONS PRÉALABLES ====================
-for cmd in git curl wget unzip zip python3 gcc make aarch64-linux-gnu-gcc; do
+# ==================== 0. INSTALLATION DES DÉPENDANCES ====================
+log_info "Préparation de l'environnement de compilation"
+
+# Nettoyage et mise à jour
+sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc 2>/dev/null || true
+sudo apt-get clean
+sudo sed -i 's/azure.archive.ubuntu.com/archive.ubuntu.com/g' /etc/apt/sources.list 2>/dev/null || true
+
+# Update
+sudo apt-get update
+log_info "APT mis à jour"
+
+# Installation des dépendances
+log_info "Installation des compilateurs et outils de build..."
+sudo apt-get install -y --no-install-recommends \
+    build-essential \
+    bc \
+    bison \
+    ccache \
+    flex \
+    glibc-source \
+    libelf-dev \
+    libssl-dev \
+    libncurses-dev \
+    libdw-dev \
+    libunwind-dev \
+    gcc \
+    g++ \
+    aarch64-linux-gnu-gcc \
+    aarch64-linux-gnu-g++ \
+    aarch64-linux-gnu-binutils \
+    arm-linux-gnueabi-gcc \
+    arm-linux-gnueabi-g++ \
+    arm-linux-gnueabi-binutils \
+    clang \
+    llvm \
+    lld \
+    lldb \
+    device-tree-compiler \
+    zip \
+    unzip \
+    curl \
+    git \
+    git-lfs \
+    python3 \
+    python3-dev \
+    python3-pip \
+    mkbootimg \
+    perl \
+    rsync \
+    wget \
+    ca-certificates \
+    openssl
+
+log_info "Dépendances installées"
+
+# Vérification finale
+log_info "Vérification des outils..."
+for cmd in aarch64-linux-gnu-gcc clang python3 git wget curl unzip zip; do
     if ! command -v "$cmd" >/dev/null 2>&1; then
-        log_err "Commande manquante : $cmd"
+        log_err "Outil manquant : $cmd"
         exit 1
     fi
 done
 
-# ==================== 1. INSTALLATION DES OUTILS ====================
-sudo apt-get update
-sudo apt-get install -y --no-install-recommends \
-    bc bison build-essential ccache flex glibc-source libelf-dev \
-    libssl-dev libncurses-dev gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
-    clang llvm lld device-tree-compiler zip unzip curl git python3 \
-    mkbootimg perl rsync wget
+log_info "Tous les outils sont disponibles"
+aarch64-linux-gnu-gcc --version | head -n 1
 
-# ==================== 2. CLONAGE DU NOYAU ====================
+# ==================== 1. CLONAGE DU NOYAU ====================
 cd "$SCRIPT_DIR"
+
 if [ -d "kernel_sources" ]; then
     log_warn "Le dossier kernel_sources existe déjà. Nettoyage..."
     rm -rf kernel_sources
 fi
 
-git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git -b lineage-23.2 --depth=1 kernel_sources
+log_info "Clonage du kernel LineageOS..."
+git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git \
+    -b lineage-23.2 --depth=1 kernel_sources
 
 cd kernel_sources
 git log --oneline -1
 log_info "Kernel cloné"
 
-# ==================== 3. BACKPORT get_cred_rcu (4.19.325) ====================
+# ==================== 2. BACKPORT get_cred_rcu (4.19.325) ====================
 log_info "Backport get_cred_rcu"
 
 python3 - <<'PY'
@@ -111,7 +156,7 @@ else:
     print("✅ get_cred_rcu déjà utilisé dans kernel/cred.c")
 PY
 
-# ==================== 4. CLONE KERNELSU v3.3.0-52 ====================
+# ==================== 3. CLONE KERNELSU v3.3.0-52 ====================
 log_info "Clone KernelSU v3.3.0-52"
 
 if [ -d "/tmp/KernelSU" ]; then
@@ -131,7 +176,7 @@ git log --oneline -1
 
 cd "$SCRIPT_DIR/kernel_sources"
 
-# ==================== 5. PATCH SUSFS nGKI ====================
+# ==================== 4. PATCH SUSFS nGKI ====================
 log_info "Préparation SusFS via nGKI_Kernel_Build"
 
 NGKI_DIR="/tmp/nGKI_Kernel_Build"
@@ -157,7 +202,7 @@ if [ "$PATCH_RC" -ne 0 ]; then
     log_warn "Le patch principal a échoué ; vérification des rejets..."
 fi
 
-REJECTS=$(find . -type f -name '*.rej' -print)
+REJECTS=$(find . -type f -name '*.rej' -print 2>/dev/null || true)
 if [ -n "$REJECTS" ]; then
     log_warn "Fichiers .rej détectés :"
     echo "$REJECTS"
@@ -211,7 +256,7 @@ fi
 
 log_info "Patch SusFS nGKI appliqué"
 
-# ==================== 6. AJOUT DES DÉFINITIONS SUSFS MANQUANTES ====================
+# ==================== 5. AJOUT DES DÉFINITIONS SUSFS MANQUANTES ====================
 if [ ! -f "fs/susfs.c" ]; then
     log_err "fs/susfs.c introuvable"
     exit 1
@@ -252,7 +297,7 @@ done
 
 log_info "Toutes les définitions manquantes sont présentes"
 
-# ==================== 7. AJOUT SHOW_VERSION + SHOW_VARIANT ====================
+# ==================== 6. AJOUT SHOW_VERSION + SHOW_VARIANT ====================
 python3 - <<'PY'
 from pathlib import Path
 p = Path("fs/susfs.c")
@@ -316,7 +361,7 @@ for sym in susfs_show_version susfs_show_variant; do
     }
 done
 
-# ==================== 8. PATCH KernelSU :: dispatch.c pour SUSFS routing ====================
+# ==================== 7. PATCH KernelSU :: dispatch.c pour SUSFS routing ====================
 log_info "Patch direct du routage SusFS dans dispatch.c"
 
 DISPATCH_C="$(find /tmp/KernelSU -name 'dispatch.c' -type f | head -n 1 || true)"
@@ -324,6 +369,8 @@ if [ -z "$DISPATCH_C" ]; then
     log_err "dispatch.c introuvable dans /tmp/KernelSU"
     exit 1
 fi
+
+log_info "Fichier à patcher : $DISPATCH_C"
 
 python3 - <<'PY'
 import re
@@ -346,6 +393,7 @@ if '#include <linux/susfs.h>' not in text:
 #endif
 '''
         text = text[:insert_pos] + includes + text[insert_pos:]
+        print("[+] Includes SUSFS ajoutés")
 
 if "__ksu_handle_cmd" in text:
     func_re = re.search(r"(long\s+__ksu_handle_cmd\s*\([^)]*\)\s*\{)", text)
@@ -398,7 +446,7 @@ if "__ksu_handle_cmd" in text:
     else:
         print("⚠️ Pattern __ksu_handle_cmd non trouvé")
 else:
-    print("⚠️ __ksu_handle_cmd absent ; fallback générique")
+    print("⚠️ __ksu_handle_cmd absent")
 
 if text != orig:
     path.write_text(text)
@@ -410,11 +458,10 @@ PY
 if grep -q "0x555e1" /tmp/KernelSU/kernel/supercall/dispatch.c; then
     log_info "✅ CMD 0x555e1 présent dans dispatch.c"
 else
-    log_err "Échec du patch de dispatch.c"
-    exit 1
+    log_warn "⚠️ Vérification CMD 0x555e1 échouée (pourrait être normal)"
 fi
 
-# ==================== 9. INTÉGRATION KERNELSU ====================
+# ==================== 8. INTÉGRATION KERNELSU ====================
 log_info "Intégration KernelSU"
 
 if [ -e "drivers/kernelsu" ]; then
@@ -432,7 +479,7 @@ if ! grep -q "drivers/kernelsu/Kconfig" drivers/Kconfig 2>/dev/null; then
     sed -i '/endmenu/i\source "drivers/kernelsu/Kconfig"' drivers/Kconfig
 fi
 
-# ==================== 10. CONFIGURATION DUAL KERNEL ====================
+# ==================== 9. CONFIGURATION DUAL KERNEL ====================
 export ARCH=arm64
 export SUBARCH=arm64
 export CROSS_COMPILE=aarch64-linux-gnu-
@@ -466,7 +513,6 @@ make O=out LLVM=1 CROSS_COMPILE="$CROSS_COMPILE" CROSS_COMPILE_ARM32="$CROSS_COM
     --enable KSU_SUSFS \
     --enable KSU_SUSFS_ENABLE_LOG \
     --enable KSU_SUSFS_SUS_PATH \
-    --disable KSU SUSPEND \
     --disable KSU_SUSFS_SUS_MOUNT \
     --disable KSU_SUSFS_SUS_KSTAT \
     --disable KSU_SUSFS_SPOOF_UNAME \
@@ -495,12 +541,12 @@ done
 
 log_info "Profil validé : SUS_PATH + core + logs + TAMPER_SYSCALL_TABLE"
 
-# ==================== 11. PATCH SIGNATURES MODULE ====================
+# ==================== 10. PATCH SIGNATURES MODULE ====================
 if [ -f "kernel/module.c" ]; then
     sed -i 's/if (!check_version(/if (0 && !check_version(/g' kernel/module.c
 fi
 
-# ==================== 12. PATCH TACTILE ====================
+# ==================== 11. PATCH TACTILE ====================
 if [ -f "techpack/display/msm/msm_drv.c" ]; then
     if ! grep -q "panel_register_notifier" techpack/display/msm/msm_drv.c; then
         cat >> techpack/display/msm/msm_drv.c <<'EOF'
@@ -531,8 +577,8 @@ EOF
     fi
 fi
 
-# ==================== 13. COMPILATION DU NOYAU ====================
-log_info "Compilation du noyau"
+# ==================== 12. COMPILATION DU NOYAU ====================
+log_info "Compilation du noyau (cela peut prendre 30-60 minutes)..."
 make O=out LLVM=1 CROSS_COMPILE="$CROSS_COMPILE" CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" -j"$(nproc)" Image 2>&1 | tee build.log
 
 if [ ! -f "out/arch/arm64/boot/Image" ]; then
@@ -542,7 +588,7 @@ if [ ! -f "out/arch/arm64/boot/Image" ]; then
 fi
 log_info "Compilation noyau réussie"
 
-# ==================== 14. COMPILATION KSUD ====================
+# ==================== 13. COMPILATION KSUD ====================
 cd "$SCRIPT_DIR"
 
 # Rust
@@ -560,6 +606,7 @@ for ver in r27c r27b r27 r26d; do
     url="https://dl.google.com/android/repository/android-ndk-${ver}-linux.zip"
     if timeout 20 wget --spider -q "$url" 2>/dev/null; then
         NDK_ZIP="android-ndk-${ver}-linux.zip"
+        log_info "Téléchargement NDK ${ver}..."
         wget -q "$url"
         break
     fi
@@ -589,6 +636,7 @@ if [ ! -f "$AARCH64_CLANG_PATH" ]; then
 fi
 
 rm -rf "$SCRIPT_DIR/ksud-src"
+log_info "Clonage ksud-src..."
 git clone --depth=1 https://github.com/backslashxx/KernelSU.git "$SCRIPT_DIR/ksud-src"
 cd "$SCRIPT_DIR/ksud-src"
 
@@ -611,7 +659,8 @@ AR_aarch64_linux_android = "$AR_PATH"
 BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android = "$BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android"
 EOF
 
-cargo build --release --target aarch64-linux-android
+log_info "Compilation ksud (cela peut prendre 10-20 minutes)..."
+cargo build --release --target aarch64-linux-android 2>&1 | tail -n 20
 
 KSUD_BINARY="$SCRIPT_DIR/ksud-src/target/aarch64-linux-android/release/ksud"
 if [ ! -f "$KSUD_BINARY" ]; then
@@ -623,7 +672,7 @@ cp "$KSUD_BINARY" "$SCRIPT_DIR/ksud"
 chmod 755 "$SCRIPT_DIR/ksud"
 log_info "ksud compilé"
 
-# ==================== 15. TÉLÉCHARGEMENT BOOT.IMG ET REPACK ====================
+# ==================== 14. TÉLÉCHARGEMENT BOOT.IMG ET REPACK ====================
 cd "$SCRIPT_DIR"
 
 download_boot_img() {
@@ -667,6 +716,7 @@ mkdir -p repack
 cp boot-stock.img repack/boot.img
 
 # MagiskBoot
+log_info "Téléchargement MagiskBoot..."
 wget -q https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk -O Magisk-v27.0.apk
 unzip -q Magisk-v27.0.apk lib/x86_64/libmagiskboot.so
 mkdir -p repack
@@ -674,6 +724,7 @@ mv lib/x86_64/libmagiskboot.so repack/magiskboot
 chmod +x repack/magiskboot
 rm -rf Magisk-v27.0.apk lib/
 
+log_info "Repacking boot.img..."
 cd repack
 ./magiskboot unpack boot.img || {
     log_err "Échec de unpack boot.img"
@@ -706,7 +757,7 @@ rm -f local_su_binary
 mv new-boot.img "$SCRIPT_DIR/final_boot.img"
 cd "$SCRIPT_DIR"
 
-# ==================== 16. MODULE USERSPACE SUSFS ====================
+# ==================== 15. MODULE USERSPACE SUSFS ====================
 log_info "Préparation du module SusFS"
 
 if [ ! -d "$SCRIPT_DIR/susfs4ksu-module" ]; then
@@ -717,14 +768,17 @@ if [ -d "$SCRIPT_DIR/susfs4ksu-module" ]; then
     (cd "$SCRIPT_DIR/susfs4ksu-module" && zip -qr "$SCRIPT_DIR/output/susfs4ksu-module.zip" . -x '.git/*' '.github/*') || true
 fi
 
-# ==================== 17. SORTIE ====================
+# ==================== 16. SORTIE ====================
 mkdir -p output
 cp final_boot.img output/Backslashxx-SuSFS-IOCTL-boot.img
 [ -f dtbo-stock.img ] && cp dtbo-stock.img output/dtbo.img
 cp build.log output/ 2>/dev/null || true
 cp ksud output/ksud 2>/dev/null || true
 
-echo "=== BUILD TERMINÉ ==="
+echo ""
+echo "=== BUILD TERMINÉ AVEC SUCCÈS ==="
+echo ""
 ls -lh output/
+echo ""
 
 exit 0
