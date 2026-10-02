@@ -144,12 +144,28 @@ cd "$SCRIPT_DIR/kernel_sources"
 log_info "Préparation SusFS via nGKI_Kernel_Build"
 
 NGKI_DIR="/tmp/nGKI_Kernel_Build"
-if [ -d "$NGKI_DIR" ]; then
-    rm -rf "$NGKI_DIR"
+log_info "Téléchargement nGKI_Kernel_Build (branche xxksu-support)..."
+
+rm -rf "$NGKI_DIR" 2>/dev/null || true
+rm -f /tmp/ngki.tar.gz 2>/dev/null || true
+
+# Télécharger le tarball
+if ! wget -q -O /tmp/ngki.tar.gz \
+    "https://github.com/cyberc3dr/nGKI_Kernel_Build/archive/refs/heads/xxksu-support.tar.gz"; then
+    log_err "Échec du téléchargement"
+    exit 1
 fi
 
-git clone --depth=1 --branch xxksu-support https://github.com/cyberc3dr/nGKI_Kernel_Build.git "$NGKI_DIR"
+log_info "Tarball OK : $(ls -lh /tmp/ngki.tar.gz | awk '{print $5}')"
 
+mkdir -p "$NGKI_DIR"
+if ! tar -xzf /tmp/ngki.tar.gz -C "$NGKI_DIR" --strip-components=1; then
+    log_err "Échec extraction"
+    exit 1
+fi
+
+log_info "✅ nGKI extrait :"
+ls "$NGKI_DIR" | head -10
 SUSFS_PATCH="$NGKI_DIR/Patches/Patch/susfs_patch_to_4.19.patch"
 if [ ! -f "$SUSFS_PATCH" ]; then
     log_err "Patch nGKI SusFS 4.19 introuvable : $SUSFS_PATCH"
