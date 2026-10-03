@@ -8,8 +8,13 @@
 #  2. KernelSU backslashxx, branche master
 #  3. Patch xxKSU/SusFS: midori01/KernelSU commit xx.patch
 #  4. Patch SusFS 4.19 dés-inliné par susfs_deinlined.sh
-#  5. Patch tactile kiev/lito
-#  6. Vérification stricte: aucun fichier .rej ou .orig accepté
+#  5. Vérification stricte: aucun fichier .rej ou .orig accepté
+#
+# Variables personnalisables:
+#   WORKSPACE, KERNEL_REPO, KERNEL_REF
+#   KSU_REPO, KSU_REF, XX_PATCH_URL
+#   SUSFS_PATCH_URL, SUSFS_DEINLINE_URL
+#   DEFCONFIG, JOBS, BUILD_KSUD, MAGISK_VERSION
 #
 set -Eeuo pipefail
 IFS=$'\n\t'
@@ -141,6 +146,8 @@ auto_reject_check() {
 info "Application du patch SusFS dés-inliné"
 cd "$KERNEL_DIR"
 
+# xxksu-support tolère les contextes décalés, puis corrige les rejets
+# spécifiques au noyau LineageOS sm8250 4.19.325 de kiev/lito.
 patch --batch --forward -p1 < "$SUSFS_DEINLINED_PATCH" \
     > "$WORKSPACE/susfs_patch.log" 2>&1 || true
 
@@ -216,6 +223,10 @@ KIEV_SUSFS_FIX
 patch --batch --forward -p1 < "$SUSFS_COMPAT_PATCH" \
     > "$WORKSPACE/susfs_compat_patch.log" 2>&1
 
+# Le patch SusFS 4.19 ajoute les appels KSTAT dans fs/stat.c mais, selon
+# la révision du noyau, n’ajoute pas toujours son en-tête de définitions.
+# Sans cet include, STATX_SUS_KSTAT* et susfs_is_current_app_uid() sont
+# inconnus du compilateur.
 if grep -q 'CONFIG_KSU_SUSFS_SUS_KSTAT' fs/stat.c && \
    ! grep -q '^#include <linux/susfs_def.h>$' fs/stat.c; then
     sed -i '/^#include <asm\/unistd.h>$/a\
@@ -224,6 +235,7 @@ if grep -q 'CONFIG_KSU_SUSFS_SUS_KSTAT' fs/stat.c && \
 #endif // #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT' fs/stat.c
 fi
 
+# Ces trois rejets ont été consommés par le correctif ciblé.
 rm -f fs/namespace.c.rej fs/proc/task_mmu.c.rej fs/super.c.rej \
       fs/namespace.c.orig fs/proc/task_mmu.c.orig fs/super.c.orig
 
@@ -358,8 +370,6 @@ else
     echo "⚠️ techpack/display/msm/msm_drv.c introuvable"
 fi
 
-# ========== FIN PATCH TACTILE ==========
-
 info "Compilation du noyau"
 make O="$OUT_DIR" LLVM=1 -j"$JOBS" Image 2>&1 | tee "$LOG"
 [[ -f "$OUT_DIR/arch/arm64/boot/Image" ]] || fail "Image noyau absente"
@@ -463,26 +473,70 @@ cp "$OUTPUT_DIR/Image" kernel
 
 if [[ "$BUILD_KSUD" == 1 ]]; then
     [[ -f "$WORKSPACE/ksud" ]] || fail "ksud manquant pour le repack"
-    "$MAGISKBOOT" cpio ramdisk.cpio \
-        "mkdir 0755 data" \
-        "mkdir 0755 data/adb" \
-        "mkdir 0755 data/adb/ksud" \
-        "add 0755 data/adb/ksud/ksud $WORKSPACE/ksud"
 
-    cp "$WORKSPACE/ksud" local_su_binary
-    chmod 755 local_su_binary
+    # Le noyau KernelSU recherche exactement /data/adb/ksud. Un fichier placé
+    # directement dans /data du ramdisk peut être masqué lorsque la vraie
+    # partition data est montée. On embarque donc une copie de secours à la
+    # racine du ramdisk et on la copie après post-fs-data.
+    cat > "$REPACK_DIR/init.kernelsu.rc" <<'KSU_INIT_RC'
+# KernelSU bootstrap for non-GKI built-in kernel
+on post-fs-data
+    mkdir /data/adb 0700 root root
+    copy /ksud /data/adb/ksud
+    chmod 0700 /data/adb/ksud
+    chown 0 0 /data/adb/ksud
+    restorecon /data/adb/ksud
+    start ksud_post_fs_data
+
+service ksud_post_fs_data /data/adb/ksud post-fs-data
+    class core
+    user root
+    group root
+    oneshot
+
+on property:sys.boot_completed=1
+    start ksud_boot_completed
+
+service ksud_boot_completed /data/adb/ksud boot-completed
+    class late_start
+    user root
+    group root
+    oneshot
+KSU_INIT_RC
+
+    # Le hook sucompat du noyau intercepte le chemin /system/bin/su et
+    # redirige vers /data/adb/ksud. Le fichier sert de point d’entrée; ksud
+    # reste installé à son chemin officiel.
     "$MAGISKBOOT" cpio ramdisk.cpio \
-        "mkdir 0755 system" \
-        "mkdir 0755 system/bin" \
-        "add 06755 system/bin/su ./local_su_binary"
-    rm -f local_su_binary
+        "add 0755 ksud $WORKSPACE/ksud" \
+        "add 0755 system/bin/su $WORKSPACE/ksud" \
+        "add 0644 init.kernelsu.rc $REPACK_DIR/init.kernelsu.rc"
+
+    if [[ -f init.rc ]]; then
+        if ! grep -qF 'import /init.kernelsu.rc' init.rc; then
+            printf '\nimport /init.kernelsu.rc\n' >> init.rc
+            "$MAGISKBOOT" cpio ramdisk.cpio \
+                "add 0644 init.rc ./init.rc"
+        fi
+    else
+        fail "init.rc absent du ramdisk; impossible d’activer ksud"
+    fi
+
+    # Vérification du contenu cpio avant le repack final.
+    "$MAGISKBOOT" cpio ramdisk.cpio -l | tee "$OUTPUT_DIR/ramdisk-kernelsu.list"
+    grep -qE '(^|/)ksud$' "$OUTPUT_DIR/ramdisk-kernelsu.list" || \
+        fail "ksud absent du ramdisk après injection"
+    grep -qE 'system/bin/su' "$OUTPUT_DIR/ramdisk-kernelsu.list" || \
+        fail "Lanceur system/bin/su absent du ramdisk après injection"
+    grep -qE 'init.kernelsu.rc' "$OUTPUT_DIR/ramdisk-kernelsu.list" || \
+        fail "init.kernelsu.rc absent du ramdisk après injection"
 fi
 
 "$MAGISKBOOT" repack boot.img new-boot.img
 [[ -s new-boot.img ]] || fail "Échec de reconstruction du boot.img"
-cp new-boot.img "$OUTPUT_DIR/Backslashxx-SuSFS-kiev-boot.img"
+cp new-boot.img "$OUTPUT_DIR/boot.img"
 
-FINAL_BYTES=$(stat -c '%s' "$OUTPUT_DIR/Backslashxx-SuSFS-kiev-boot.img")
+FINAL_BYTES=$(stat -c '%s' "$OUTPUT_DIR/boot.img")
 FINAL_MIB=$((FINAL_BYTES / 1024 / 1024))
 echo "Taille boot final: ${FINAL_BYTES} octets (${FINAL_MIB} MiB)"
 echo "Le dtbo reste séparé: $OUTPUT_DIR/dtbo.img"
@@ -490,5 +544,3 @@ echo "Le dtbo reste séparé: $OUTPUT_DIR/dtbo.img"
 cp "$LOG" "$OUTPUT_DIR/build.log"
 echo "✅ Compilation et génération de boot.img réussies"
 echo "Sorties: $OUTPUT_DIR"
-echo "  - $OUTPUT_DIR/Backslashxx-SuSFS-kiev-boot.img"
-echo "  - $OUTPUT_DIR/dtbo.img"
