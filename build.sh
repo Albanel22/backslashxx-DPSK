@@ -8,13 +8,8 @@
 #  2. KernelSU backslashxx, branche master
 #  3. Patch xxKSU/SusFS: midori01/KernelSU commit xx.patch
 #  4. Patch SusFS 4.19 dés-inliné par susfs_deinlined.sh
-#  5. Vérification stricte: aucun fichier .rej ou .orig accepté
-#
-# Variables personnalisables:
-#   WORKSPACE, KERNEL_REPO, KERNEL_REF
-#   KSU_REPO, KSU_REF, XX_PATCH_URL
-#   SUSFS_PATCH_URL, SUSFS_DEINLINE_URL
-#   DEFCONFIG, JOBS, BUILD_KSUD, MAGISK_VERSION
+#  5. Patch tactile kiev/lito
+#  6. Vérification stricte: aucun fichier .rej ou .orig accepté
 #
 set -Eeuo pipefail
 IFS=$'\n\t'
@@ -146,8 +141,6 @@ auto_reject_check() {
 info "Application du patch SusFS dés-inliné"
 cd "$KERNEL_DIR"
 
-# xxksu-support tolère les contextes décalés, puis corrige les rejets
-# spécifiques au noyau LineageOS sm8250 4.19.325 de kiev/lito.
 patch --batch --forward -p1 < "$SUSFS_DEINLINED_PATCH" \
     > "$WORKSPACE/susfs_patch.log" 2>&1 || true
 
@@ -223,10 +216,6 @@ KIEV_SUSFS_FIX
 patch --batch --forward -p1 < "$SUSFS_COMPAT_PATCH" \
     > "$WORKSPACE/susfs_compat_patch.log" 2>&1
 
-# Le patch SusFS 4.19 ajoute les appels KSTAT dans fs/stat.c mais, selon
-# la révision du noyau, n’ajoute pas toujours son en-tête de définitions.
-# Sans cet include, STATX_SUS_KSTAT* et susfs_is_current_app_uid() sont
-# inconnus du compilateur.
 if grep -q 'CONFIG_KSU_SUSFS_SUS_KSTAT' fs/stat.c && \
    ! grep -q '^#include <linux/susfs_def.h>$' fs/stat.c; then
     sed -i '/^#include <asm\/unistd.h>$/a\
@@ -235,7 +224,6 @@ if grep -q 'CONFIG_KSU_SUSFS_SUS_KSTAT' fs/stat.c && \
 #endif // #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT' fs/stat.c
 fi
 
-# Ces trois rejets ont été consommés par le correctif ciblé.
 rm -f fs/namespace.c.rej fs/proc/task_mmu.c.rej fs/super.c.rej \
       fs/namespace.c.orig fs/proc/task_mmu.c.orig fs/super.c.orig
 
@@ -352,6 +340,44 @@ done
 
 cp "$OUT_DIR/.config" "$OUTPUT_DIR/kernel.config"
 grep -E 'CONFIG_(KSU|KSU_SUSFS|THREAD_INFO_IN_TASK)' "$OUT_DIR/.config" | tee "$OUTPUT_DIR/ksu-susfs.config"
+
+# ========== PATCH TACTILE AJOUTÉ ==========
+info "Application du patch tactile"
+
+if [[ -f "$KERNEL_DIR/techpack/display/msm/msm_drv.c" ]]; then
+    if ! grep -q "panel_register_notifier" "$KERNEL_DIR/techpack/display/msm/msm_drv.c"; then
+        cat >> "$KERNEL_DIR/techpack/display/msm/msm_drv.c" <<'TOUCH_PATCH'
+
+/* --- Début Patch Tactile --- */
+#include <linux/notifier.h>
+#include <linux/module.h>
+
+static BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);
+
+int panel_register_notifier(struct notifier_block *nb)
+{
+    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);
+}
+EXPORT_SYMBOL(panel_register_notifier);
+
+int panel_unregister_notifier(struct notifier_block *nb)
+{
+    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);
+}
+EXPORT_SYMBOL(panel_unregister_notifier);
+
+void touch_set_state(int state) { return; }
+EXPORT_SYMBOL(touch_set_state);
+/* --- Fin Patch Tactile --- */
+TOUCH_PATCH
+        echo "✅ Patch tactile appliqué"
+    else
+        echo "✅ Patch tactile déjà présent"
+    fi
+else
+    echo "⚠️ techpack/display/msm/msm_drv.c introuvable"
+fi
+# ========== FIN PATCH TACTILE ==========
 
 info "Compilation du noyau"
 make O="$OUT_DIR" LLVM=1 -j"$JOBS" Image 2>&1 | tee "$LOG"
@@ -473,9 +499,9 @@ fi
 
 "$MAGISKBOOT" repack boot.img new-boot.img
 [[ -s new-boot.img ]] || fail "Échec de reconstruction du boot.img"
-cp new-boot.img "$OUTPUT_DIR/boot.img"
+cp new-boot.img "$OUTPUT_DIR/Backslashxx-SuSFS-kiev-boot.img"
 
-FINAL_BYTES=$(stat -c '%s' "$OUTPUT_DIR/boot.img")
+FINAL_BYTES=$(stat -c '%s' "$OUTPUT_DIR/Backslashxx-SuSFS-kiev-boot.img")
 FINAL_MIB=$((FINAL_BYTES / 1024 / 1024))
 echo "Taille boot final: ${FINAL_BYTES} octets (${FINAL_MIB} MiB)"
 echo "Le dtbo reste séparé: $OUTPUT_DIR/dtbo.img"
@@ -483,3 +509,5 @@ echo "Le dtbo reste séparé: $OUTPUT_DIR/dtbo.img"
 cp "$LOG" "$OUTPUT_DIR/build.log"
 echo "✅ Compilation et génération de boot.img réussies"
 echo "Sorties: $OUTPUT_DIR"
+echo "  - $OUTPUT_DIR/Backslashxx-SuSFS-kiev-boot.img"
+echo "  - $OUTPUT_DIR/dtbo.img"
