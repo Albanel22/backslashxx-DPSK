@@ -1,289 +1,316 @@
-#!/bin/bash
-# =============================================================================
-# BUILD : LineageOS 23.2 (Android 16 QPR2) + backslashxx KernelSU
-# Appareil : Motorola One 5G Ace (kiev / lito)
-# Kernel   : 4.19.325
-# Source   : Albanel22/android_kernel_motorola_sm8250 (branche lineage-23.2)
-# KernelSU : backslashxx/KernelSU v3.3.0-52
-# Hooks    : KSU_HACK_ARM64_BRANCH_LINK (natif)
-# SuSFS    : DÉSACTIVÉ
-# =============================================================================
-set -e
+#!/usr/bin/env bash
+#
+# Build KernelSU xxKSU + SusFS pour Motorola One 5G Ace (kiev/lito)
+# Méthode basée sur cyberc3dr/nGKI_Kernel_Build, branche xxksu-support.
+#
+# Ordre d'intégration:
+#  1. Noyau LineageOS 4.19
+#  2. KernelSU backslashxx, branche master
+#  3. Patch xxKSU/SusFS: midori01/KernelSU commit xx.patch
+#  4. Patch SusFS 4.19 dés-inliné par susfs_deinlined.sh
+#  5. Vérification stricte: aucun fichier .rej ou .orig accepté
+#
+# Variables personnalisables:
+#   WORKSPACE, KERNEL_REPO, KERNEL_REF
+#   KSU_REPO, KSU_REF, XX_PATCH_URL
+#   SUSFS_PATCH_URL, SUSFS_DEINLINE_URL
+#   DEFCONFIG, JOBS, BUILD_KSUD, MAGISK_VERSION
+#
+set -Eeuo pipefail
+IFS=$'\n\t'
 
-echo "=== BUILD KernelSU v3.3.0-52 (ARM64_BRANCH_LINK) SANS SuSFS ==="
-df -h
+WORKSPACE="${WORKSPACE:-${GITHUB_WORKSPACE:-$PWD}}"
+KERNEL_REPO="${KERNEL_REPO:-https://github.com/LineageOS/android_kernel_motorola_sm8250.git}"
+KERNEL_REF="${KERNEL_REF:-lineage-23.2}"
+KSU_REPO="${KSU_REPO:-https://github.com/backslashxx/KernelSU.git}"
+KSU_REF="${KSU_REF:-master}"
+XX_PATCH_URL="${XX_PATCH_URL:-https://github.com/midori01/KernelSU/commit/xx.patch}"
+SUSFS_PATCH_URL="${SUSFS_PATCH_URL:-https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/mainline/Patches/Patch/susfs_patch_to_4.19.patch}"
+SUSFS_DEINLINE_URL="${SUSFS_DEINLINE_URL:-https://raw.githubusercontent.com/midori01/gki_ksu_workflow/main/.github/scripts/susfs_deinlined.sh}"
+DEFCONFIG="${DEFCONFIG:-vendor/lito-perf_defconfig}"
+JOBS="${JOBS:-$(nproc)}"
+BUILD_KSUD="${BUILD_KSUD:-1}"
+MAGISK_VERSION="${MAGISK_VERSION:-v27.0}"
+BOOT_STOCK_URL="${BOOT_STOCK_URL:-https://mirrorbits.lineageos.org/full/kiev/20260920/boot.img}"
+DTBO_STOCK_URL="${DTBO_STOCK_URL:-https://mirrorbits.lineageos.org/full/kiev/20260920/dtbo.img}"
 
-# ==================== 0. ENVIRONNEMENT ====================
-sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
-sudo apt-get clean
-sudo sed -i 's/azure.archive.ubuntu.com/archive.ubuntu.com/g' /etc/apt/sources.list 2>/dev/null || true
+KERNEL_DIR="$WORKSPACE/kernel_sources"
+KSU_DIR="$WORKSPACE/KernelSU"
+OUT_DIR="$KERNEL_DIR/out"
+OUTPUT_DIR="$WORKSPACE/output"
+LOG="$WORKSPACE/build.log"
+XX_PATCH="$WORKSPACE/xx.patch"
+SUSFS_PATCH="$WORKSPACE/susfs_patch_to_4.19.patch"
+SUSFS_DEINLINE="$WORKSPACE/susfs_deinlined.sh"
+SUSFS_DEINLINED_PATCH="$WORKSPACE/deinlined.patch"
 
-sudo apt-get update
-sudo apt-get install -y bc bison build-essential ccache flex glibc-source libelf-dev \
-    libssl-dev libncurses-dev gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
-    clang llvm lld device-tree-compiler zip unzip curl git python3 mkbootimg perl
-
-cd "$GITHUB_WORKSPACE"
-
-# ==================== 1. CLONAGE DU NOYAU ====================
-git clone https://github.com/LineageOS/android_kernel_motorola_sm8250.git \
--b lineage-23.2 --depth=1 kernel_sources
-
-cd kernel_sources
-git log --oneline -1
-echo "✅ Kernel cloné"
-
-# ==================== 1b. BACKPORT get_cred_rcu (4.19.325) ====================
-echo "=== Backport de get_cred_rcu (compatible atomic_long_t) ==="
-
-if grep -q "get_cred_rcu" include/linux/cred.h; then
-    echo "✅ get_cred_rcu déjà présent"
-else
-    python3 - << 'PYEOF'
-import re
-
-with open('include/linux/cred.h', 'r') as f:
-    content = f.read()
-
-if 'get_cred_rcu' not in content:
-    pattern = r'(static inline const struct cred \*get_cred\(const struct cred \*cred\)\s*\{[^}]*\})'
-    match = re.search(pattern, content, re.DOTALL)
-    if match:
-        insertion = '''
-
-static inline const struct cred *get_cred_rcu(const struct cred *cred)
-{
-    struct cred *nonconst_cred = (struct cred *) cred;
-    if (!cred)
-        return NULL;
-    if (!atomic_long_inc_not_zero(&nonconst_cred->usage))
-        return NULL;
-    validate_creds(cred);
-    return cred;
-}'''
-        content = content[:match.end()] + insertion + content[match.end():]
-        with open('include/linux/cred.h', 'w') as f:
-            f.write(content)
-        print("[+] get_cred_rcu ajouté dans include/linux/cred.h")
-
-with open('kernel/cred.c', 'r') as f:
-    content = f.read()
-
-if 'get_cred_rcu(cred)' not in content:
-    content = content.replace(
-        'while (!atomic_long_inc_not_zero(&((struct cred *)cred)->usage));',
-        'while (!get_cred_rcu(cred));'
-    )
-    content = content.replace(
-        'while (!atomic_inc_not_zero(&((struct cred *)cred)->usage));',
-        'while (!get_cred_rcu(cred));'
-    )
-    with open('kernel/cred.c', 'w') as f:
-        f.write(content)
-    print("[+] kernel/cred.c modifié")
-PYEOF
-fi
-
-grep -n "get_cred_rcu" include/linux/cred.h || echo "⚠️ non trouvé"
-grep -n "get_cred_rcu" kernel/cred.c || echo "⚠️ non utilisé"
-
-# ==================== 2. CLONE KERNELSU v3.3.0-52 ====================
-echo "=== Clone KernelSU v3.3.0-52 (backslashxx) ==="
-rm -rf drivers/kernelsu /tmp/KernelSU || true
-
-git clone --depth=1 https://github.com/backslashxx/KernelSU.git /tmp/KernelSU
-cd /tmp/KernelSU
-# Tenter le checkout du tag v3.3.0-52
-if git fetch --depth=1 origin tag v3.3.0-52 2>/dev/null; then
-    git checkout v3.3.0-52
-    echo "✅ Tag v3.3.0-52 checkout"
-else
-    echo "⚠️ Tag v3.3.0-52 introuvable, utilisation de la branche par défaut"
-fi
-git log --oneline -1
-cd "$GITHUB_WORKSPACE/kernel_sources"
-
-# ==================== 2b. SYMLINK DRIVER ====================
-ln -sf /tmp/KernelSU/kernel drivers/kernelsu
-
-if [ -d "drivers/kernelsu" ]; then
-    echo "✅ Symlink OK"
-    ls drivers/kernelsu/ | head -5
-else
-    echo "❌ Symlink ÉCHOUÉ"
+fail() {
+    echo "❌ $*" >&2
     exit 1
+}
+
+info() {
+    echo
+    echo "=== $* ==="
+}
+
+need_cmd() {
+    command -v "$1" >/dev/null 2>&1 || fail "Commande absente: $1"
+}
+
+cleanup_on_error() {
+    local rc=$?
+    echo "❌ BUILD FAILED (code $rc)"
+    if [[ -f "$LOG" ]]; then
+        echo "--- dernières erreurs ---"
+        grep -iE 'error:|undefined reference|undefined symbol|fatal:' "$LOG" | tail -80 || true
+    fi
+    exit "$rc"
+}
+
+trap cleanup_on_error ERR
+
+if command -v apt-get >/dev/null 2>&1; then
+    sudo apt-get update
+    sudo apt-get install -y \
+        bc bison build-essential ccache flex libelf-dev libssl-dev \
+        libncurses-dev gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
+        clang llvm lld device-tree-compiler zip unzip curl wget git python3 patch perl cargo rustc
 fi
 
-printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> drivers/Makefile
-sed -i "/endmenu/i\source \"drivers/kernelsu/Kconfig\"" drivers/Kconfig
-echo "✅ KernelSU intégré"
+for c in git make python3 patch clang ld.lld curl; do
+    need_cmd "$c"
+done
 
-# ==================== 3. VÉRIFICATION DES HOOKS NATIFS ====================
-echo "=== Vérification des hooks natifs ==="
+mkdir -p "$WORKSPACE" "$OUTPUT_DIR"
+rm -rf "$KERNEL_DIR" "$KSU_DIR"
+rm -f "$XX_PATCH" "$SUSFS_PATCH" "$SUSFS_DEINLINE" "$SUSFS_DEINLINED_PATCH"
 
-if [ -d "/tmp/KernelSU/kernel/hook" ]; then
-    echo "✅ Dossier hook/ trouvé :"
-    ls /tmp/KernelSU/kernel/hook/
-else
-    echo "⚠️ Dossier hook/ non trouvé"
+info "Clonage du noyau"
+git clone --depth=1 --single-branch --branch "$KERNEL_REF" "$KERNEL_REPO" "$KERNEL_DIR"
+git -C "$KERNEL_DIR" log -1 --oneline
+
+info "Clonage de KernelSU xxKSU"
+git clone --depth=1 --single-branch --branch "$KSU_REF" "$KSU_REPO" "$KSU_DIR"
+echo "KernelSU: $(git -C "$KSU_DIR" log -1 --oneline)"
+
+info "Intégration KernelSU dans le noyau"
+ln -s "$KSU_DIR/kernel" "$KERNEL_DIR/drivers/kernelsu"
+grep -qF 'obj-$(CONFIG_KSU) += kernelsu/' "$KERNEL_DIR/drivers/Makefile" || \
+    printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> "$KERNEL_DIR/drivers/Makefile"
+grep -qF 'source "drivers/kernelsu/Kconfig"' "$KERNEL_DIR/drivers/Kconfig" || \
+    sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' "$KERNEL_DIR/drivers/Kconfig"
+
+info "Application du patch xxKSU/SusFS dans KernelSU"
+curl --fail --location --retry 5 --retry-delay 5 --retry-all-errors \
+    "$XX_PATCH_URL" -o "$XX_PATCH"
+cd "$KSU_DIR"
+if ! patch --dry-run --batch --forward -p1 < "$XX_PATCH" > "$WORKSPACE/xx_patch_dry_run.log" 2>&1; then
+    cat "$WORKSPACE/xx_patch_dry_run.log"
+    fail "Le patch xxKSU ne s'applique pas à KernelSU $KSU_REF"
+fi
+patch --batch --forward -p1 < "$XX_PATCH" > "$WORKSPACE/xx_patch.log" 2>&1
+[[ -z "$(find . -type f -name '*.rej' -print -quit)" ]] || \
+    fail "Le patch xxKSU a produit un fichier .rej"
+find . -type f -name '*.orig' -delete
+
+info "Récupération du patch SusFS 4.19"
+curl --fail --location --retry 5 --retry-delay 5 --retry-all-errors \
+    "$SUSFS_PATCH_URL" -o "$SUSFS_PATCH"
+[[ -s "$SUSFS_PATCH" ]] || fail "Patch SusFS téléchargé vide"
+
+info "Téléchargement de susfs_deinlined.sh"
+curl --fail --location --retry 5 --retry-delay 5 --retry-all-errors \
+    "$SUSFS_DEINLINE_URL" -o "$SUSFS_DEINLINE"
+chmod +x "$SUSFS_DEINLINE"
+
+info "Génération du patch SusFS dés-inliné"
+"$SUSFS_DEINLINE" "$SUSFS_PATCH" "$SUSFS_DEINLINED_PATCH"
+[[ -s "$SUSFS_DEINLINED_PATCH" ]] || fail "Patch SusFS dés-inliné vide"
+
+auto_reject_check() {
+    local root="$1"
+    local rejects
+    rejects=$(find "$root" -type f -name '*.rej' -print)
+    if [[ -n "$rejects" ]]; then
+        echo "$rejects"
+        while IFS= read -r r; do
+            echo "--- $r"
+            cat "$r"
+        done <<< "$rejects"
+        return 1
+    fi
+}
+
+info "Application stricte du patch SusFS dés-inliné"
+cd "$KERNEL_DIR"
+if ! patch --dry-run --batch --forward -p1 < "$SUSFS_DEINLINED_PATCH" > "$WORKSPACE/susfs_patch_dry_run.log" 2>&1; then
+    cat "$WORKSPACE/susfs_patch_dry_run.log"
+    fail "Le patch SusFS dés-inliné ne s'applique pas au noyau"
+fi
+patch --batch --forward -p1 < "$SUSFS_DEINLINED_PATCH" > "$WORKSPACE/susfs_patch.log" 2>&1
+auto_reject_check "$KERNEL_DIR" || fail "Le patch SusFS a produit un fichier .rej"
+find . -type f -name '*.orig' -delete
+
+[[ -f fs/susfs.c ]] || fail "fs/susfs.c absent après SusFS"
+[[ -f include/linux/susfs.h ]] || fail "include/linux/susfs.h absent après SusFS"
+[[ -f include/linux/susfs_def.h ]] || fail "include/linux/susfs_def.h absent après SusFS"
+
+grep -qF 'obj-$(CONFIG_KSU_SUSFS) += susfs.o' fs/Makefile || \
+    fail "fs/Makefile ne contient pas la construction de susfs.o"
+
+info "Configuration"
+if [[ -z "$DEFCONFIG" ]]; then
+    DEFCONFIG=$(find arch/arm64/configs/vendor arch/arm64/configs -maxdepth 2 \
+        \( -iname '*kiev*' -o -iname '*lito*' \) -type f -print -quit 2>/dev/null || true)
+    [[ -n "$DEFCONFIG" ]] || fail "Defconfig kiev/lito introuvable; définir DEFCONFIG"
+    DEFCONFIG="${DEFCONFIG#arch/arm64/configs/}"
 fi
 
-# ==================== 4. CONFIGURATION ====================
 export ARCH=arm64
 export SUBARCH=arm64
-export CROSS_COMPILE=aarch64-linux-gnu-
-export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+export CROSS_COMPILE="${CROSS_COMPILE:-aarch64-linux-gnu-}"
+export CROSS_COMPILE_ARM32="${CROSS_COMPILE_ARM32:-arm-linux-gnueabi-}"
 
-mkdir -p out
-CONFIG=$(find arch/arm64/configs/vendor/ -name "*lito*" -o -name "*kiev*" 2>/dev/null | head -1)
-if [ -z "$CONFIG" ]; then
-    CONFIG=$(find arch/arm64/configs/ -name "*lito*" -o -name "*kiev*" | head -1)
-fi
-CONFIG_NAME=${CONFIG#arch/arm64/configs/}
-echo "Config utilisée: $CONFIG_NAME"
+DEFCONFIG_FILE="$KERNEL_DIR/arch/arm64/configs/$DEFCONFIG"
+[[ -f "$DEFCONFIG_FILE" ]] || fail "Defconfig introuvable: $DEFCONFIG_FILE"
 
-make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 $CONFIG_NAME
+info "Activation automatique de SusFS dans le defconfig"
 
-# Désactiver set -e pour ./scripts/config (peut retourner 1 sur options absentes)
+set_defconfig_option() {
+    local option="$1"
+    local value="$2"
+    sed -i -E \
+        "/^(CONFIG_${option}=|# CONFIG_${option} is not set)/d" \
+        "$DEFCONFIG_FILE"
+    if [[ "$value" == y ]]; then
+        printf 'CONFIG_%s=y\n' "$option" >> "$DEFCONFIG_FILE"
+    else
+        printf '# CONFIG_%s is not set\n' "$option" >> "$DEFCONFIG_FILE"
+    fi
+}
+
+set_defconfig_option KSU y
+set_defconfig_option THREAD_INFO_IN_TASK y
+set_defconfig_option KSU_SUSFS y
+set_defconfig_option KSU_SUSFS_SUS_PATH y
+set_defconfig_option KSU_SUSFS_SUS_MOUNT y
+set_defconfig_option KSU_SUSFS_SUS_KSTAT y
+set_defconfig_option KSU_SUSFS_SPOOF_UNAME y
+set_defconfig_option KSU_SUSFS_ENABLE_LOG y
+set_defconfig_option KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS y
+set_defconfig_option KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG n
+set_defconfig_option KSU_SUSFS_OPEN_REDIRECT n
+set_defconfig_option KSU_SUSFS_SUS_MAP n
+set_defconfig_option KPROBES n
+set_defconfig_option HAVE_KPROBES n
+set_defconfig_option KPROBE_EVENTS n
+set_defconfig_option KALLSYMS y
+set_defconfig_option KALLSYMS_ALL y
+
+make O="$OUT_DIR" LLVM=1 "$DEFCONFIG"
+scripts_config="$KERNEL_DIR/scripts/config"
+[[ -x "$scripts_config" ]] || chmod +x "$scripts_config"
+
 set +e
-
-./scripts/config --file out/.config \
+"$scripts_config" --file "$OUT_DIR/.config" \
     --enable KSU \
-    --enable KSU_HACK_ARM64_BRANCH_LINK \
-    --disable KSU_TAMPER_SYSCALL_TABLE \
-    --disable KSU_KPROBES_KSUD \
-    --enable KSU_LSM_SECURITY_HOOKS \
-    --enable KSU_FEATURE_SULOG \
-    --enable KSU_FEATURE_ADBROOT \
-    --enable KALLSYMS \
-    --enable KALLSYMS_ALL \
+    --enable THREAD_INFO_IN_TASK \
+    --enable KSU_SUSFS \
+    --enable KSU_SUSFS_SUS_PATH \
+    --enable KSU_SUSFS_SUS_MOUNT \
+    --enable KSU_SUSFS_SUS_KSTAT \
+    --enable KSU_SUSFS_SPOOF_UNAME \
+    --enable KSU_SUSFS_ENABLE_LOG \
+    --enable KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+    --disable KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+    --disable KSU_SUSFS_OPEN_REDIRECT \
+    --disable KSU_SUSFS_SUS_MAP \
     --disable KPROBES \
     --disable HAVE_KPROBES \
     --disable KPROBE_EVENTS \
-    --enable THREAD_INFO_IN_TASK \
+    --enable KALLSYMS \
+    --enable KALLSYMS_ALL \
     --disable CC_WERROR
-
 set -e
 
-echo "=== Vérification config KernelSU ==="
-grep "CONFIG_KSU" out/.config || echo "⚠️ Aucune option KSU trouvée"
+make O="$OUT_DIR" LLVM=1 olddefconfig
 
-make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 olddefconfig
+REQUIRED_CONFIGS=(
+    CONFIG_KSU
+    CONFIG_THREAD_INFO_IN_TASK
+    CONFIG_KSU_SUSFS
+    CONFIG_KSU_SUSFS_SUS_PATH
+    CONFIG_KSU_SUSFS_SUS_MOUNT
+    CONFIG_KSU_SUSFS_SUS_KSTAT
+    CONFIG_KSU_SUSFS_SPOOF_UNAME
+    CONFIG_KSU_SUSFS_ENABLE_LOG
+    CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
+)
 
-echo "=== Config finale KernelSU ==="
-grep "CONFIG_KSU" out/.config
-
-# ==================== 5. PATCH SIGNATURES MODULE ====================
-sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
-
-# ==================== 6. PATCH TACTILE ====================
-echo "=== Application du patch tactile ==="
-if [ -f "techpack/display/msm/msm_drv.c" ]; then
-    if ! grep -q "panel_register_notifier" techpack/display/msm/msm_drv.c; then
-        printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
-        echo "✅ Patch tactile appliqué"
-    else
-        echo "✅ Patch tactile déjà présent"
-    fi
-else
-    echo "⚠️ techpack/display/msm/msm_drv.c introuvable"
-fi
-
-# ==================== 7. COMPILATION DU NOYAU ====================
-echo "=== Compilation du noyau ==="
-make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32 \
-    -j$(nproc) Image 2>&1 | tee build.log
-
-if [ ! -f "out/arch/arm64/boot/Image" ]; then
-    echo "❌ BUILD FAILED"
-    grep -i "error:" build.log | head -50
-    exit 1
-fi
-echo "✅ Compilation réussie"
-
-# ==================== 8. COMPILATION KSUD (NDK r27) ====================
-cd "$GITHUB_WORKSPACE"
-
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-source "$HOME/.cargo/env"
-rustup target add aarch64-linux-android
-
-# --- Télécharger le NDK r27 (supporte -std=gnu23) ---
-echo "=== Téléchargement du NDK r27 ==="
-
-NDK_ZIP=""
-for ver in r27c r27b r27; do
-    url="https://dl.google.com/android/repository/android-ndk-${ver}-linux.zip"
-    echo "[*] Test : $url"
-    if wget --spider -q "$url" 2>/dev/null; then
-        echo "[+] Disponible : $url"
-        NDK_ZIP="android-ndk-${ver}-linux.zip"
-        wget -q "$url"
-        break
-    fi
+for config in "${REQUIRED_CONFIGS[@]}"; do
+    grep -qE "^${config}=y$" "$OUT_DIR/.config" ||
+        fail "Option Kconfig requise absente ou désactivée: ${config}"
 done
 
-if [ -z "$NDK_ZIP" ]; then
-    echo "❌ Aucun NDK r27 trouvé. Fallback sur r26d + patch build.rs"
-    wget -q https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
-    NDK_ZIP="android-ndk-r26d-linux.zip"
-    NEED_BUILD_RS_PATCH=1
-else
-    NEED_BUILD_RS_PATCH=0
+cp "$OUT_DIR/.config" "$OUTPUT_DIR/kernel.config"
+grep -E 'CONFIG_(KSU|KSU_SUSFS|THREAD_INFO_IN_TASK)' "$OUT_DIR/.config" | tee "$OUTPUT_DIR/ksu-susfs.config"
+
+info "Compilation du noyau"
+make O="$OUT_DIR" LLVM=1 -j"$JOBS" Image 2>&1 | tee "$LOG"
+[[ -f "$OUT_DIR/arch/arm64/boot/Image" ]] || fail "Image noyau absente"
+cp "$OUT_DIR/arch/arm64/boot/Image" "$OUTPUT_DIR/Image"
+cp "$LOG" "$OUTPUT_DIR/build.log"
+
+info "Vérifications finales"
+
+auto_reject_check "$KERNEL_DIR" ||
+    fail "Des fichiers .rej subsistent"
+
+if find "$KERNEL_DIR" \
+    -type f \
+    -name '*.orig' \
+    -print \
+    -quit \
+    | grep -q .
+then
+    fail "Des fichiers .orig subsistent"
 fi
 
-unzip -q "$NDK_ZIP"
-NDK_DIR=$(ls -d android-ndk-* 2>/dev/null | head -1)
-echo "✅ NDK extrait : $NDK_DIR"
+file "$OUTPUT_DIR/Image" 2>/dev/null || true
 
-export ANDROID_NDK_ROOT="$GITHUB_WORKSPACE/$NDK_DIR"
-export ANDROID_NDK_HOME="$ANDROID_NDK_ROOT"
+if [[ "$BUILD_KSUD" == 1 ]]; then
+    info "Compilation de ksud pour le ramdisk"
+    command -v cargo >/dev/null 2>&1 || fail "cargo est requis pour compiler ksud"
+    command -v rustup >/dev/null 2>&1 || \
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    export PATH="$HOME/.cargo/bin:$PATH"
+    rustup target add aarch64-linux-android
 
-export AARCH64_CLANG_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
-export AARCH64_CLANGXX_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang++"
-export AR_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
-export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot -I$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/aarch64-linux-android"
+    NDK_ZIP="$WORKSPACE/android-ndk-r27c-linux.zip"
+    NDK_DIR="$WORKSPACE/android-ndk-r27c"
+    NDK_CLANG="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
 
-# Vérifier la version de clang
-"$AARCH64_CLANG_PATH" --version | head -1
-
-# --- Cloner KernelSU ---
-rm -rf "$GITHUB_WORKSPACE/ksud-src"
-git clone --depth=1 https://github.com/backslashxx/KernelSU.git "$GITHUB_WORKSPACE/ksud-src"
-cd "$GITHUB_WORKSPACE/ksud-src"
-
-if git fetch --depth=1 origin tag v3.3.0-52 2>/dev/null; then
-    git checkout v3.3.0-52
-    echo "✅ Tag v3.3.0-52 checkout pour ksud"
-fi
-
-# --- Patch build.rs si NDK r26d (fallback) ---
-if [ "$NEED_BUILD_RS_PATCH" = "1" ]; then
-    echo "=== Patch build.rs : gnu23 → gnu17 ==="
-    BUILD_RS="$GITHUB_WORKSPACE/ksud-src/userspace/ksud/build.rs"
-    if [ -f "$BUILD_RS" ]; then
-        sed -i 's/std=gnu23/std=gnu17/g' "$BUILD_RS"
-        echo "[+] build.rs patché"
-    else
-        find "$GITHUB_WORKSPACE/ksud-src/userspace/ksud" -name "build.rs" \
-            -exec sed -i 's/std=gnu23/std=gnu17/g' {} \;
+    if [[ ! -x "$NDK_CLANG" ]]; then
+        curl --fail --location --retry 5 --retry-delay 5 --retry-all-errors \
+            https://dl.google.com/android/repository/android-ndk-r27c-linux.zip \
+            -o "$NDK_ZIP"
+        unzip -q -o "$NDK_ZIP" -d "$WORKSPACE"
     fi
-fi
 
-# --- Fix adb_client si nécessaire ---
-CARGO_TOML="userspace/ksud/Cargo.toml"
-if [ -f "$CARGO_TOML" ] && grep -q "Kernel-SU/adb_client" "$CARGO_TOML"; then
-    echo "=== Patch adb_client ==="
-    sed -i 's|^adb_client\s*=\s*{.*git.*Kernel-SU/adb_client.*}.*|adb_client = { version = "3.1.1", default-features = false }|' "$CARGO_TOML"
-    rm -f Cargo.lock
-    echo "✅ adb_client patché"
-fi
+    NDK_BIN="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin"
+    NDK_SYSROOT="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+    export AARCH64_CLANG_PATH="$NDK_BIN/aarch64-linux-android26-clang"
+    export AARCH64_CLANGXX_PATH="$NDK_BIN/aarch64-linux-android26-clang++"
+    export AR_PATH="$NDK_BIN/llvm-ar"
+    export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$NDK_SYSROOT -I$NDK_SYSROOT/usr/include/aarch64-linux-android"
 
-# --- Compilation ksud ---
-cd userspace/ksud
+    [[ -x "$AARCH64_CLANG_PATH" ]] || fail "Clang Android NDK introuvable"
+    [[ -d "$KSU_DIR/userspace/ksud" ]] || fail "Source userspace/ksud absente de KernelSU"
 
-mkdir -p .cargo
-cat > .cargo/config.toml <<EOF
+    cd "$KSU_DIR/userspace/ksud"
+    mkdir -p .cargo
+    cat > .cargo/config.toml <<EOF
 [target.aarch64-linux-android]
 linker = "$AARCH64_CLANG_PATH"
 
@@ -294,71 +321,68 @@ AR_aarch64_linux_android = "$AR_PATH"
 BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android = "$BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android"
 EOF
 
-cargo build --release --target aarch64-linux-android
-
-KSUD_BINARY="$GITHUB_WORKSPACE/ksud-src/target/aarch64-linux-android/release/ksud"
-if [ ! -f "$KSUD_BINARY" ]; then
-    echo "❌ ksud introuvable"
-    exit 1
+    cargo build --release --target aarch64-linux-android
+    KSUD_BINARY="$KSU_DIR/target/aarch64-linux-android/release/ksud"
+    [[ -f "$KSUD_BINARY" ]] || fail "ksud introuvable après compilation"
+    cp "$KSUD_BINARY" "$WORKSPACE/ksud"
+    chmod 755 "$WORKSPACE/ksud"
 fi
 
-cp "$KSUD_BINARY" "$GITHUB_WORKSPACE/ksud"
-chmod 755 "$GITHUB_WORKSPACE/ksud"
-echo "✅ ksud compilé"
+info "Repack sécurisé du boot.img stock"
+REPACK_DIR="$WORKSPACE/repack"
+rm -rf "$REPACK_DIR"
+mkdir -p "$REPACK_DIR"
 
-# ==================== 9. REPACK ====================
-cd "$GITHUB_WORKSPACE"
+curl --fail --location --retry 5 --retry-delay 5 --retry-all-errors \
+    "$BOOT_STOCK_URL" -o "$REPACK_DIR/boot.img"
+curl --fail --location --retry 5 --retry-delay 5 --retry-all-errors \
+    "$DTBO_STOCK_URL" -o "$OUTPUT_DIR/dtbo.img"
 
-curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260920/boot.img" || {
-    echo "❌ Impossible de télécharger boot.img"
-    exit 1
-}
-curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260920/dtbo.img" 2>/dev/null || true
+BOOT_BYTES=$(stat -c '%s' "$REPACK_DIR/boot.img")
+BOOT_MIB=$((BOOT_BYTES / 1024 / 1024))
+echo "Taille boot stock: ${BOOT_BYTES} octets (${BOOT_MIB} MiB)"
 
-mkdir -p repack
-cp boot-stock.img repack/boot.img
-wget -q https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk -O Magisk-v27.0.apk
-unzip -q Magisk-v27.0.apk lib/x86_64/libmagiskboot.so
-mv lib/x86_64/libmagiskboot.so repack/magiskboot
-chmod +x repack/magiskboot
-rm -rf Magisk-v27.0.apk lib/
+MAGISK_APK="$WORKSPACE/Magisk-${MAGISK_VERSION}.apk"
+MAGISKBOOT="$REPACK_DIR/magiskboot"
+curl --fail --location --retry 5 --retry-delay 5 --retry-all-errors \
+    "https://github.com/topjohnwu/Magisk/releases/download/${MAGISK_VERSION}/Magisk-${MAGISK_VERSION}.apk" \
+    -o "$MAGISK_APK"
+unzip -p "$MAGISK_APK" lib/x86_64/libmagiskboot.so > "$MAGISKBOOT"
+chmod 755 "$MAGISKBOOT"
 
-cd repack
-set +e
-./magiskboot unpack boot.img
-set -e
+cd "$REPACK_DIR"
+"$MAGISKBOOT" unpack boot.img
+[[ -f kernel ]] || fail "magiskboot n'a pas extrait le noyau"
+[[ -f ramdisk.cpio ]] || fail "magiskboot n'a pas extrait le ramdisk"
 
-if [ ! -f "kernel" ] || [ ! -f "ramdisk.cpio" ]; then
-    echo "❌ Échec du unpack"
-    exit 1
+cp "$OUTPUT_DIR/Image" kernel
+
+if [[ "$BUILD_KSUD" == 1 ]]; then
+    [[ -f "$WORKSPACE/ksud" ]] || fail "ksud manquant pour le repack"
+    "$MAGISKBOOT" cpio ramdisk.cpio \
+        "mkdir 0755 data" \
+        "mkdir 0755 data/adb" \
+        "mkdir 0755 data/adb/ksud" \
+        "add 0755 data/adb/ksud/ksud $WORKSPACE/ksud"
+
+    cp "$WORKSPACE/ksud" local_su_binary
+    chmod 755 local_su_binary
+    "$MAGISKBOOT" cpio ramdisk.cpio \
+        "mkdir 0755 system" \
+        "mkdir 0755 system/bin" \
+        "add 06755 system/bin/su ./local_su_binary"
+    rm -f local_su_binary
 fi
 
-cp "$GITHUB_WORKSPACE/kernel_sources/out/arch/arm64/boot/Image" kernel
+"$MAGISKBOOT" repack boot.img new-boot.img
+[[ -s new-boot.img ]] || fail "Échec de reconstruction du boot.img"
+cp new-boot.img "$OUTPUT_DIR/boot.img"
 
-./magiskboot cpio ramdisk.cpio \
-    "mkdir 0755 data" \
-    "mkdir 0755 data/adb" \
-    "mkdir 0755 data/adb/ksud" \
-    "add 0755 data/adb/ksud/ksud $GITHUB_WORKSPACE/ksud"
+FINAL_BYTES=$(stat -c '%s' "$OUTPUT_DIR/boot.img")
+FINAL_MIB=$((FINAL_BYTES / 1024 / 1024))
+echo "Taille boot final: ${FINAL_BYTES} octets (${FINAL_MIB} MiB)"
+echo "Le dtbo reste séparé: $OUTPUT_DIR/dtbo.img"
 
-cp "$GITHUB_WORKSPACE/ksud" local_su_binary
-chmod 755 local_su_binary
-./magiskboot cpio ramdisk.cpio \
-    "mkdir 0755 system" \
-    "mkdir 0755 system/bin" \
-    "add 06755 system/bin/su ./local_su_binary"
-rm -f local_su_binary
-
-./magiskboot repack boot.img new-boot.img || { echo "❌ Échec du repack"; exit 1; }
-mv new-boot.img ../final_boot.img
-cd ..
-
-# ==================== 10. SORTIE ====================
-mkdir -p output
-cp final_boot.img output/Backslashxx-NoSuSFS-boot.img
-cp dtbo-stock.img output/dtbo.img 2>/dev/null || true
-cp kernel_sources/build.log output/
-cp "$GITHUB_WORKSPACE/ksud" output/ksud 2>/dev/null || true
-
-echo "=== BUILD TERMINÉ ==="
-ls -lh output/
+cp "$LOG" "$OUTPUT_DIR/build.log"
+echo "✅ Compilation et génération de boot.img réussies"
+echo "Sorties: $OUTPUT_DIR"
