@@ -223,6 +223,18 @@ KIEV_SUSFS_FIX
 patch --batch --forward -p1 < "$SUSFS_COMPAT_PATCH" \
     > "$WORKSPACE/susfs_compat_patch.log" 2>&1
 
+# Le patch SusFS 4.19 ajoute les appels KSTAT dans fs/stat.c mais, selon
+# la révision du noyau, n’ajoute pas toujours son en-tête de définitions.
+# Sans cet include, STATX_SUS_KSTAT* et susfs_is_current_app_uid() sont
+# inconnus du compilateur.
+if grep -q 'CONFIG_KSU_SUSFS_SUS_KSTAT' fs/stat.c && \
+   ! grep -q '^#include <linux/susfs_def.h>$' fs/stat.c; then
+    sed -i '/^#include <asm\/unistd.h>$/a\
+#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\
+#include <linux/susfs_def.h>\
+#endif // #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT' fs/stat.c
+fi
+
 # Ces trois rejets ont été consommés par le correctif ciblé.
 rm -f fs/namespace.c.rej fs/proc/task_mmu.c.rej fs/super.c.rej \
       fs/namespace.c.orig fs/proc/task_mmu.c.orig fs/super.c.orig
