@@ -27,6 +27,7 @@ KSU_REF="${KSU_REF:-master}"
 XX_PATCH_URL="${XX_PATCH_URL:-https://github.com/midori01/KernelSU/commit/xx.patch}"
 SUSFS_PATCH_URL="${SUSFS_PATCH_URL:-https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/mainline/Patches/Patch/susfs_patch_to_4.19.patch}"
 SUSFS_DEINLINE_URL="${SUSFS_DEINLINE_URL:-https://raw.githubusercontent.com/midori01/gki_ksu_workflow/main/.github/scripts/susfs_deinlined.sh}"
+SUSFS_COMPAT_PATCH="${SUSFS_COMPAT_PATCH:-$WORKSPACE/susfs_kiev_lito_fix.patch}"
 DEFCONFIG="${DEFCONFIG:-vendor/lito-perf_defconfig}"
 JOBS="${JOBS:-$(nproc)}"
 BUILD_KSUD="${BUILD_KSUD:-1}"
@@ -142,14 +143,98 @@ auto_reject_check() {
     fi
 }
 
-info "Application stricte du patch SusFS dés-inliné"
+info "Application du patch SusFS dés-inliné"
 cd "$KERNEL_DIR"
-if ! patch --dry-run --batch --forward -p1 < "$SUSFS_DEINLINED_PATCH" > "$WORKSPACE/susfs_patch_dry_run.log" 2>&1; then
-    cat "$WORKSPACE/susfs_patch_dry_run.log"
-    fail "Le patch SusFS dés-inliné ne s'applique pas au noyau"
+
+# xxksu-support tolère les contextes décalés, puis corrige les rejets
+# spécifiques au noyau LineageOS sm8250 4.19.325 de kiev/lito.
+patch --batch --forward -p1 < "$SUSFS_DEINLINED_PATCH" \
+    > "$WORKSPACE/susfs_patch.log" 2>&1 || true
+
+cat > "$SUSFS_COMPAT_PATCH" <<'KIEV_SUSFS_FIX'
+--- a/fs/namespace.c
++++ b/fs/namespace.c
+@@ -26,6 +26,14 @@
+ #include <linux/bootmem.h>
+ #include <linux/task_work.h>
+ #include <linux/sched/task.h>
++#ifdef CONFIG_KSU_SUSFS
++#include <linux/susfs_def.h>
++#endif
++#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
++extern bool susfs_is_current_ksu_domain(void);
++extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
++#define CL_COPY_MNT_NS BIT(25) /* used by copy_mnt_ns() */
++#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+ #include <linux/fs_context.h>
+ 
+ #include "pnode.h"
+@@ -1091,7 +1099,13 @@
+ 		return ERR_PTR(-EINVAL);
+ 	sb = fc->root->d_sb;
+ 
+-	mnt = alloc_vfsmnt(fc->source ?: "none");
++#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
++	if (static_branch_unlikely(&susfs_is_sdcard_android_data_not_decrypted) &&
++		susfs_is_current_ksu_domain())
++		mnt = susfs_alloc_non_unshare_ksu_vfsmnt(fc->source ?: "none");
++	else
++#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
++		mnt = alloc_vfsmnt(fc->source ?: "none");
+ 	if (!mnt)
+ 		return ERR_PTR(-ENOMEM);
+ 
+--- a/fs/proc/task_mmu.c
++++ b/fs/proc/task_mmu.c
+@@ -1674,7 +1674,15 @@
+ 		ret = mmap_read_lock_killable(mm);
+ 		if (ret)
+ 			goto out_free;
++#ifdef CONFIG_KSU_SUSFS_SUS_MAP
++		vma = find_vma(mm, start_vaddr);
++		if (vma && vma->vm_file && SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))
++			goto bypass_orig_flow;
++#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
+ 		ret = walk_page_range(start_vaddr, end, &pagemap_walk);
++#ifdef CONFIG_KSU_SUSFS_SUS_MAP
++bypass_orig_flow:
++#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
+ 		mmap_read_unlock(mm);
+ 		start_vaddr = end;
+ 
+--- a/fs/super.c
++++ b/fs/super.c
+@@ -37,6 +37,13 @@
+ #include <linux/lockdep.h>
+ #include <linux/user_namespace.h>
+ #include <linux/fs_context.h>
++#ifdef CONFIG_KSU_SUSFS
++#include <linux/susfs_def.h>
++#endif // #ifdef CONFIG_KSU_SUSFS
++#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
++extern bool susfs_is_current_ksu_domain(void);
++extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
++#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+ #include "internal.h"
+ 
+ static int thaw_super_locked(struct super_block *sb);
+KIEV_SUSFS_FIX
+
+patch --batch --forward -p1 < "$SUSFS_COMPAT_PATCH" \
+    > "$WORKSPACE/susfs_compat_patch.log" 2>&1
+
+# Ces trois rejets ont été consommés par le correctif ciblé.
+rm -f fs/namespace.c.rej fs/proc/task_mmu.c.rej fs/super.c.rej \
+      fs/namespace.c.orig fs/proc/task_mmu.c.orig fs/super.c.orig
+
+if ! auto_reject_check "$KERNEL_DIR"; then
+    echo "--- log patch SusFS ---"
+    cat "$WORKSPACE/susfs_patch.log" || true
+    echo "--- log compatibilité kiev/lito ---"
+    cat "$WORKSPACE/susfs_compat_patch.log" || true
+    fail "Le patch SusFS laisse des rejets non pris en charge"
 fi
-patch --batch --forward -p1 < "$SUSFS_DEINLINED_PATCH" > "$WORKSPACE/susfs_patch.log" 2>&1
-auto_reject_check "$KERNEL_DIR" || fail "Le patch SusFS a produit un fichier .rej"
+
 find . -type f -name '*.orig' -delete
 
 [[ -f fs/susfs.c ]] || fail "fs/susfs.c absent après SusFS"
