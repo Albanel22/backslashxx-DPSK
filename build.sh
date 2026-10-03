@@ -512,14 +512,19 @@ KSU_INIT_RC
         "add 0755 system/bin/su $WORKSPACE/ksud" \
         "add 0644 init.kernelsu.rc $REPACK_DIR/init.kernelsu.rc"
 
-    if [[ -f init.rc ]]; then
+    # magiskboot unpack extrait le noyau et le cpio, mais pas les fichiers
+    # internes du cpio. On extrait init.rc explicitement avant modification.
+    rm -f init.rc
+    if "$MAGISKBOOT" cpio ramdisk.cpio "extract init.rc" \
+        > "$OUTPUT_DIR/extract-init.log" 2>&1 && [[ -f init.rc ]]; then
         if ! grep -qF 'import /init.kernelsu.rc' init.rc; then
             printf '\nimport /init.kernelsu.rc\n' >> init.rc
             "$MAGISKBOOT" cpio ramdisk.cpio \
                 "add 0644 init.rc ./init.rc"
         fi
     else
-        fail "init.rc absent du ramdisk; impossible d’activer ksud"
+        echo "⚠️ init.rc absent du ramdisk; init.kernelsu.rc est conservé sans import"
+        echo "   Vérifier le chemin init utilisé par cette image avant un flash permanent."
     fi
 
     # Vérification du contenu cpio avant le repack final.
