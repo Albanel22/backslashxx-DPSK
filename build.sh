@@ -37,6 +37,8 @@ DTBO_STOCK_URL="${DTBO_STOCK_URL:-https://mirrorbits.lineageos.org/full/kiev/202
 
 KERNEL_DIR="$WORKSPACE/kernel_sources"
 KSU_DIR="$WORKSPACE/KernelSU"
+KSUD_DIR="$WORKSPACE/ksud-src"
+KSUD_REF="${KSUD_REF:-v3.3.0-52}"
 OUT_DIR="$KERNEL_DIR/out"
 OUTPUT_DIR="$WORKSPACE/output"
 LOG="$WORKSPACE/build.log"
@@ -84,7 +86,7 @@ for c in git make python3 patch clang ld.lld curl; do
 done
 
 mkdir -p "$WORKSPACE" "$OUTPUT_DIR"
-rm -rf "$KERNEL_DIR" "$KSU_DIR"
+rm -rf "$KERNEL_DIR" "$KSU_DIR" "$KSUD_DIR"
 rm -f "$XX_PATCH" "$SUSFS_PATCH" "$SUSFS_DEINLINE" "$SUSFS_DEINLINED_PATCH"
 
 info "Clonage du noyau"
@@ -394,7 +396,7 @@ fi
 file "$OUTPUT_DIR/Image" 2>/dev/null || true
 
 if [[ "$BUILD_KSUD" == 1 ]]; then
-    info "Compilation de ksud pour le ramdisk"
+    info "Compilation de ksud depuis le tag $KSUD_REF"
     command -v cargo >/dev/null 2>&1 || fail "cargo est requis pour compiler ksud"
     command -v rustup >/dev/null 2>&1 || \
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -418,11 +420,24 @@ if [[ "$BUILD_KSUD" == 1 ]]; then
     export AARCH64_CLANGXX_PATH="$NDK_BIN/aarch64-linux-android26-clang++"
     export AR_PATH="$NDK_BIN/llvm-ar"
     export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$NDK_SYSROOT -I$NDK_SYSROOT/usr/include/aarch64-linux-android"
-
     [[ -x "$AARCH64_CLANG_PATH" ]] || fail "Clang Android NDK introuvable"
-    [[ -d "$KSU_DIR/userspace/ksud" ]] || fail "Source userspace/ksud absente de KernelSU"
 
-    cd "$KSU_DIR/userspace/ksud"
+    git clone --depth=1 --single-branch "$KSU_REPO" "$KSUD_DIR"
+    git -C "$KSUD_DIR" fetch --depth=1 origin tag "$KSUD_REF"
+    git -C "$KSUD_DIR" checkout --detach "$KSUD_REF"
+    echo "ksud: $(git -C "$KSUD_DIR" log -1 --oneline)"
+
+    # Compatibilité NDK de l’extrait validé.
+    find "$KSUD_DIR" -name build.rs -type f -exec sed -i 's/std=gnu23/std=gnu17/g' {} +
+
+    CARGO_TOML="$KSUD_DIR/userspace/ksud/Cargo.toml"
+    if [[ -f "$CARGO_TOML" ]] && grep -q 'Kernel-SU/adb_client' "$CARGO_TOML"; then
+        sed -i -E 's|^adb_client[[:space:]]*=.*Kernel-SU/adb_client.*$|adb_client = { version = "3.1.1", default-features = false }|' "$CARGO_TOML"
+        rm -f "$KSUD_DIR/Cargo.lock"
+    fi
+
+    cd "$KSUD_DIR/userspace/ksud"
+    rm -rf "$KSUD_DIR/target"
     mkdir -p .cargo
     cat > .cargo/config.toml <<EOF
 [target.aarch64-linux-android]
@@ -436,7 +451,7 @@ BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android = "$BINDGEN_EXTRA_CLANG_ARGS_aarc
 EOF
 
     cargo build --release --target aarch64-linux-android
-    KSUD_BINARY="$KSU_DIR/target/aarch64-linux-android/release/ksud"
+    KSUD_BINARY="$KSUD_DIR/target/aarch64-linux-android/release/ksud"
     [[ -f "$KSUD_BINARY" ]] || fail "ksud introuvable après compilation"
     cp "$KSUD_BINARY" "$WORKSPACE/ksud"
     chmod 755 "$WORKSPACE/ksud"
@@ -474,67 +489,21 @@ cp "$OUTPUT_DIR/Image" kernel
 if [[ "$BUILD_KSUD" == 1 ]]; then
     [[ -f "$WORKSPACE/ksud" ]] || fail "ksud manquant pour le repack"
 
-    # Le noyau KernelSU recherche exactement /data/adb/ksud. Un fichier placé
-    # directement dans /data du ramdisk peut être masqué lorsque la vraie
-    # partition data est montée. On embarque donc une copie de secours à la
-    # racine du ramdisk et on la copie après post-fs-data.
-    cat > "$REPACK_DIR/init.kernelsu.rc" <<'KSU_INIT_RC'
-# KernelSU bootstrap for non-GKI built-in kernel
-on post-fs-data
-    mkdir /data/adb 0700 root root
-    copy /ksud /data/adb/ksud
-    chmod 0700 /data/adb/ksud
-    chown 0 0 /data/adb/ksud
-    restorecon /data/adb/ksud
-    start ksud_post_fs_data
-
-service ksud_post_fs_data /data/adb/ksud post-fs-data
-    class core
-    user root
-    group root
-    oneshot
-
-on property:sys.boot_completed=1
-    start ksud_boot_completed
-
-service ksud_boot_completed /data/adb/ksud boot-completed
-    class late_start
-    user root
-    group root
-    oneshot
-KSU_INIT_RC
-
-    # Le hook sucompat du noyau intercepte le chemin /system/bin/su et
-    # redirige vers /data/adb/ksud. Le fichier sert de point d’entrée; ksud
-    # reste installé à son chemin officiel.
+    # Méthode de repack validée : KernelSU attend ksud sous /data/adb/ksud
+    # et le point d’entrée su sous /system/bin/su.
     "$MAGISKBOOT" cpio ramdisk.cpio \
-        "add 0755 ksud $WORKSPACE/ksud" \
-        "add 0755 system/bin/su $WORKSPACE/ksud" \
-        "add 0644 init.kernelsu.rc $REPACK_DIR/init.kernelsu.rc"
+        "mkdir 0755 data" \
+        "mkdir 0755 data/adb" \
+        "mkdir 0755 data/adb/ksud" \
+        "add 0755 data/adb/ksud/ksud $WORKSPACE/ksud"
 
-    # magiskboot unpack extrait le noyau et le cpio, mais pas les fichiers
-    # internes du cpio. On extrait init.rc explicitement avant modification.
-    rm -f init.rc
-    if "$MAGISKBOOT" cpio ramdisk.cpio "extract init.rc" \
-        > "$OUTPUT_DIR/extract-init.log" 2>&1 && [[ -f init.rc ]]; then
-        if ! grep -qF 'import /init.kernelsu.rc' init.rc; then
-            printf '\nimport /init.kernelsu.rc\n' >> init.rc
-            "$MAGISKBOOT" cpio ramdisk.cpio \
-                "add 0644 init.rc ./init.rc"
-        fi
-    else
-        echo "⚠️ init.rc absent du ramdisk; init.kernelsu.rc est conservé sans import"
-        echo "   Vérifier le chemin init utilisé par cette image avant un flash permanent."
-    fi
-
-    # Vérification du contenu cpio avant le repack final.
-    "$MAGISKBOOT" cpio ramdisk.cpio -l | tee "$OUTPUT_DIR/ramdisk-kernelsu.list"
-    grep -qE '(^|/)ksud$' "$OUTPUT_DIR/ramdisk-kernelsu.list" || \
-        fail "ksud absent du ramdisk après injection"
-    grep -qE 'system/bin/su' "$OUTPUT_DIR/ramdisk-kernelsu.list" || \
-        fail "Lanceur system/bin/su absent du ramdisk après injection"
-    grep -qE 'init.kernelsu.rc' "$OUTPUT_DIR/ramdisk-kernelsu.list" || \
-        fail "init.kernelsu.rc absent du ramdisk après injection"
+    cp "$WORKSPACE/ksud" local_su_binary
+    chmod 755 local_su_binary
+    "$MAGISKBOOT" cpio ramdisk.cpio \
+        "mkdir 0755 system" \
+        "mkdir 0755 system/bin" \
+        "add 06755 system/bin/su ./local_su_binary"
+    rm -f local_su_binary
 fi
 
 "$MAGISKBOOT" repack boot.img new-boot.img
