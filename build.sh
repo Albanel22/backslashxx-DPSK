@@ -342,34 +342,14 @@ cp "$OUT_DIR/.config" "$OUTPUT_DIR/kernel.config"
 grep -E 'CONFIG_(KSU|KSU_SUSFS|THREAD_INFO_IN_TASK)' "$OUT_DIR/.config" | tee "$OUTPUT_DIR/ksu-susfs.config"
 
 # ========== PATCH TACTILE AJOUTÉ ==========
-info "Application du patch tactile"
+# ==================== 5. PATCH SIGNATURES MODULE ====================
+sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
 
-if [[ -f "$KERNEL_DIR/techpack/display/msm/msm_drv.c" ]]; then
-    if ! grep -q "panel_register_notifier" "$KERNEL_DIR/techpack/display/msm/msm_drv.c"; then
-        cat >> "$KERNEL_DIR/techpack/display/msm/msm_drv.c" <<'TOUCH_PATCH'
-
-/* --- Début Patch Tactile --- */
-#include <linux/notifier.h>
-#include <linux/module.h>
-
-static BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);
-
-int panel_register_notifier(struct notifier_block *nb)
-{
-    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);
-}
-EXPORT_SYMBOL(panel_register_notifier);
-
-int panel_unregister_notifier(struct notifier_block *nb)
-{
-    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);
-}
-EXPORT_SYMBOL(panel_unregister_notifier);
-
-void touch_set_state(int state) { return; }
-EXPORT_SYMBOL(touch_set_state);
-/* --- Fin Patch Tactile --- */
-TOUCH_PATCH
+# ==================== 6. PATCH TACTILE ====================
+echo "=== Application du patch tactile ==="
+if [ -f "techpack/display/msm/msm_drv.c" ]; then
+    if ! grep -q "panel_register_notifier" techpack/display/msm/msm_drv.c; then
+        printf "\n/* --- Début Patch Tactile --- */\n#include <linux/notifier.h>\n#include <linux/module.h>\nstatic BLOCKING_NOTIFIER_HEAD(motorola_panel_notifier_list);\nint panel_register_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_register(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_register_notifier);\nint panel_unregister_notifier(struct notifier_block *nb) {\n    return blocking_notifier_chain_unregister(&motorola_panel_notifier_list, nb);\n}\nEXPORT_SYMBOL(panel_unregister_notifier);\nvoid touch_set_state(int state) { return; }\nEXPORT_SYMBOL(touch_set_state);\n/* --- Fin Patch Tactile --- */\n" >> techpack/display/msm/msm_drv.c
         echo "✅ Patch tactile appliqué"
     else
         echo "✅ Patch tactile déjà présent"
@@ -377,6 +357,7 @@ TOUCH_PATCH
 else
     echo "⚠️ techpack/display/msm/msm_drv.c introuvable"
 fi
+
 # ========== FIN PATCH TACTILE ==========
 
 info "Compilation du noyau"
