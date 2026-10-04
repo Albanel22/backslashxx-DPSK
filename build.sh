@@ -5,7 +5,7 @@
 # Kernel   : 4.19.325
 # Source   : LineageOS/android_kernel_motorola_sm8250 (branche lineage-23.2)
 # KernelSU : backslashxx/KernelSU v3.3.0-52
-# Hooks    : KSU_TAMPER_SYSCALL_TABLE + hooks manuels (sys_reboot + input)
+# Hooks    : KSU_TAMPER_SYSCALL_TABLE + hooks manuels (sys_reboot)
 # SusFS    : patch cyberc3dr nGKI 4.19 + routage sys_reboot + routage ioctl
 # Profil   : SUS_PATH + core + logs
 # =============================================================================
@@ -274,7 +274,7 @@ void susfs_show_variant(void __user **user_info) {
 		goto out_copy_to_user;
 	}
 
-	strscpy(info.susfs_variant, SUSFS_VARIANT, SUSFS_MAX_VARIANT_BUFSIZE-1);
+	strscpy(info.susfs_variant, SUSFS_VARIANT, SUSFS_MAX_VERSION_BUFSIZE-1);
 	info.err = 0;
 out_copy_to_user:
 	if (copy_to_user((struct st_susfs_variant __user*)*user_info, &info, sizeof(info))) {
@@ -315,6 +315,7 @@ text = path.read_text()
 original = text
 added = []
 
+# 1. Ajouter les includes SusFS
 if '#include <linux/susfs.h>' not in text:
     includes_block = '''
 #ifdef CONFIG_KSU_SUSFS
@@ -328,6 +329,7 @@ if '#include <linux/susfs.h>' not in text:
     )
     added.append("includes SusFS")
 
+# 2. Routage SusFS
 susfs_routing = '''
 #ifdef CONFIG_KSU_SUSFS
 	pr_info("SUSFS_ROUTING: magic2=0x%x cmd=0x%x\\n", magic2, cmd);
@@ -363,8 +365,27 @@ susfs_routing = '''
 #endif
 '''
 
-pattern = r'(if \(magic2 == CHANGE_KSUFLAGS\)\s*\n\s*goto change_ksuflags;\s*\n\s*\n\s*return 0;)'
-match = re.search(pattern, text)
+# ── APPROCHE 1 : pattern original (double saut de ligne) ──
+pattern1 = r'(if \(magic2 == CHANGE_KSUFLAGS\)\s*\n\s*goto change_ksuflags;\s*\n\s*\n\s*return 0;)'
+match = re.search(pattern1, text)
+
+# ── APPROCHE 2 : pattern plus souple (1 ou plusieurs sauts) ──
+if not match:
+    print("[i] Pattern 1 échoué, essai pattern 2...")
+    pattern2 = r'(if \(magic2 == CHANGE_KSUFLAGS\)\s*\n\s*goto change_ksuflags;\s*\n+\s*return 0;)'
+    match = re.search(pattern2, text)
+
+# ── APPROCHE 3 : fallback manuel ──
+if not match:
+    print("[i] Pattern 2 échoué, fallback manuel...")
+    idx = text.find('if (magic2 == CHANGE_KSUFLAGS)')
+    if idx > 0:
+        ret_idx = text.find('return 0;', idx)
+        if ret_idx > 0:
+            text = text[:ret_idx] + susfs_routing + '\n\t' + text[ret_idx:]
+            added.append("routage SusFS (fallback manuel)")
+            print("[+] Routage inséré via fallback manuel")
+
 if match:
     text = text[:match.end(1)] + '\n' + susfs_routing + text[match.end(1):]
     added.append("routage SusFS")
@@ -373,13 +394,38 @@ if text != original:
     path.write_text(text)
     print(f"[+] Ajouté : {', '.join(added)}")
 else:
-    print("[i] Aucune modification")
+    print("[!] AUCUNE MODIFICATION — routage NON ajouté")
+    print("[i] Contenu de la fonction (premières 50 lignes) :")
+    idx = text.find('toolkit_handle_sys_reboot')
+    if idx > 0:
+        print(text[idx:idx+1500])
+
+# ── DEBUG : afficher le résultat ──
+print("")
+print("=== DEBUG : SUSFS_ROUTING dans toolkit.h ? ===")
+if 'SUSFS_ROUTING' in text:
+    print("✅ SUSFS_ROUTING présent")
+    for i, line in enumerate(text.split('\n')):
+        if 'SUSFS_ROUTING' in line:
+            print(f"  Ligne {i+1}: {line.strip()}")
+            break
+else:
+    print("❌ SUSFS_ROUTING ABSENT")
+
+print("")
+print("=== DEBUG : check UID toujours présent ? ===")
+if 'if (!!current_uid().val)' in text:
+    print("⚠️ Check UID présent (peut bloquer)")
+else:
+    print("✅ Check UID absent")
 PYEOF_TOOLKIT
 
 if grep -q "0xFAFAFAFA" "$TOOLKIT_H"; then
     echo "✅ Routage SusFS ajouté dans toolkit.h"
 else
     echo "❌ Échec du routage dans toolkit.h"
+    echo "=== Contenu de toolkit.h (dernières 60 lignes) ==="
+    tail -60 "$TOOLKIT_H"
     exit 1
 fi
 
@@ -698,13 +744,11 @@ echo "=== Application des hooks manuels KernelSU ==="
 
 # 1. Hook sys_reboot (kernel/reboot.c) — INDISPENSABLE pour accorder le root
 if ! grep -q "ksu_handle_sys_reboot" kernel/reboot.c; then
-    # Déclaration extern avant SYSCALL_DEFINE4(reboot, ...)
     sed -i '/SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,/i\
 #if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD)\
 extern int ksu_handle_sys_reboot(int, int, unsigned int, void __user **);\
 #endif' kernel/reboot.c
 
-    # Appel après les déclarations (int ret = 0;)
     sed -i '/int ret = 0;/a\
 #if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD)\
 \tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\
@@ -714,8 +758,6 @@ extern int ksu_handle_sys_reboot(int, int, unsigned int, void __user **);\
 else
     echo "✅ Hook sys_reboot déjà présent"
 fi
-
-# 2. Hook input — RETIRÉ (non supporté par backslashxx/KernelSU v3.3.0-52)
 
 # Vérification
 echo "=== Vérification des hooks ==="
