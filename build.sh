@@ -715,34 +715,11 @@ else
     echo "✅ Hook sys_reboot déjà présent"
 fi
 
-# 2. Hook input (drivers/input/input.c) — INDISPENSABLE pour le mode sécurisé et le tactile
-if ! grep -q "ksu_handle_input_handle_event" drivers/input/input.c; then
-    # Déclaration extern
-    if ! grep -q '#include <linux/input.h>' drivers/input/input.c; then
-        sed -i '1i #include <linux/input.h>' drivers/input/input.c
-    fi
-    sed -i '/#include <linux\/input.h>/a\
-#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD)\
-extern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value);\
-#endif' drivers/input/input.c
-
-    # Insertion dans la fonction input_handle_event
-    sed -i '/^static void input_handle_event(struct input_dev \*dev,/,/^{/{
-        /^{/a\
-#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD)\
-\tksu_handle_input_handle_event(&type, &code, &value);\
-#endif
-    }' drivers/input/input.c
-
-    echo "✅ Hook input inséré"
-else
-    echo "✅ Hook input déjà présent"
-fi
+# 2. Hook input — RETIRÉ (non supporté par backslashxx/KernelSU v3.3.0-52)
 
 # Vérification
 echo "=== Vérification des hooks ==="
 grep -c "ksu_handle_sys_reboot" kernel/reboot.c || echo "sys_reboot: absent"
-grep -c "ksu_handle_input_handle_event" drivers/input/input.c || echo "input: absent"
 
 # ==================== 7. COMPILATION ====================
 echo "=== Compilation du noyau ==="
