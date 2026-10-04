@@ -445,6 +445,41 @@ else
     echo "⚠️ Check UID toujours présent (peut bloquer)"
 fi
 
+# ═══════════════════════════════════════════════════════════════
+# VÉRIFICATION FINALE : toolkit_handle_sys_reboot appelé ?
+# ═══════════════════════════════════════════════════════════════
+echo ""
+echo "═══════════════════════════════════════════════════════════════"
+echo "=== VÉRIFICATION FINALE toolkit_handle_sys_reboot ==="
+echo "═══════════════════════════════════════════════════════════════"
+
+echo ""
+echo "=== 1. Est-ce que supercall.c appelle toolkit_handle_sys_reboot ? ==="
+if grep -q "toolkit_handle_sys_reboot" /tmp/KernelSU/kernel/supercall/supercall.c; then
+    echo "✅ OUI, toolkit_handle_sys_reboot est appelé dans supercall.c"
+    grep -n "toolkit_handle_sys_reboot" /tmp/KernelSU/kernel/supercall/supercall.c
+else
+    echo "❌ NON, toolkit_handle_sys_reboot n'est PAS appelé dans supercall.c"
+    echo "=== Contenu de ksu_handle_sys_reboot dans supercall.c ==="
+    grep -A20 "int ksu_handle_sys_reboot" /tmp/KernelSU/kernel/supercall/supercall.c | head -30
+fi
+
+echo ""
+echo "=== 2. Contenu du routage dans toolkit.h (lignes 60-90) ==="
+sed -n '60,90p' "$TOOLKIT_H"
+
+echo ""
+echo "=== 3. Recherche de TOUS les toolkit.h dans le noyau ==="
+find /tmp/KernelSU -name "toolkit.h" -type f
+find "$GITHUB_WORKSPACE/kernel_sources" -name "toolkit.h" -type f 2>/dev/null
+
+echo ""
+echo "=== 4. Le symlink drivers/kernelsu pointe-t-il vers /tmp/KernelSU ? ==="
+ls -la "$GITHUB_WORKSPACE/kernel_sources/drivers/kernelsu"
+
+echo ""
+echo "═══════════════════════════════════════════════════════════════"
+
 # ==================== 2a-sexies. ROUTAGE SUSFS DANS dispatch.c ====================
 echo "=== Ajout du routage SusFS dans backslashxx dispatch.c (supercalls) ==="
 
