@@ -315,10 +315,7 @@ text = path.read_text()
 original = text
 added = []
 
-# ═══ 1. RETIRER LE CHECK UID (BLOQUE LE ROUTAGE SUSFS) ═══
-# On commente le check UID car il empêche le routage SusFS de s'exécuter
-# quand ksu_susfs s'exécute dans un contexte sandboxé
-
+# ═══ 1. RETIRER LE CHECK UID ═══
 uid_check_patterns = [
     r'//\s*only root is allowed for these commands\s*\n\s*if \(!!current_uid\(\)\.val\)\s*\n\s*return 0;',
     r'if \(!!current_uid\(\)\.val\)\s*\n\s*return 0;',
@@ -329,7 +326,7 @@ uid_removed = False
 for pattern in uid_check_patterns:
     match = re.search(pattern, text)
     if match:
-        text = text[:match.start()] + '/* Check UID retiré par SUSFS_FIX (bloque le routage SusFS) */' + text[match.end():]
+        text = text[:match.start()] + '/* Check UID retiré par SUSFS_FIX */' + text[match.end():]
         uid_removed = True
         added.append("check UID retiré")
         print("[+] Check UID retiré")
@@ -446,8 +443,10 @@ else
 fi
 
 # ═══════════════════════════════════════════════════════════════
-# VÉRIFICATION FINALE : toolkit_handle_sys_reboot appelé ?
+# VÉRIFICATION FINALE (avec set +e pour éviter les faux positifs)
 # ═══════════════════════════════════════════════════════════════
+set +e
+
 echo ""
 echo "═══════════════════════════════════════════════════════════════"
 echo "=== VÉRIFICATION FINALE toolkit_handle_sys_reboot ==="
@@ -455,30 +454,32 @@ echo "════════════════════════�
 
 echo ""
 echo "=== 1. Est-ce que supercall.c appelle toolkit_handle_sys_reboot ? ==="
-if grep -q "toolkit_handle_sys_reboot" /tmp/KernelSU/kernel/supercall/supercall.c; then
+if grep -q "toolkit_handle_sys_reboot" /tmp/KernelSU/kernel/supercall/supercall.c 2>/dev/null; then
     echo "✅ OUI, toolkit_handle_sys_reboot est appelé dans supercall.c"
-    grep -n "toolkit_handle_sys_reboot" /tmp/KernelSU/kernel/supercall/supercall.c
+    grep -n "toolkit_handle_sys_reboot" /tmp/KernelSU/kernel/supercall/supercall.c 2>/dev/null
 else
     echo "❌ NON, toolkit_handle_sys_reboot n'est PAS appelé dans supercall.c"
     echo "=== Contenu de ksu_handle_sys_reboot dans supercall.c ==="
-    grep -A20 "int ksu_handle_sys_reboot" /tmp/KernelSU/kernel/supercall/supercall.c | head -30
+    grep -A20 "int ksu_handle_sys_reboot" /tmp/KernelSU/kernel/supercall/supercall.c 2>/dev/null | head -30
 fi
 
 echo ""
-echo "=== 2. Contenu du routage dans toolkit.h (lignes 60-90) ==="
-sed -n '60,90p' "$TOOLKIT_H"
+echo "=== 2. Contenu du routage dans toolkit.h (lignes 55-85) ==="
+sed -n '55,85p' "$TOOLKIT_H" 2>/dev/null
 
 echo ""
 echo "=== 3. Recherche de TOUS les toolkit.h dans le noyau ==="
-find /tmp/KernelSU -name "toolkit.h" -type f
+find /tmp/KernelSU -name "toolkit.h" -type f 2>/dev/null
 find "$GITHUB_WORKSPACE/kernel_sources" -name "toolkit.h" -type f 2>/dev/null
 
 echo ""
 echo "=== 4. Le symlink drivers/kernelsu pointe-t-il vers /tmp/KernelSU ? ==="
-ls -la "$GITHUB_WORKSPACE/kernel_sources/drivers/kernelsu"
+ls -la "$GITHUB_WORKSPACE/kernel_sources/drivers/kernelsu" 2>/dev/null
 
 echo ""
 echo "═══════════════════════════════════════════════════════════════"
+
+set -e
 
 # ==================== 2a-sexies. ROUTAGE SUSFS DANS dispatch.c ====================
 echo "=== Ajout du routage SusFS dans backslashxx dispatch.c (supercalls) ==="
