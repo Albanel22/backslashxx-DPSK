@@ -315,7 +315,30 @@ text = path.read_text()
 original = text
 added = []
 
-# 1. Ajouter les includes SusFS
+# ═══ 1. RETIRER LE CHECK UID (BLOQUE LE ROUTAGE SUSFS) ═══
+# On commente le check UID car il empêche le routage SusFS de s'exécuter
+# quand ksu_susfs s'exécute dans un contexte sandboxé
+
+uid_check_patterns = [
+    r'//\s*only root is allowed for these commands\s*\n\s*if \(!!current_uid\(\)\.val\)\s*\n\s*return 0;',
+    r'if \(!!current_uid\(\)\.val\)\s*\n\s*return 0;',
+    r'if\s*\(!!current_uid\(\)\.val\)\s*\n\s*return 0;',
+]
+
+uid_removed = False
+for pattern in uid_check_patterns:
+    match = re.search(pattern, text)
+    if match:
+        text = text[:match.start()] + '/* Check UID retiré par SUSFS_FIX (bloque le routage SusFS) */' + text[match.end():]
+        uid_removed = True
+        added.append("check UID retiré")
+        print("[+] Check UID retiré")
+        break
+
+if not uid_removed:
+    print("[i] Check UID déjà absent ou pattern non trouvé")
+
+# ═══ 2. AJOUTER LES INCLUDES SUSFS ═══
 if '#include <linux/susfs.h>' not in text:
     includes_block = '''
 #ifdef CONFIG_KSU_SUSFS
@@ -329,7 +352,7 @@ if '#include <linux/susfs.h>' not in text:
     )
     added.append("includes SusFS")
 
-# 2. Routage SusFS
+# ═══ 3. ROUTAGE SUSFS ═══
 susfs_routing = '''
 #ifdef CONFIG_KSU_SUSFS
 	pr_info("SUSFS_ROUTING: magic2=0x%x cmd=0x%x\\n", magic2, cmd);
@@ -365,17 +388,17 @@ susfs_routing = '''
 #endif
 '''
 
-# ── APPROCHE 1 : pattern original (double saut de ligne) ──
+# Pattern 1 : double saut de ligne
 pattern1 = r'(if \(magic2 == CHANGE_KSUFLAGS\)\s*\n\s*goto change_ksuflags;\s*\n\s*\n\s*return 0;)'
 match = re.search(pattern1, text)
 
-# ── APPROCHE 2 : pattern plus souple (1 ou plusieurs sauts) ──
+# Pattern 2 : 1+ saut de ligne
 if not match:
     print("[i] Pattern 1 échoué, essai pattern 2...")
     pattern2 = r'(if \(magic2 == CHANGE_KSUFLAGS\)\s*\n\s*goto change_ksuflags;\s*\n+\s*return 0;)'
     match = re.search(pattern2, text)
 
-# ── APPROCHE 3 : fallback manuel ──
+# Fallback manuel
 if not match:
     print("[i] Pattern 2 échoué, fallback manuel...")
     idx = text.find('if (magic2 == CHANGE_KSUFLAGS)')
@@ -383,8 +406,8 @@ if not match:
         ret_idx = text.find('return 0;', idx)
         if ret_idx > 0:
             text = text[:ret_idx] + susfs_routing + '\n\t' + text[ret_idx:]
-            added.append("routage SusFS (fallback manuel)")
-            print("[+] Routage inséré via fallback manuel")
+            added.append("routage SusFS (fallback)")
+            print("[+] Routage inséré via fallback")
 
 if match:
     text = text[:match.end(1)] + '\n' + susfs_routing + text[match.end(1):]
@@ -392,41 +415,34 @@ if match:
 
 if text != original:
     path.write_text(text)
-    print(f"[+] Ajouté : {', '.join(added)}")
+    print(f"[+] Modifications : {', '.join(added)}")
 else:
-    print("[!] AUCUNE MODIFICATION — routage NON ajouté")
-    print("[i] Contenu de la fonction (premières 50 lignes) :")
-    idx = text.find('toolkit_handle_sys_reboot')
-    if idx > 0:
-        print(text[idx:idx+1500])
+    print("[!] AUCUNE MODIFICATION")
 
-# ── DEBUG : afficher le résultat ──
+# ═══ 4. DEBUG ═══
 print("")
-print("=== DEBUG : SUSFS_ROUTING dans toolkit.h ? ===")
+print("=== DEBUG toolkit.h ===")
+if 'Check UID retiré' in text:
+    print("✅ Check UID retiré")
+else:
+    print("❌ Check UID TOUJOURS PRÉSENT")
 if 'SUSFS_ROUTING' in text:
     print("✅ SUSFS_ROUTING présent")
-    for i, line in enumerate(text.split('\n')):
-        if 'SUSFS_ROUTING' in line:
-            print(f"  Ligne {i+1}: {line.strip()}")
-            break
 else:
     print("❌ SUSFS_ROUTING ABSENT")
-
-print("")
-print("=== DEBUG : check UID toujours présent ? ===")
-if 'if (!!current_uid().val)' in text:
-    print("⚠️ Check UID présent (peut bloquer)")
-else:
-    print("✅ Check UID absent")
 PYEOF_TOOLKIT
 
 if grep -q "0xFAFAFAFA" "$TOOLKIT_H"; then
     echo "✅ Routage SusFS ajouté dans toolkit.h"
 else
     echo "❌ Échec du routage dans toolkit.h"
-    echo "=== Contenu de toolkit.h (dernières 60 lignes) ==="
-    tail -60 "$TOOLKIT_H"
     exit 1
+fi
+
+if grep -q "Check UID retiré par SUSFS_FIX" "$TOOLKIT_H"; then
+    echo "✅ Check UID retiré"
+else
+    echo "⚠️ Check UID toujours présent (peut bloquer)"
 fi
 
 # ==================== 2a-sexies. ROUTAGE SUSFS DANS dispatch.c ====================
