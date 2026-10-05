@@ -6,14 +6,14 @@
 # Source   : LineageOS/android_kernel_motorola_sm8250 (branche lineage-23.2)
 # KernelSU : backslashxx/KernelSU v3.3.0-52
 # Hooks    : KSU_TAMPER_SYSCALL_TABLE + hooks manuels (sys_reboot)
-# SusFS    : patch cyberc3dr nGKI 4.19 + routage sys_reboot + routage ioctl
+# SusFS    : patch cyberc3dr nGKI 4.19 + routage direct dans supercall.c
 # Profil   : SUS_PATH + core + logs
 # =============================================================================
 set -e
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
-echo "=== BUILD backslashxx KernelSU v3.3.0-52 + SusFS (double routage) ==="
+echo "=== BUILD backslashxx KernelSU v3.3.0-52 + SusFS (routage supercall.c) ==="
 df -h
 
 # ==================== 0. ENVIRONNEMENT ====================
@@ -296,65 +296,46 @@ grep -q "susfs_show_version" fs/susfs.c || { echo "❌ susfs_show_version manqua
 grep -q "susfs_show_variant" fs/susfs.c || { echo "❌ susfs_show_variant manquant"; exit 1; }
 echo "✅ susfs_show_version et susfs_show_variant présents"
 
-# ==================== 2a-quinquies. ROUTAGE SUSFS DANS toolkit.h ====================
-echo "=== Ajout du routage SusFS dans backslashxx toolkit.h ==="
+# ==================== 2a-quinquies. ROUTAGE SUSFS DANS supercall.c ====================
+echo "=== Ajout du routage SusFS dans supercall.c (méthode directe) ==="
 
-TOOLKIT_H="/tmp/KernelSU/kernel/downstream/toolkit.h"
+SUPERCALL_C="/tmp/KernelSU/kernel/supercall/supercall.c"
 
-if [ ! -f "$TOOLKIT_H" ]; then
-    echo "❌ toolkit.h introuvable: $TOOLKIT_H"
+if [ ! -f "$SUPERCALL_C" ]; then
+    echo "❌ supercall.c introuvable: $SUPERCALL_C"
     exit 1
 fi
 
-python3 << 'PYEOF_TOOLKIT'
+python3 << 'PYEOF_SUPERCALL'
 from pathlib import Path
 import re
 
-path = Path("/tmp/KernelSU/kernel/downstream/toolkit.h")
+path = Path("/tmp/KernelSU/kernel/supercall/supercall.c")
 text = path.read_text()
 original = text
 added = []
 
-# ═══ 1. RETIRER LE CHECK UID ═══
-uid_check_patterns = [
-    r'//\s*only root is allowed for these commands\s*\n\s*if \(!!current_uid\(\)\.val\)\s*\n\s*return 0;',
-    r'if \(!!current_uid\(\)\.val\)\s*\n\s*return 0;',
-    r'if\s*\(!!current_uid\(\)\.val\)\s*\n\s*return 0;',
-]
-
-uid_removed = False
-for pattern in uid_check_patterns:
-    match = re.search(pattern, text)
-    if match:
-        text = text[:match.start()] + '/* Check UID retiré par SUSFS_FIX */' + text[match.end():]
-        uid_removed = True
-        added.append("check UID retiré")
-        print("[+] Check UID retiré")
-        break
-
-if not uid_removed:
-    print("[i] Check UID déjà absent ou pattern non trouvé")
-
-# ═══ 2. AJOUTER LES INCLUDES SUSFS ═══
+# ═══ 1. AJOUTER LES INCLUDES SUSFS ═══
 if '#include <linux/susfs.h>' not in text:
-    includes_block = '''
+    match = re.search(r'(#include\s+[^\n]+\n)', text)
+    if match:
+        includes_block = '''
 #ifdef CONFIG_KSU_SUSFS
 #include <linux/susfs.h>
 #include <linux/susfs_def.h>
 #endif
 '''
-    text = text.replace(
-        '#define CHANGE_KSUFLAGS\t\t10013',
-        '#define CHANGE_KSUFLAGS\t\t10013' + includes_block
-    )
-    added.append("includes SusFS")
+        text = text[:match.end(1)] + includes_block + text[match.end(1):]
+        added.append("includes SusFS")
+        print("[+] Includes SusFS ajoutés")
 
-# ═══ 3. ROUTAGE SUSFS ═══
+# ═══ 2. INSÉRER LE ROUTAGE DIRECTEMENT DANS ksu_handle_sys_reboot ═══
 susfs_routing = '''
 #ifdef CONFIG_KSU_SUSFS
-	pr_info("SUSFS_ROUTING: magic2=0x%x cmd=0x%x\\n", magic2, cmd);
+	/* ═══ Routage SusFS (direct dans supercall.c) ═══ */
+	pr_info("SUSFS_ROUTING_C: magic1=0x%x magic2=0x%x cmd=0x%x\\n", magic1, magic2, cmd);
 	if (magic2 == 0xFAFAFAFA) {
-		pr_info("SUSFS_ROUTING: detected SUSFS_MAGIC, switching on cmd=0x%x\\n", cmd);
+		pr_info("SUSFS_ROUTING_C: detected SUSFS_MAGIC, switching on cmd=0x%x\\n", cmd);
 		switch (cmd) {
 #ifdef CONFIG_KSU_SUSFS_SUS_PATH
 		case CMD_SUSFS_ADD_SUS_PATH:
@@ -385,30 +366,36 @@ susfs_routing = '''
 #endif
 '''
 
-# Pattern 1 : double saut de ligne
-pattern1 = r'(if \(magic2 == CHANGE_KSUFLAGS\)\s*\n\s*goto change_ksuflags;\s*\n\s*\n\s*return 0;)'
-match = re.search(pattern1, text)
-
-# Pattern 2 : 1+ saut de ligne
-if not match:
-    print("[i] Pattern 1 échoué, essai pattern 2...")
-    pattern2 = r'(if \(magic2 == CHANGE_KSUFLAGS\)\s*\n\s*goto change_ksuflags;\s*\n+\s*return 0;)'
-    match = re.search(pattern2, text)
-
-# Fallback manuel
-if not match:
-    print("[i] Pattern 2 échoué, fallback manuel...")
-    idx = text.find('if (magic2 == CHANGE_KSUFLAGS)')
-    if idx > 0:
-        ret_idx = text.find('return 0;', idx)
-        if ret_idx > 0:
-            text = text[:ret_idx] + susfs_routing + '\n\t' + text[ret_idx:]
-            added.append("routage SusFS (fallback)")
-            print("[+] Routage inséré via fallback")
+# Insérer AVANT l'appel à toolkit_handle_sys_reboot
+pattern = r'(\s*)toolkit_handle_sys_reboot\(magic1, magic2, cmd, arg\);'
+match = re.search(pattern, text)
 
 if match:
-    text = text[:match.end(1)] + '\n' + susfs_routing + text[match.end(1):]
-    added.append("routage SusFS")
+    indent = match.group(1)
+    text = text[:match.start()] + susfs_routing + '\n' + indent + 'toolkit_handle_sys_reboot(magic1, magic2, cmd, arg);' + text[match.end():]
+    added.append("routage SusFS dans supercall.c")
+    print("[+] Routage inséré AVANT toolkit_handle_sys_reboot")
+else:
+    print("[!] Pattern toolkit_handle_sys_reboot non trouvé")
+    # Fallback : chercher dans la fonction ksu_handle_sys_reboot
+    func_match = re.search(r'(int ksu_handle_sys_reboot\s*\([^)]*\)\s*\{)', text)
+    if func_match:
+        func_start = func_match.end()
+        depth = 1
+        pos = func_start
+        while pos < len(text) and depth > 0:
+            if text[pos] == '{':
+                depth += 1
+            elif text[pos] == '}':
+                depth -= 1
+            pos += 1
+        func_end = pos - 1
+        func_body = text[func_start:func_end]
+        last_return = func_body.rfind('return 0;')
+        if last_return > 0:
+            insert_pos = func_start + last_return
+            text = text[:insert_pos] + susfs_routing + '\n\t' + text[insert_pos:]
+            added.append("routage SusFS (fallback)")
 
 if text != original:
     path.write_text(text)
@@ -416,65 +403,43 @@ if text != original:
 else:
     print("[!] AUCUNE MODIFICATION")
 
-# ═══ 4. DEBUG ═══
+# ═══ 3. DEBUG ═══
 print("")
-print("=== DEBUG toolkit.h ===")
-if 'Check UID retiré' in text:
-    print("✅ Check UID retiré")
+print("=== DEBUG supercall.c ===")
+if 'SUSFS_ROUTING_C' in text:
+    print("✅ SUSFS_ROUTING_C présent")
+    for i, line in enumerate(text.split('\n')):
+        if 'SUSFS_ROUTING_C' in line:
+            print(f"  Ligne {i+1}: {line.strip()}")
+            break
 else:
-    print("❌ Check UID TOUJOURS PRÉSENT")
-if 'SUSFS_ROUTING' in text:
-    print("✅ SUSFS_ROUTING présent")
-else:
-    print("❌ SUSFS_ROUTING ABSENT")
-PYEOF_TOOLKIT
+    print("❌ SUSFS_ROUTING_C ABSENT")
+PYEOF_SUPERCALL
 
-if grep -q "0xFAFAFAFA" "$TOOLKIT_H"; then
-    echo "✅ Routage SusFS ajouté dans toolkit.h"
+if grep -q "SUSFS_ROUTING_C" "$SUPERCALL_C"; then
+    echo "✅ Routage SusFS ajouté dans supercall.c"
 else
-    echo "❌ Échec du routage dans toolkit.h"
+    echo "❌ Échec du routage dans supercall.c"
     exit 1
 fi
 
-if grep -q "Check UID retiré par SUSFS_FIX" "$TOOLKIT_H"; then
-    echo "✅ Check UID retiré"
-else
-    echo "⚠️ Check UID toujours présent (peut bloquer)"
-fi
-
 # ═══════════════════════════════════════════════════════════════
-# VÉRIFICATION FINALE (avec set +e pour éviter les faux positifs)
+# VÉRIFICATION FINALE
 # ═══════════════════════════════════════════════════════════════
 set +e
 
 echo ""
 echo "═══════════════════════════════════════════════════════════════"
-echo "=== VÉRIFICATION FINALE toolkit_handle_sys_reboot ==="
+echo "=== VÉRIFICATION FINALE ==="
 echo "═══════════════════════════════════════════════════════════════"
 
 echo ""
-echo "=== 1. Est-ce que supercall.c appelle toolkit_handle_sys_reboot ? ==="
-if grep -q "toolkit_handle_sys_reboot" /tmp/KernelSU/kernel/supercall/supercall.c 2>/dev/null; then
-    echo "✅ OUI, toolkit_handle_sys_reboot est appelé dans supercall.c"
-    grep -n "toolkit_handle_sys_reboot" /tmp/KernelSU/kernel/supercall/supercall.c 2>/dev/null
-else
-    echo "❌ NON, toolkit_handle_sys_reboot n'est PAS appelé dans supercall.c"
-    echo "=== Contenu de ksu_handle_sys_reboot dans supercall.c ==="
-    grep -A20 "int ksu_handle_sys_reboot" /tmp/KernelSU/kernel/supercall/supercall.c 2>/dev/null | head -30
-fi
+echo "=== 1. Est-ce que supercall.c contient SUSFS_ROUTING_C ? ==="
+grep -n "SUSFS_ROUTING_C" "$SUPERCALL_C" 2>/dev/null
 
 echo ""
-echo "=== 2. Contenu du routage dans toolkit.h (lignes 55-85) ==="
-sed -n '55,85p' "$TOOLKIT_H" 2>/dev/null
-
-echo ""
-echo "=== 3. Recherche de TOUS les toolkit.h dans le noyau ==="
-find /tmp/KernelSU -name "toolkit.h" -type f 2>/dev/null
-find "$GITHUB_WORKSPACE/kernel_sources" -name "toolkit.h" -type f 2>/dev/null
-
-echo ""
-echo "=== 4. Le symlink drivers/kernelsu pointe-t-il vers /tmp/KernelSU ? ==="
-ls -la "$GITHUB_WORKSPACE/kernel_sources/drivers/kernelsu" 2>/dev/null
+echo "=== 2. Contenu de ksu_handle_sys_reboot (lignes autour) ==="
+grep -n -B2 -A30 "int ksu_handle_sys_reboot" "$SUPERCALL_C" 2>/dev/null | head -40
 
 echo ""
 echo "═══════════════════════════════════════════════════════════════"
@@ -794,7 +759,6 @@ fi
 # ==================== 6b. HOOKS MANUELS KERNELSU ====================
 echo "=== Application des hooks manuels KernelSU ==="
 
-# 1. Hook sys_reboot (kernel/reboot.c) — INDISPENSABLE pour accorder le root
 if ! grep -q "ksu_handle_sys_reboot" kernel/reboot.c; then
     sed -i '/SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,/i\
 #if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD)\
@@ -811,8 +775,6 @@ else
     echo "✅ Hook sys_reboot déjà présent"
 fi
 
-# Vérification
-echo "=== Vérification des hooks ==="
 grep -c "ksu_handle_sys_reboot" kernel/reboot.c || echo "sys_reboot: absent"
 
 # ==================== 7. COMPILATION ====================
