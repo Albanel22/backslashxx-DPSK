@@ -7,7 +7,7 @@
 # KernelSU : backslashxx/KernelSU v3.3.0-52
 # Hooks    : KSU_TAMPER_SYSCALL_TABLE + hooks manuels (sys_reboot)
 # SusFS    : patch cyberc3dr nGKI 4.19 + routage direct dans supercall.c
-# Profil   : SUS_PATH + core + logs + SUS_MOUNT + SUS_KSTAT + TRY_UMOUNT + SPOOF_UNAME
+# Profil   : SUS_PATH + core + logs + SUS_MOUNT + SUS_KSTAT + TRY_UMOUNT + SPOOF_UNAME + HIDE_KSU_SUSFS_SYMBOLS
 # =============================================================================
 set -e
 
@@ -593,7 +593,7 @@ set +e
     --enable KSU_SUSFS_SUS_KSTAT \
     --enable KSU_SUSFS_SPOOF_UNAME \
     --enable KSU_SUSFS_TRY_UMOUNT \
-    --disable KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+    --enable KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
     --disable KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
     --disable KSU_SUSFS_OPEN_REDIRECT \
     --disable KSU_SUSFS_SUS_MAP \
@@ -637,7 +637,6 @@ done
 
 # Vérification que les options risquées sont toujours désactivées
 for symbol in \
-    KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
     KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
     KSU_SUSFS_OPEN_REDIRECT \
     KSU_SUSFS_SUS_MAP; do
@@ -646,7 +645,15 @@ for symbol in \
         exit 1
     fi
 done
-echo "✅ Profil validé : SUS_PATH + core + logs + SUS_MOUNT + SUS_KSTAT + TRY_UMOUNT + SPOOF_UNAME"
+
+# Vérification que HIDE_KSU_SUSFS_SYMBOLS est bien activé
+if grep -q "^CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y$" out/.config; then
+    echo "✅ CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS activé"
+else
+    echo "❌ CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS manquant"
+    exit 1
+fi
+echo "✅ Profil validé : SUS_PATH + core + logs + SUS_MOUNT + SUS_KSTAT + TRY_UMOUNT + SPOOF_UNAME + HIDE_KSU_SUSFS_SYMBOLS"
 
 # ==================== 5. PATCH SIGNATURES MODULE ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
