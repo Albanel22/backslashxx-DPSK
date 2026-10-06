@@ -5,15 +5,15 @@
 # Kernel   : 4.19.325
 # Source   : LineageOS/android_kernel_motorola_sm8250 (branche lineage-23.2)
 # KernelSU : backslashxx/KernelSU v3.3.0-52
-# Hooks    : KSU_TAMPER_SYSCALL_TABLE (pour intercepter sys_reboot)
-# SusFS    : patch cyberc3dr nGKI 4.19 + routage sys_reboot + routage ioctl
-# Profil   : SUS_PATH + core + logs
+# Hooks    : KSU_TAMPER_SYSCALL_TABLE + hooks manuels (sys_reboot)
+# SusFS    : patch cyberc3dr nGKI 4.19 + routage direct dans supercall.c
+# Profil   : SUS_PATH + core + logs + SUS_MOUNT + SUS_KSTAT + TRY_UMOUNT + SPOOF_UNAME
 # =============================================================================
 set -e
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
-echo "=== BUILD backslashxx KernelSU v3.3.0-52 + SusFS (double routage) ==="
+echo "=== BUILD backslashxx KernelSU v3.3.0-52 + SusFS (routage supercall.c) ==="
 df -h
 
 # ==================== 0. ENVIRONNEMENT ====================
@@ -274,7 +274,7 @@ void susfs_show_variant(void __user **user_info) {
 		goto out_copy_to_user;
 	}
 
-	strscpy(info.susfs_variant, SUSFS_VARIANT, SUSFS_MAX_VARIANT_BUFSIZE-1);
+	strscpy(info.susfs_variant, SUSFS_VARIANT, SUSFS_MAX_VERSION_BUFSIZE-1);
 	info.err = 0;
 out_copy_to_user:
 	if (copy_to_user((struct st_susfs_variant __user*)*user_info, &info, sizeof(info))) {
@@ -296,43 +296,79 @@ grep -q "susfs_show_version" fs/susfs.c || { echo "❌ susfs_show_version manqua
 grep -q "susfs_show_variant" fs/susfs.c || { echo "❌ susfs_show_variant manquant"; exit 1; }
 echo "✅ susfs_show_version et susfs_show_variant présents"
 
-# ==================== 2a-quinquies. ROUTAGE SUSFS DANS toolkit.h ====================
-echo "=== Ajout du routage SusFS dans backslashxx toolkit.h ==="
+# ==================== 2a-quinquies. ROUTAGE SUSFS DANS supercall.c ====================
+echo "=== Ajout du routage SusFS dans supercall.c (méthode directe) ==="
 
-TOOLKIT_H="/tmp/KernelSU/kernel/downstream/toolkit.h"
+SUPERCALL_C="/tmp/KernelSU/kernel/supercall/supercall.c"
 
-if [ ! -f "$TOOLKIT_H" ]; then
-    echo "❌ toolkit.h introuvable: $TOOLKIT_H"
+if [ ! -f "$SUPERCALL_C" ]; then
+    echo "❌ supercall.c introuvable: $SUPERCALL_C"
     exit 1
 fi
 
-python3 << 'PYEOF_TOOLKIT'
+python3 << 'PYEOF_SUPERCALL'
 from pathlib import Path
 import re
 
-path = Path("/tmp/KernelSU/kernel/downstream/toolkit.h")
+path = Path("/tmp/KernelSU/kernel/supercall/supercall.c")
 text = path.read_text()
 original = text
 added = []
 
-if '#include <linux/susfs.h>' not in text:
-    includes_block = '''
+# ═══ 1. AJOUTER LES INCLUDES SUSFS ═══
+if '#include <linux/susfs_def.h>' not in text:
+    match = re.search(r'(#include\s+[^\n]+\n)', text)
+    if match:
+        includes_block = '''
 #ifdef CONFIG_KSU_SUSFS
 #include <linux/susfs.h>
 #include <linux/susfs_def.h>
 #endif
 '''
-    text = text.replace(
-        '#define CHANGE_KSUFLAGS\t\t10013',
-        '#define CHANGE_KSUFLAGS\t\t10013' + includes_block
-    )
-    added.append("includes SusFS")
+        text = text[:match.end(1)] + includes_block + text[match.end(1):]
+        added.append("includes SusFS")
+        print("[+] Includes SusFS ajoutés")
 
+# ═══ 2. AJOUTER UN FALLBACK LOCAL DES CONSTANTES SUSFS ═══
+if 'CMD_SUSFS_SHOW_VERSION' not in text.split('int ksu_handle_sys_reboot')[0]:
+    print("[i] Constantes SusFS non trouvées avant la fonction, ajout de fallback local")
+    func_match = re.search(r'(int ksu_handle_sys_reboot\s*\([^)]*\)\s*\{)', text)
+    if func_match:
+        local_defs = '''
+#ifdef CONFIG_KSU_SUSFS
+/* ═══ Fallback local pour les constantes SusFS ═══ */
+#ifndef CMD_SUSFS_ADD_SUS_PATH
+#define CMD_SUSFS_ADD_SUS_PATH 0x55550
+#endif
+#ifndef CMD_SUSFS_ADD_SUS_PATH_LOOP
+#define CMD_SUSFS_ADD_SUS_PATH_LOOP 0x55553
+#endif
+#ifndef CMD_SUSFS_ENABLE_LOG
+#define CMD_SUSFS_ENABLE_LOG 0x555a0
+#endif
+#ifndef CMD_SUSFS_SHOW_VERSION
+#define CMD_SUSFS_SHOW_VERSION 0x555e1
+#endif
+#ifndef CMD_SUSFS_SHOW_ENABLED_FEATURES
+#define CMD_SUSFS_SHOW_ENABLED_FEATURES 0x555e2
+#endif
+#ifndef CMD_SUSFS_SHOW_VARIANT
+#define CMD_SUSFS_SHOW_VARIANT 0x555e3
+#endif
+#endif
+
+'''
+        text = text[:func_match.start()] + local_defs + text[func_match.start():]
+        added.append("fallback constantes SusFS")
+        print("[+] Fallback local des constantes ajouté")
+
+# ═══ 3. INSÉRER LE ROUTAGE ═══
 susfs_routing = '''
 #ifdef CONFIG_KSU_SUSFS
-	pr_info("SUSFS_ROUTING: magic2=0x%x cmd=0x%x\\n", magic2, cmd);
+	/* ═══ Routage SusFS (direct dans supercall.c) ═══ */
+	pr_info("SUSFS_ROUTING_C: magic1=0x%x magic2=0x%x cmd=0x%x\\n", magic1, magic2, cmd);
 	if (magic2 == 0xFAFAFAFA) {
-		pr_info("SUSFS_ROUTING: detected SUSFS_MAGIC, switching on cmd=0x%x\\n", cmd);
+		pr_info("SUSFS_ROUTING_C: detected SUSFS_MAGIC, switching on cmd=0x%x\\n", cmd);
 		switch (cmd) {
 #ifdef CONFIG_KSU_SUSFS_SUS_PATH
 		case CMD_SUSFS_ADD_SUS_PATH:
@@ -363,158 +399,72 @@ susfs_routing = '''
 #endif
 '''
 
-pattern = r'(if \(magic2 == CHANGE_KSUFLAGS\)\s*\n\s*goto change_ksuflags;\s*\n\s*\n\s*return 0;)'
+pattern = r'(\s*)toolkit_handle_sys_reboot\(magic1, magic2, cmd, arg\);'
 match = re.search(pattern, text)
+
 if match:
-    text = text[:match.end(1)] + '\n' + susfs_routing + text[match.end(1):]
-    added.append("routage SusFS")
+    indent = match.group(1)
+    text = text[:match.start()] + susfs_routing + '\n' + indent + 'toolkit_handle_sys_reboot(magic1, magic2, cmd, arg);' + text[match.end():]
+    added.append("routage SusFS dans supercall.c")
+    print("[+] Routage inséré AVANT toolkit_handle_sys_reboot")
+else:
+    print("[!] Pattern toolkit_handle_sys_reboot non trouvé")
 
 if text != original:
     path.write_text(text)
-    print(f"[+] Ajouté : {', '.join(added)}")
+    print(f"[+] Modifications : {', '.join(added)}")
 else:
-    print("[i] Aucune modification")
-PYEOF_TOOLKIT
+    print("[!] AUCUNE MODIFICATION")
 
-if grep -q "0xFAFAFAFA" "$TOOLKIT_H"; then
-    echo "✅ Routage SusFS ajouté dans toolkit.h"
+# ═══ DEBUG ═══
+print("")
+print("=== DEBUG supercall.c ===")
+if 'SUSFS_ROUTING_C' in text:
+    print("✅ SUSFS_ROUTING_C présent")
+if 'CMD_SUSFS_SHOW_VERSION' in text:
+    print("✅ CMD_SUSFS_SHOW_VERSION présent")
+PYEOF_SUPERCALL
+
+if grep -q "SUSFS_ROUTING_C" "$SUPERCALL_C"; then
+    echo "✅ Routage SusFS ajouté dans supercall.c"
 else
-    echo "❌ Échec du routage dans toolkit.h"
+    echo "❌ Échec du routage dans supercall.c"
     exit 1
 fi
 
-# ==================== 2a-sexies. ROUTAGE SUSFS DANS dispatch.c ====================
-echo "=== Ajout du routage SusFS dans backslashxx dispatch.c (supercalls) ==="
-
-DISPATCH_C="/tmp/KernelSU/kernel/supercall/dispatch.c"
-
-if [ ! -f "$DISPATCH_C" ]; then
-    echo "⚠️ dispatch.c introuvable: $DISPATCH_C"
-    echo "[i] Recherche alternative..."
-    DISPATCH_C=$(find /tmp/KernelSU -name "dispatch.c" 2>/dev/null | head -1)
-    if [ -z "$DISPATCH_C" ]; then
-        echo "❌ dispatch.c introuvable dans tout /tmp/KernelSU"
-        exit 1
-    fi
-    echo "[+] Trouvé: $DISPATCH_C"
-fi
-
-python3 << 'PYEOF_DISPATCH'
-from pathlib import Path
-import re
-
-# Trouver dispatch.c
-import glob
-paths = glob.glob("/tmp/KernelSU/**/dispatch.c", recursive=True)
-if not paths:
-    print("[!] dispatch.c introuvable")
-    raise SystemExit(1)
-
-path = Path(paths[0])
-print(f"[i] Patch de: {path}")
-text = path.read_text()
-original = text
-added = []
-
-# 1. Ajouter les includes
-if '#include <linux/susfs.h>' not in text:
-    match = re.search(r'(#include\s+[^\n]+\n)', text)
-    if match:
-        includes_block = '''
-#ifdef CONFIG_KSU_SUSFS
-#include <linux/susfs.h>
-#include <linux/susfs_def.h>
-#endif
-'''
-        text = text[:match.end(1)] + includes_block + text[match.end(1):]
-        added.append("includes SusFS")
-
-# 2. Créer des wrappers pour les fonctions SusFS (signature ioctl)
-wrappers = '''
-#ifdef CONFIG_KSU_SUSFS
-/* ═══ Wrappers SusFS pour les handlers ioctl ═══ */
-static int susfs_ioctl_wrap_show_version(void __user *arg) {
-    void __user **ptr = &arg;
-    susfs_show_version(ptr);
-    return 0;
-}
-static int susfs_ioctl_wrap_show_variant(void __user *arg) {
-    void __user **ptr = &arg;
-    susfs_show_variant(ptr);
-    return 0;
-}
-static int susfs_ioctl_wrap_get_enabled_features(void __user *arg) {
-    void __user **ptr = &arg;
-    susfs_get_enabled_features(ptr);
-    return 0;
-}
-static int susfs_ioctl_wrap_enable_log(void __user *arg) {
-    void __user **ptr = &arg;
-    susfs_enable_log(ptr);
-    return 0;
-}
-#ifdef CONFIG_KSU_SUSFS_SUS_PATH
-static int susfs_ioctl_wrap_add_sus_path(void __user *arg) {
-    void __user **ptr = &arg;
-    susfs_add_sus_path(ptr);
-    return 0;
-}
-static int susfs_ioctl_wrap_add_sus_path_loop(void __user *arg) {
-    void __user **ptr = &arg;
-    susfs_add_sus_path_loop(ptr);
-    return 0;
-}
-#endif
-#endif
-'''
-
-# Insérer les wrappers AVANT "static const struct ksu_ioctl_cmd_map ksu_ioctl_handlers"
-pattern_handlers = r'(static const struct ksu_ioctl_cmd_map ksu_ioctl_handlers\[\])'
-match = re.search(pattern_handlers, text)
-if match:
-    text = text[:match.start(1)] + wrappers + '\n' + text[match.start(1):]
-    added.append("wrappers SusFS")
-
-# 3. Ajouter les entrées dans la table ksu_ioctl_handlers
-susfs_entries = '''#ifdef CONFIG_KSU_SUSFS
-	{ .cmd = 0x555e1, .name = "SUSFS_SHOW_VERSION", .handler = susfs_ioctl_wrap_show_version, .perm_check = manager_or_root },
-	{ .cmd = 0x555e2, .name = "SUSFS_SHOW_ENABLED_FEATURES", .handler = susfs_ioctl_wrap_get_enabled_features, .perm_check = manager_or_root },
-	{ .cmd = 0x555e3, .name = "SUSFS_SHOW_VARIANT", .handler = susfs_ioctl_wrap_show_variant, .perm_check = manager_or_root },
-	{ .cmd = 0x555a0, .name = "SUSFS_ENABLE_LOG", .handler = susfs_ioctl_wrap_enable_log, .perm_check = only_root },
-#ifdef CONFIG_KSU_SUSFS_SUS_PATH
-	{ .cmd = 0x55550, .name = "SUSFS_ADD_SUS_PATH", .handler = susfs_ioctl_wrap_add_sus_path, .perm_check = only_root },
-	{ .cmd = 0x55553, .name = "SUSFS_ADD_SUS_PATH_LOOP", .handler = susfs_ioctl_wrap_add_sus_path_loop, .perm_check = only_root },
-#endif
-#endif
-'''
-
-# Trouver le sentinel
-sentinel_pattern = r'(\{\s*\.cmd\s*=\s*0,\s*\.name\s*=\s*NULL,\s*\.handler\s*=\s*NULL)'
-match = re.search(sentinel_pattern, text)
-if match:
-    text = text[:match.start(1)] + susfs_entries + '\t' + text[match.start(1):]
-    added.append("handlers SusFS")
-else:
-    print("[!] Sentinel non trouvé, fallback...")
-    last_handler = text.rfind('KSU_IOCTL_')
-    if last_handler > 0:
-        end_of_line = text.find('\n', last_handler)
-        text = text[:end_of_line+1] + susfs_entries + text[end_of_line+1:]
-        added.append("handlers SusFS (fallback)")
-
-if text != original:
-    path.write_text(text)
-    print(f"[+] Ajouté : {', '.join(added)}")
-else:
-    print("[i] Aucune modification")
-PYEOF_DISPATCH
-
-if grep -q "0x555e1" "$DISPATCH_C"; then
-    echo "✅ Routage SusFS ajouté dans dispatch.c"
+if grep -q "CMD_SUSFS_SHOW_VERSION" "$SUPERCALL_C"; then
+    echo "✅ Constantes SusFS présentes"
 else
-    echo "❌ Échec du routage dans dispatch.c"
+    echo "❌ Constantes SusFS manquantes"
     exit 1
 fi
+
+# ═══════════════════════════════════════════════════════════════
+# VÉRIFICATION FINALE
+# ═══════════════════════════════════════════════════════════════
+set +e
+
+echo ""
+echo "═══════════════════════════════════════════════════════════════"
+echo "=== VÉRIFICATION FINALE supercall.c ==="
+echo "═══════════════════════════════════════════════════════════════"
+
+echo ""
+echo "=== 1. Routage SUSFS_ROUTING_C présent ? ==="
+grep -n "SUSFS_ROUTING_C" "$SUPERCALL_C" 2>/dev/null
+
+echo ""
+echo "=== 2. Constantes SusFS définies ? ==="
+grep -n "CMD_SUSFS_SHOW_VERSION\|CMD_SUSFS_ADD_SUS_PATH" "$SUPERCALL_C" 2>/dev/null | head -10
+
+echo ""
+echo "=== 3. Contenu de ksu_handle_sys_reboot (30 lignes) ==="
+grep -n -A30 "int ksu_handle_sys_reboot" "$SUPERCALL_C" 2>/dev/null | head -40
+
+echo ""
+echo "═══════════════════════════════════════════════════════════════"
+
+set -e
 
 # ==================== 2b. SYMLINK DRIVER ====================
 ln -sf /tmp/KernelSU/kernel drivers/kernelsu
@@ -639,10 +589,10 @@ set +e
     --enable KSU_SUSFS \
     --enable KSU_SUSFS_ENABLE_LOG \
     --enable KSU_SUSFS_SUS_PATH \
-    --disable KSU_SUSFS_SUS_MOUNT \
-    --disable KSU_SUSFS_SUS_KSTAT \
-    --disable KSU_SUSFS_SPOOF_UNAME \
-    --disable KSU_SUSFS_TRY_UMOUNT \
+    --enable KSU_SUSFS_SUS_MOUNT \
+    --enable KSU_SUSFS_SUS_KSTAT \
+    --enable KSU_SUSFS_SPOOF_UNAME \
+    --enable KSU_SUSFS_TRY_UMOUNT \
     --disable KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
     --disable KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
     --disable KSU_SUSFS_OPEN_REDIRECT \
@@ -665,17 +615,28 @@ make O=out LLVM=1 CROSS_COMPILE=$CROSS_COMPILE CROSS_COMPILE_ARM32=$CROSS_COMPIL
 echo "=== Config finale ==="
 grep "CONFIG_KSU" out/.config
 
-# Vérification
+# Vérification des options essentielles
 grep -q '^CONFIG_KSU_SUSFS=y$' out/.config || { echo "❌ KSU_SUSFS pas activé"; exit 1; }
 grep -q '^CONFIG_KSU_SUSFS_SUS_PATH=y$' out/.config || { echo "❌ KSU_SUSFS_SUS_PATH pas activé"; exit 1; }
 grep -q '^CONFIG_KSU_SUSFS_ENABLE_LOG=y$' out/.config || { echo "❌ KSU_SUSFS_ENABLE_LOG pas activé"; exit 1; }
 grep -q '^CONFIG_KSU_TAMPER_SYSCALL_TABLE=y$' out/.config || { echo "❌ KSU_TAMPER_SYSCALL_TABLE pas activé"; exit 1; }
 
+# Vérification des nouvelles options progressives
 for symbol in \
     KSU_SUSFS_SUS_MOUNT \
     KSU_SUSFS_SUS_KSTAT \
     KSU_SUSFS_SPOOF_UNAME \
-    KSU_SUSFS_TRY_UMOUNT \
+    KSU_SUSFS_TRY_UMOUNT; do
+    if grep -q "^CONFIG_${symbol}=y$" out/.config; then
+        echo "✅ CONFIG_${symbol} activé"
+    else
+        echo "❌ CONFIG_${symbol} manquant"
+        exit 1
+    fi
+done
+
+# Vérification que les options risquées sont toujours désactivées
+for symbol in \
     KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
     KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
     KSU_SUSFS_OPEN_REDIRECT \
@@ -685,7 +646,7 @@ for symbol in \
         exit 1
     fi
 done
-echo "✅ Profil validé : SUS_PATH + core + logs + TAMPER_SYSCALL_TABLE"
+echo "✅ Profil validé : SUS_PATH + core + logs + SUS_MOUNT + SUS_KSTAT + TRY_UMOUNT + SPOOF_UNAME"
 
 # ==================== 5. PATCH SIGNATURES MODULE ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
@@ -698,6 +659,27 @@ if [ -f "techpack/display/msm/msm_drv.c" ]; then
         echo "✅ Patch tactile appliqué"
     fi
 fi
+
+# ==================== 6b. HOOKS MANUELS KERNELSU ====================
+echo "=== Application des hooks manuels KernelSU ==="
+
+if ! grep -q "ksu_handle_sys_reboot" kernel/reboot.c; then
+    sed -i '/SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,/i\
+#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD)\
+extern int ksu_handle_sys_reboot(int, int, unsigned int, void __user **);\
+#endif' kernel/reboot.c
+
+    sed -i '/int ret = 0;/a\
+#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD)\
+\tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\
+#endif' kernel/reboot.c
+
+    echo "✅ Hook sys_reboot inséré"
+else
+    echo "✅ Hook sys_reboot déjà présent"
+fi
+
+grep -c "ksu_handle_sys_reboot" kernel/reboot.c || echo "sys_reboot: absent"
 
 # ==================== 7. COMPILATION ====================
 echo "=== Compilation du noyau ==="
