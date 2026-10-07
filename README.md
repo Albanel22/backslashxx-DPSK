@@ -32,7 +32,7 @@ L'objectif est de fournir une solution de root kernel-based **furtive et stable*
 | `HIDE_KSU_SUSFS_SYMBOLS` | Symboles KernelSU/SUSFS cachés dans `/proc/kallsyms` |
 | `SPOOF_CMDLINE_OR_BOOTCONFIG` | Falsification des paramètres de démarrage |
 
-## 🏆 Validation
+### 🏆 Validation
 
 Ce build a été testé contre les outils de détection les plus stricts du marché.
 
@@ -48,6 +48,27 @@ Ce build a été testé contre les outils de détection les plus stricts du marc
 - ✅ Module userspace opérationnel (`/data/adb/ksu/susfs4ksu/logs/susfs_active`)
 - ✅ Routage `supercall.c` fonctionnel (magic `0xFAFAFAFA` détecté)
 - ✅ Toutes les fonctionnalités SUSFS communiquent correctement via l'ABI `sys_reboot`
+
+ ### ⚙️ Build depuis les sources
+
+Si tu souhaites compiler ton propre `boot.img` à partir de ce script, il y a **une étape critique** à ne pas oublier : **ajuster les dates des fichiers `boot-stock.img` et `dtbo-stock.img`**.
+
+### Pourquoi c'est important ?
+
+Le noyau compilé doit correspondre **exactement** à la version de LineageOS installée sur ton appareil. Les modules noyau (Wi-Fi, Bluetooth, capteurs, etc.) sont compilés en même temps que la ROM. Si tu flashes un `boot.img` basé sur une version différente de celle de ta ROM, tu risques :
+
+- Un **bootloop** au démarrage
+- Un **Wi-Fi ou Bluetooth non fonctionnel**
+- Des **capteurs défaillants** (tactile, proximité, etc.)
+- Une **instabilité générale** du système
+
+### Comment ajuster ?
+
+Dans le script de build, tu trouveras ces deux lignes (section **9. REPACK**) :
+
+```bash
+curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260920/boot.img"
+curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260920/dtbo.img" 2>/dev/null || true
 
 ## 📥 Installation
 
