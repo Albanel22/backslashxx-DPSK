@@ -1,0 +1,66 @@
+--- a/fs/namespace.c
++++ b/fs/namespace.c
+@@ -26,6 +26,14 @@
+ #include <linux/bootmem.h>
+ #include <linux/task_work.h>
+ #include <linux/sched/task.h>
++#ifdef CONFIG_KSU_SUSFS
++#include <linux/susfs_def.h>
++#endif
++#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
++extern bool susfs_is_current_ksu_domain(void);
++extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
++#define CL_COPY_MNT_NS BIT(25) /* used by copy_mnt_ns() */
++#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+ #include <linux/fs_context.h>
+ 
+ #include "pnode.h"
+@@ -1091,7 +1099,13 @@
+ 		return ERR_PTR(-EINVAL);
+ 	sb = fc->root->d_sb;
+ 
+-	mnt = alloc_vfsmnt(fc->source ?: "none");
++#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
++	if (static_branch_unlikely(&susfs_is_sdcard_android_data_not_decrypted) &&
++		susfs_is_current_ksu_domain())
++		mnt = susfs_alloc_non_unshare_ksu_vfsmnt(fc->source ?: "none");
++	else
++#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
++		mnt = alloc_vfsmnt(fc->source ?: "none");
+ 	if (!mnt)
+ 		return ERR_PTR(-ENOMEM);
+ 
+--- a/fs/proc/task_mmu.c
++++ b/fs/proc/task_mmu.c
+@@ -1674,7 +1674,15 @@
+ 		ret = mmap_read_lock_killable(mm);
+ 		if (ret)
+ 			goto out_free;
++#ifdef CONFIG_KSU_SUSFS_SUS_MAP
++		vma = find_vma(mm, start_vaddr);
++		if (vma && vma->vm_file && SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))
++			goto bypass_orig_flow;
++#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
+ 		ret = walk_page_range(start_vaddr, end, &pagemap_walk);
++#ifdef CONFIG_KSU_SUSFS_SUS_MAP
++bypass_orig_flow:
++#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
+ 		mmap_read_unlock(mm);
+ 		start_vaddr = end;
+ 
+--- a/fs/super.c
++++ b/fs/super.c
+@@ -37,6 +37,13 @@
+ #include <linux/lockdep.h>
+ #include <linux/user_namespace.h>
+ #include <linux/fs_context.h>
++#ifdef CONFIG_KSU_SUSFS
++#include <linux/susfs_def.h>
++#endif // #ifdef CONFIG_KSU_SUSFS
++#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
++extern bool susfs_is_current_ksu_domain(void);
++extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
++#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+ #include "internal.h"
+ 
+ static int thaw_super_locked(struct super_block *sb);
