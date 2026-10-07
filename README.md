@@ -1,2 +1,100 @@
-# backslashxx-KernelSU
-Motorola zone 5G ace+lineageos 23.2
+# 🚀 KernelSU + SUSFS pour Motorola One 5G Ace (kiev/lito)
+
+![Android](https://img.shields.io/badge/Android-16-blue)
+![Kernel](https://img.shields.io/badge/Kernel-4.19.325-orange)
+![KernelSU](https://img.shields.io/badge/KernelSU-v3.3.0--52-purple)
+![SUSFS](https://img.shields.io/badge/SUSFS-v2.3.0-red)
+
+## 📋 Présentation
+
+Ce projet compile un noyau **LineageOS 23.2 (Android 16 QPR2)** avec **KernelSU** (backslashxx v3.3.0-52) et le module **SUSFS** (nGKI 4.19) pour l'appareil **Motorola One 5G Ace** (nom de code : kiev / lito).
+
+L'objectif est de fournir une solution de root kernel-based **furtive et stable**, capable de passer les vérifications d'intégrité les plus strictes tout en restant fonctionnelle au quotidien.
+
+## 🛠️ Fonctionnalités intégrées
+
+### KernelSU
+- ✅ Root kernel-based avec hooks manuels (`sys_reboot`)
+- ✅ `KSU_TAMPER_SYSCALL_TABLE` activé
+- ✅ `KSU_LSM_SECURITY_HOOKS` activé
+- ✅ `KSU_FEATURE_SULOG` et `KSU_FEATURE_ADBROOT` activés
+
+### SUSFS (v2.3.0)
+
+| Fonctionnalité | Description |
+| :--- | :--- |
+| `SUS_PATH` | Masquage des chemins suspects |
+| `SUS_MOUNT` | Masquage des points de montage |
+| `SUS_KSTAT` | Falsification des statistiques de fichiers |
+| `SPOOF_UNAME` | Falsification de la version et de la date du noyau |
+| `TRY_UMOUNT` | Démonte les systèmes de fichiers pour les processus non-root |
+| `ENABLE_LOG` | Logs de débogage SUSFS |
+| `HIDE_KSU_SUSFS_SYMBOLS` | Symboles KernelSU/SUSFS cachés dans `/proc/kallsyms` |
+| `SPOOF_CMDLINE_OR_BOOTCONFIG` | Falsification des paramètres de démarrage |
+
+## 🏆 Validation
+
+Ce build a été testé contre les outils de détection les plus stricts du marché.
+
+| Outil de test | Résultat |
+| :--- | :--- |
+| **RootBeer Fresh** | ✅ NOT ROOTED |
+| **Play Integrity API Checker** | ✅ BASIC + DEVICE + STRONG |
+| **Play Integrity Check** | ✅ Score 100/100 "Secure" |
+| **Native Detector** | ✅ Environment is normal |
+
+### Vérifications système
+- ✅ `/proc/kallsyms` ne contient aucun symbole KSU/SUSFS
+- ✅ Module userspace opérationnel (`/data/adb/ksu/susfs4ksu/logs/susfs_active`)
+- ✅ Routage `supercall.c` fonctionnel (magic `0xFAFAFAFA` détecté)
+- ✅ Toutes les fonctionnalités SUSFS communiquent correctement via l'ABI `sys_reboot`
+
+## 📥 Installation
+
+### Prérequis
+- Motorola One 5G Ace (kiev) avec bootloader déverrouillé
+- LineageOS 23.2 installé
+- ADB et fastboot configurés
+
+### Étapes
+
+1. **Télécharger les fichiers** depuis les releases :
+   - `Backslashxx-SuSFS-IOCTL-boot.img`
+   - `susfs4ksu-module.zip`
+   - `ksud` (optionnel)
+
+2. **Flasher le boot.img** :
+   ```bash
+   fastboot flash boot Backslashxx-SuSFS-IOCTL-boot.img
+   fastboot reboot
+   3. Installer l'application KernelSU :
+   · Télécharger et installer l'APK KernelSU v3.3.0-52
+4. Installer le module userspace SUSFS :
+   · Ouvrir KernelSU → Modules → Installer depuis un fichier
+   · Sélectionner susfs4ksu-module.zip
+   · Redémarrer
+5. Vérifier l'installation :
+   ```bash
+   su -c 'ksu_susfs show enabled_features'
+   ```
+   Tu devrais voir la liste des fonctionnalités SUSFS activées.
+
+⚠️ Avertissements
+
+· Ce noyau est destiné aux utilisateurs avancés.
+· Le root peut entraîner un bootloop ou une instabilité si mal configuré.
+· Sauvegardez toujours votre boot.img d'origine avant de flasher.
+· L'auteur n'est pas responsable des dommages causés à votre appareil.
+· Cet appareil étant en fin de cycle de support, certaines fonctionnalités peuvent varier selon la version de LineageOS.
+
+🙏 Crédits
+
+· backslashxx — KernelSU v3.3.0-52
+· cyberc3dr — nGKI SUSFS patches pour kernel 4.19
+· sidex15 — Module userspace susfs4ksu
+· simonpunk — SUSFS original
+· LineageOS — Source du noyau
+
+📄 Licence
+
+Ce projet est fourni à titre éducatif. Utilisez-le à vos propres risques.
