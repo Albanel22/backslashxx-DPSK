@@ -7,7 +7,7 @@
 # KernelSU : backslashxx/KernelSU v3.3.0-52
 # Hooks    : KSU_TAMPER_SYSCALL_TABLE + hooks manuels (sys_reboot)
 # SusFS    : patch cyberc3dr nGKI 4.19 + routage direct dans supercall.c
-# Profil   : SUS_PATH + core + logs + SUS_MOUNT + SUS_KSTAT + TRY_UMOUNT + SPOOF_UNAME + HIDE_KSU_SUSFS_SYMBOLS
+# Profil   : SUS_PATH + core + logs + SUS_MOUNT + SUS_KSTAT + TRY_UMOUNT + SPOOF_UNAME + HIDE_KSU_SUSFS_SYMBOLS + SPOOF_CMDLINE_OR_BOOTCONFIG
 # =============================================================================
 set -e
 
@@ -594,7 +594,7 @@ set +e
     --enable KSU_SUSFS_SPOOF_UNAME \
     --enable KSU_SUSFS_TRY_UMOUNT \
     --enable KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
-    --disable KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+    --enable KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
     --disable KSU_SUSFS_OPEN_REDIRECT \
     --disable KSU_SUSFS_SUS_MAP \
     --enable KALLSYMS \
@@ -626,7 +626,8 @@ for symbol in \
     KSU_SUSFS_SUS_MOUNT \
     KSU_SUSFS_SUS_KSTAT \
     KSU_SUSFS_SPOOF_UNAME \
-    KSU_SUSFS_TRY_UMOUNT; do
+    KSU_SUSFS_TRY_UMOUNT \
+    KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG; do
     if grep -q "^CONFIG_${symbol}=y$" out/.config; then
         echo "✅ CONFIG_${symbol} activé"
     else
@@ -637,7 +638,6 @@ done
 
 # Vérification que les options risquées sont toujours désactivées
 for symbol in \
-    KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
     KSU_SUSFS_OPEN_REDIRECT \
     KSU_SUSFS_SUS_MAP; do
     if grep -q "^CONFIG_${symbol}=y$" out/.config; then
@@ -653,7 +653,7 @@ else
     echo "❌ CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS manquant"
     exit 1
 fi
-echo "✅ Profil validé : SUS_PATH + core + logs + SUS_MOUNT + SUS_KSTAT + TRY_UMOUNT + SPOOF_UNAME + HIDE_KSU_SUSFS_SYMBOLS"
+echo "✅ Profil validé : SUS_PATH + core + logs + SUS_MOUNT + SUS_KSTAT + TRY_UMOUNT + SPOOF_UNAME + HIDE_KSU_SUSFS_SYMBOLS + SPOOF_CMDLINE_OR_BOOTCONFIG"
 
 # ==================== 5. PATCH SIGNATURES MODULE ====================
 sed -i 's/if (!check_version(/if (0 \&\& !check_version(/g' kernel/module.c
