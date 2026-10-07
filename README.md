@@ -70,6 +70,48 @@ Dans le script de build, tu trouveras ces deux lignes (section **9. REPACK**) :
 curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260920/boot.img"
 curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20260920/dtbo.img" 2>/dev/null || true
 
+Remplace 20260920 par la date de la version de LineageOS installée sur ton appareil.
+
+Comment trouver la bonne date ?
+Via l'application LineageOS :
+
+Paramètres → À propos du téléphone → Numéro de build
+
+La date est souvent intégrée au numéro de build (ex: lineage-23.2-20260920-NIGHTLY-kiev)
+
+Via ADB :
+
+bash
+adb shell getprop ro.build.version.incremental
+
+Ou :
+
+bash
+adb shell getprop ro.build.date
+Via le site LineageOS :
+
+Rends-toi sur download.lineageos.org/kiev
+
+Trouve la version correspondant à celle installée sur ton appareil
+
+La date est dans le nom du fichier (ex: lineage-23.2-20260920-nightly-kiev-signed.zip)
+
+Exemple concret
+Si ton téléphone tourne sous lineage-23.2-20261005-NIGHTLY-kiev, tu dois modifier le script ainsi :
+
+bash
+curl -fLo boot-stock.img "https://mirrorbits.lineageos.org/full/kiev/20261005/boot.img"
+curl -fLo dtbo-stock.img "https://mirrorbits.lineageos.org/full/kiev/20261005/dtbo.img" 2>/dev/null || true
+
+⚠️ Attention
+Les anciennes versions peuvent être supprimées des serveurs LineageOS. Si la date n'est plus disponible, tu devras :
+
+Soit mettre à jour ta ROM vers la dernière version disponible
+
+Soit compiler ton propre boot.img à partir des sources du noyau correspondant à ta version
+
+Ne mélange jamais un boot.img d'une version avec une ROM d'une autre version. C'est la cause n°1 des bootloops après un build custom.
+
 ## 📥 Installation
 
 ### Prérequis
